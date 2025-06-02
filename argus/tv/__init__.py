@@ -24,7 +24,6 @@ class MarketData:
         self.ask_price = ask_price
         self.ask_size = ask_size
 
-
 def force_print_traceback(func):
     """force a traceback to be printed"""
 
@@ -37,7 +36,6 @@ def force_print_traceback(func):
             raise
 
     return wrapper
-
 
 class TradingViewConnection:
     def __init__(self, send_auth=True):
@@ -140,7 +138,6 @@ class TradingViewConnection:
     def post_setup(self):
         """Post setup actions after the WebSocket is opened and initialized"""
         pass
-
 
 class QuoteSession(TradingViewConnection):
     def __init__(self, symbol="ADX:FADX15", callback=None, sendAuth=True):
@@ -304,7 +301,6 @@ class QuoteSession(TradingViewConnection):
 
         self.callback(obj) if self.callback else None
 
-
 class ChartSession(TradingViewConnection):
     def __init__(self, callback=None):
         self.callback = callback
@@ -432,3 +428,11 @@ class ChartSession(TradingViewConnection):
                 # self.message_history.append(decoded_message)
                 # with open("chart_data.json", "w+") as f:
                 #     f.write(json.dumps(decoded_message, indent=4))
+
+
+# TODO: Implement NewsSession
+class NewsSession(TradingViewConnection):
+    def __init__(self, callback=None):
+        self.callback = callback
+        super().__init__(send_auth=False)
+        self.messages = 0

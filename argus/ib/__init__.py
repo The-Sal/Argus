@@ -11,6 +11,13 @@ from utils3.networking import Session
 from argus.ib.fields import IBKRFields, SearchResult
 
 
+class IBError(Exception):
+    pass
+
+class AuthenticationTimeout(IBError):
+    pass
+
+
 class MarketData:
     """User IBKRFields to query for market data"""
 
@@ -236,7 +243,7 @@ class MKTDispatcher:
             time.sleep(1)
             x += 1
             if x == timeout:
-                raise Exception('Timeout waiting for authentication')
+                raise AuthenticationTimeout('Timeout waiting for authentication')
 
         print('Authenticated')
         # self.conid = int(self.ws.networker.search_contract(self.stock_name)[0].conid)
@@ -392,7 +399,18 @@ def main():
     ib_wss.ws.run_forever()
 
 if __name__ == '__main__':
-    print('Running IBKR Reversed... Starting MKTDispatcher...')
-    dispatcher = MKTDispatcher(mode='ASK')
-    input('Press enter to exit...\n')
+    def main():
+        print('Running IBKR Reversed... Starting MKTDispatcher...')
+        try:
+            dispatcher = MKTDispatcher(mode='ASK')
+        except AuthenticationTimeout:
+            print('Authentication timed out. Attempting to fetch new credentials...')
+            from argus.ib.set_auth import update_cookies
+            update_cookies(write_env=True)
+            main()
+            exit(0)
+
+        input('Press enter to exit...\n')
+
+    main()
 

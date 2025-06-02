@@ -2,14 +2,14 @@ import os
 import time
 import datetime
 import subprocess
-from tool import plotter
+from utils3.plot import SimplePlotWriter
 from utils3 import runAsThread
 from dotenv import load_dotenv
 from argus.tv.multisymbol import Ticker
 
 
 load_dotenv()
-plt = plotter.PlotWriter("/Users/Salman/Library/Containers/SVO-Productions.plotview/Data/tmp/plot.plt")
+plt = SimplePlotWriter("/Users/Salman/Library/Containers/SVO-Productions.plotview/Data/tmp/plot.plt")
 
 chadx15_weights = {
     "IHC": 33.72,
@@ -29,7 +29,7 @@ chadx15_weights = {
 }
 
 def notify(message):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     full_message = f"[{timestamp}] {message}"
     subprocess.check_call([
         'imessage-cli',
@@ -103,10 +103,15 @@ class FADX15FairValue:
 
             spread = abs(fair_value - etf_value)
 
+            # Spread direction is relative to the etf value, i.e., is the ETF OVERPRICED or UNDERPRICED
+            # if fair_value > etf_value => ETF is overpriced spread_direction = 1
+            # if fair_value < etf_value => ETF is underpriced spread_direction = -1
+
             # Send notification logic
             if not self.spread_alert_sent and spread > 0.003:
-                notify(f"Spread Alert: Spread is high at {spread * 100:.2f}%")
                 self.spread_alert_sent = True
+                spread_direction = 1 if fair_value > etf_value else -1
+                notify(f"Spread Alert: Spread is high at {spread * 100:.2f}%. Direction: {'Overpriced' if spread_direction == 1 else 'Underpriced'}")
             elif self.spread_alert_sent and spread <= 0.003:
                 notify(f"Spread Closed: Spread has come down to {spread * 100:.2f}%")
                 self.spread_alert_sent = False

@@ -204,7 +204,7 @@ class Ticker:
                 self.updateTask = loop.create_task(self.giveAnUpdate())
             loop.run_forever()
 
-        t = threading.Thread(target=_start, args=(self.loop,))
+        t = threading.Thread(target=_start, args=(self.loop,), daemon=True)
         t.start()
         self.thread = t
 

@@ -1,5 +1,5 @@
 import numpy as np
-from tool import plotter
+from utils3.plot import SimplePlotWriter
 from building.ui import callbk
 from utils3 import runAsThread
 from building.quote_session import *
@@ -128,5 +128,3 @@ def chart_examples():
 def capture_CHADX15_FADX15():
     """Capture and Store both the CHADX15 & FADX15 data tick-by-tick"""
     qs = QuoteSession()
-
-

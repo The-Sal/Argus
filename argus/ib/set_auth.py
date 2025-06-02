@@ -1,5 +1,6 @@
 import os
 import time
+import selenium
 from dotenv import load_dotenv
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -18,10 +19,15 @@ def get_auth():
     driver.get(url)
 
 
-    # wait for site to load
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.CSS_SELECTOR, '#btn_accept_cookies'))
-    )
+    try:
+        # wait for site to load
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, '#btn_accept_cookies'))
+        )
+    except Exception as e:
+        e.__str__()
+        print("Warning: Site may not have loaded properly. Continuing anyway...")
+
     for _ in range(10):
         try:
             # accept cookies
