@@ -80,8 +80,13 @@ def update_cookies(write_env=True):
     print("Cookies injected into environment variable.")
     if write_env:
         print("Writing cookies to .env file...")
-        with open('.env', 'r') as f:
-            lines = f.readlines()
+        try:
+            with open('.env', 'r') as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            print(".env file not found. Creating a new one.")
+            lines = []
+
         with open('.env', 'w') as f:
             for line in lines:
                 if line.startswith('IB_COOKIE'):

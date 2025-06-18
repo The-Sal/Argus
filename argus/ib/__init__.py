@@ -67,10 +67,18 @@ class IBNetworker:
         }
 
         self.tickle = self.setup_msgs[0]
+        self.auth_stats = self.setup_msgs[1]
         self.authenticated = False
         self.forbidden_strings = [
             'NYMEX'
         ]
+
+
+    @runAsThread
+    def initialize(self):
+        self.run_setup_msgs()
+        self._check_authentication()
+        self._heartbeat()
 
     def run_setup_msgs(self):
         """Send setup messages to the server"""
@@ -84,7 +92,21 @@ class IBNetworker:
 
             time.sleep(1)
 
-        self._heartbeat()
+
+    @runAsThread
+    def _check_authentication(self):
+        """Check if the user is authenticated"""
+        while True:
+            time.sleep(60*5)
+            response = self.session.post(self.auth_stats['url'])
+            data = response.json()
+            if data.get('authenticated', False):
+                self.authenticated = True
+                print("User is authenticated")
+            else:
+                print("User is not authenticated")
+                raise AuthenticationTimeout("User is not authenticated. Re-authentication required.")
+
 
     @runAsThread
     def _heartbeat(self):
@@ -184,9 +206,8 @@ class IBWss:
         if not self.opened:
             self.opened = True
         self.recv += 1
-        if self.recv == 4:
-            self.networker.run_setup_msgs()
-            self._heartbeat()
+        if self.recv == 2:
+            self.networker.initialize()
             for msg in self.stream_messages:
                 self.ws.send(msg)
 
@@ -321,6 +342,10 @@ class MKTDispatcher:
                 # Send the data to the client
                 if self.mode == "ASK":
                     client.sendall(str(data.get(IBKRFields.ASK_PRICE)).encode())
+                elif self.mode == "ASK+BID+LAST":
+                     client.sendall(
+                        f"{data.get(IBKRFields.ASK_PRICE)}|{data.get(IBKRFields.BID_PRICE)}|{data.get(IBKRFields.LAST_PRICE)}".encode()
+                    )
                 elif self.mode == "FULL_PKL":
                     client.sendall(pickle.dumps(data))
                 elif self.mode == "FULL_JSON":

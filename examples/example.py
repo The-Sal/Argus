@@ -1,8 +1,6 @@
 import numpy as np
-from utils3.plot import SimplePlotWriter
-from building.ui import callbk
+from argus.tv import *
 from utils3 import runAsThread
-from building.quote_session import *
 from matplotlib import pyplot as plt
 
 
@@ -121,6 +119,7 @@ def chart_examples():
         if again.lower() == 'y':
             today_log_returns_thread(chs)
 
+    multi_shot()
     chs.ws.run_forever()
 
 
@@ -128,3 +127,7 @@ def chart_examples():
 def capture_CHADX15_FADX15():
     """Capture and Store both the CHADX15 & FADX15 data tick-by-tick"""
     qs = QuoteSession()
+
+
+if __name__ == '__main__':
+    chart_examples()
