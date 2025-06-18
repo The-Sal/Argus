@@ -1,7 +1,10 @@
-import json
 import os
+import json
 import time
 import socket
+import logging
+
+import tqdm
 from dotenv import load_dotenv
 from utils3 import runAsThread, assertTypes
 from utils3.networking.sockets import Server
@@ -12,7 +15,7 @@ from argus.capital._lib import (CapitalComAPI, Environment, TradeDirection, Hist
 
 
 CACHE = DomainCache('capital_com.api')
-
+logger = logging.getLogger(__name__)
 
 class CapitalComMKTDataLive:
     """Market Data Object for Capital.com API."""
@@ -118,22 +121,44 @@ class MKTDispatcher(SvrExport):
         print(f"Logged in to Capital.com API in {environment.name} environment.")
 
     @CACHE.cache_decorator('resolve_symbol')
-    def resolve_symbol(self, symbol: str, market: str):
+    def resolve_symbol(self, symbol: str, market: str = None):
         """Resolves a symbol into a Capital.com-compatible 'EPIC' format. It's assumed that the symbol provided is
         the real valid symbol found on the exchange it's listed on."""
         try:
             resolved_symbol = self.api.get_market_details(epic=symbol)
         except CapitalComAPIError as e:
             resolved_symbol = None
-            print('No direct mapping found for symbol:', symbol)
-            print('Attempting to resolve via search...')
+            # logger.log('No direct mapping found for symbol:', symbol)
+            # logger.log('Attempting to resolve via search...')
             search_result = self.api.search_market_for_security(search_term=symbol)
             for result in search_result:
-                if result['symbol'].lower() == symbol.lower():
-                    resolved_symbol = self.api.get_market_details(epic=result['epic'])
-                    break
+                try:
+                    if result['symbol'].lower() == symbol.lower():
+                        resolved_symbol = self.api.get_market_details(epic=result['epic'])
+                        break
+                except (AttributeError, Exception):
+                    logger.error(f"Error resolving symbol '{symbol}': {e}")
+                    continue
 
         return resolved_symbol
+
+    def resolve_symbols_from_list(self, symbols: list, progress=True):
+        """Resolves a list of symbols into Capital.com-compatible 'EPIC' format."""
+        resolved_symbols = []
+        if progress:
+            itera = tqdm.tqdm(symbols)
+        else:
+            itera = iter(symbols)
+        for symbol in itera:
+            if progress:
+                itera.set_description(f"Resolving {symbol}")
+            resolved_symbol = self.resolve_symbol(symbol)
+            if resolved_symbol:
+                resolved_symbols.append(resolved_symbol)
+            else:
+                logger.error(f"Symbol '{symbol}' could not be resolved.")
+        return resolved_symbols
+
 
     def stream_epic(self, epic: str):
         """Streams market data for a specific epic."""
@@ -263,9 +288,9 @@ class MKTDispatcher(SvrExport):
 
 
 
-    def __del__(self):
-        """Ensures the API is logged out when the dispatcher is deleted."""
-        self.api.logout()
+    # def __del__(self):
+    #     """Ensures the API is logged out when the dispatcher is deleted."""
+    #     self.api.logout()
 
 
 
