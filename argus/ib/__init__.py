@@ -14,6 +14,7 @@ from argus.ib.fields import IBKRFields, SearchResult
 class IBError(Exception):
     pass
 
+
 class AuthenticationTimeout(IBError):
     pass
 
@@ -73,7 +74,6 @@ class IBNetworker:
             'NYMEX'
         ]
 
-
     @runAsThread
     def initialize(self):
         self.run_setup_msgs()
@@ -92,12 +92,11 @@ class IBNetworker:
 
             time.sleep(1)
 
-
     @runAsThread
     def _check_authentication(self):
         """Check if the user is authenticated"""
         while True:
-            time.sleep(60*5)
+            time.sleep(60 * 5)
             response = self.session.post(self.auth_stats['url'])
             data = response.json()
             if data.get('authenticated', False):
@@ -107,15 +106,12 @@ class IBNetworker:
                 print("User is not authenticated")
                 raise AuthenticationTimeout("User is not authenticated. Re-authentication required.")
 
-
     @runAsThread
     def _heartbeat(self):
         """Send a heartbeat message to keep the connection alive"""
         while True:
             self.session.post(self.tickle['url'])
             time.sleep(2)
-
-
 
     def search_contract(self, contract_name) -> list[SearchResult]:
         """
@@ -141,7 +137,6 @@ class IBNetworker:
             raise e
 
         return results
-
 
 
 class IBWss:
@@ -170,7 +165,6 @@ class IBWss:
         self.recv = 0
         self.networker = IBNetworker(cookie)
         self.contract_callbacks = {}
-
 
     # noinspection all
     def stream_market_data(self, contract_id, callback,
@@ -223,7 +217,6 @@ class IBWss:
         _ = ws
         print("WebSocket connection closed")
 
-
     def handle_market_data(self, message):
         """Handle market data messages"""
         conidEx = message['conidEx']
@@ -245,8 +238,6 @@ class IBWss:
                 callback(obj)
             else:
                 print(f"Callback for contract ID {conid} is not callable.")
-
-
 
 
 class MKTDispatcher:
@@ -273,8 +264,6 @@ class MKTDispatcher:
         self.mode = mode
         print('[IMPORTANT] MODE = {}'.format(self.mode))
 
-
-
     def _on_close(self, ws, *args):
         raise Exception("Connection closed")
 
@@ -283,7 +272,7 @@ class MKTDispatcher:
         self.ws.ws.run_forever()
 
     def _quick_add(self, search_term, client):
-        hits =  self.ws.networker.search_contract(search_term)
+        hits = self.ws.networker.search_contract(search_term)
         top_hit = hits[0]
         conid = int(top_hit.conid)
         print('Top hit for search {} is {}'.format(search_term, top_hit.companyHeader))
@@ -300,7 +289,6 @@ class MKTDispatcher:
             self.con_id_to_client[conid].append(client)
         except KeyError:
             self.con_id_to_client[conid] = [client]
-
 
     @runAsThread
     def _listen_to_client(self, client: socket.socket):
@@ -320,7 +308,6 @@ class MKTDispatcher:
                 break
         client.close()
 
-
     @runAsThread
     def _add_clients(self):
         while True:
@@ -328,7 +315,6 @@ class MKTDispatcher:
             client, addr = self.sock.accept()
             self.clients.append(client)
             self._listen_to_client(client)
-
 
     def callback(self, data: MarketData):
         """Callback function to handle market data"""
@@ -343,7 +329,7 @@ class MKTDispatcher:
                 if self.mode == "ASK":
                     client.sendall(str(data.get(IBKRFields.ASK_PRICE)).encode())
                 elif self.mode == "ASK+BID+LAST":
-                     client.sendall(
+                    client.sendall(
                         f"{data.get(IBKRFields.ASK_PRICE)}|{data.get(IBKRFields.BID_PRICE)}|{data.get(IBKRFields.LAST_PRICE)}".encode()
                     )
                 elif self.mode == "FULL_PKL":
@@ -358,7 +344,6 @@ class MKTDispatcher:
                     self.con_id_to_client[data.contract_id].remove(client)
                     if not self.con_id_to_client[data.contract_id]:
                         del self.con_id_to_client[data.contract_id]
-
 
 
 def main():
@@ -383,7 +368,6 @@ def main():
         else:
             print('Invalid choice. Contract not added.')
             continue
-
 
     print('Contracts to stream:', list(con_id_to_name.values()))
 
@@ -415,13 +399,12 @@ def main():
 
         delayed_stream()
 
-
     for key, value in con_id_to_name.items():
         print(f"Starting stream for contract {key} ({value})")
         start_stream_contract_after_delay(0, int(key))
 
-
     ib_wss.ws.run_forever()
+
 
 if __name__ == '__main__':
     def main():
@@ -437,5 +420,5 @@ if __name__ == '__main__':
 
         input('Press enter to exit...\n')
 
-    main()
 
+    main()
