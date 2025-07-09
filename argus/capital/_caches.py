@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import pickle
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class NotKey(CacheError):
 class _FastCache:
     """A super simple cache system that also saves to disk. Used to cache data from the Capital.com API especially
     resolution related data or any non-changing data that's wasteful to fetch repeatedly."""
-    def __init__(self, cache_file: str = '~/.argus/capital_cache.json'):
+    def __init__(self, cache_file: str = '~/.argus/capital_cache.pkl'):
         """Initializes the FastCache with a specified cache file."""
         self.cache_file = os.path.expanduser(cache_file)
         self.cache = {}
@@ -29,16 +30,16 @@ class _FastCache:
         # the directory must exist
         os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
         if os.path.exists(self.cache_file):
-            with open(self.cache_file, 'r') as f:
+            with open(self.cache_file, 'rb') as f:
                 try:
-                    self.cache = json.load(f)
-                except json.JSONDecodeError:
-                    raise ValueError(f"Cache file {self.cache_file} is corrupted or not a valid JSON.")
+                    self.cache = pickle.load(f)
+                except (pickle.UnpicklingError, EOFError):
+                    raise ValueError(f"Cache file {self.cache_file} is corrupted or not a valid PICKLE.")
 
     def save_cache(self):
         """Saves the cache to the specified file."""
-        with open(self.cache_file, 'w') as f:
-            json.dump(self.cache, f, indent=4)
+        with open(self.cache_file, 'wb') as f:
+            pickle.dump(self.cache, f)
 
 CACHE = _FastCache()
 

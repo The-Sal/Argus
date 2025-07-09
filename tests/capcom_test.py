@@ -10,8 +10,6 @@ class TestCapcom(unittest.TestCase):
     def setUp(self):
         """Set up the test environment."""
         self.dispatcher = MKTDispatcher(
-            host='localhost',
-            port=random.randint(6000, 7000),
             environment=Environment.LIVE  # for some security, use LIVE environment
         )
 
@@ -43,7 +41,5 @@ class TestCapcom(unittest.TestCase):
         from tests.test import test_mkt_dispatcher
         self.dispatcher.start_server()
         test_mkt_dispatcher(
-            host='localhost',
-            port=self.dispatcher.port,
             symbols=['BTCUSD', 'ETHUSD']
         )

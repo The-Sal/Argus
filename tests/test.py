@@ -2,10 +2,12 @@ import json
 import socket
 from argus.capital import encode_packet, decode_packet
 
+
 def send_request(client: socket.socket, request: dict):
     """Sends a request to the server."""
     packet = encode_packet(json.dumps(request).encode('ascii'))
     client.sendall(packet)
+
 
 def receive_response(client: socket.socket):
     """Receives a response from the server."""
@@ -13,10 +15,11 @@ def receive_response(client: socket.socket):
     decoded_data = decode_packet(data)
     return json.loads(decoded_data.decode('ascii'))
 
-def test_mkt_dispatcher(host: str, port: int, symbols: list):
+
+def test_mkt_dispatcher(symbols: list, path='/tmp/argus_capital.sock'):
     """Tests the MKTDispatcher by resolving and streaming symbols."""
-    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client.connect((host, port))
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.connect(path)
 
     for symbol in symbols:
         # Resolve symbol
@@ -46,5 +49,6 @@ def test_mkt_dispatcher(host: str, port: int, symbols: list):
 
     client.close()
 
+
 if __name__ == '__main__':
-    test_mkt_dispatcher(host='localhost', port=9964, symbols=['BTCUSD', 'ETHUSD'])
+    test_mkt_dispatcher(symbols=['BTCUSD', 'ETHUSD'])
