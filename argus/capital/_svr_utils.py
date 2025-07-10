@@ -73,7 +73,7 @@ def decode_packet(packet: bytes) -> bytes:
         raise ValueError("Invalid packet format: missing start marker '~'")
 
     if len(packet) < 6:  # Minimum: ~0000|
-        raise ValueError("Invalid packet format: packet too short")
+        raise ValueError("Invalid packet format: packet too short. Packet: {}".format(packet))
 
     # Parse length from bytes 1-4 (after ~)
     try:
