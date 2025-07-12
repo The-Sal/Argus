@@ -1,3 +1,4 @@
+import enum
 import os
 import json
 import tqdm
@@ -183,7 +184,7 @@ class IBNetworker:
     def _check_authentication(self):
         """Check if the user is authenticated"""
         while True:
-            time.sleep(60 * 4)  # Check every 4 minutes
+            time.sleep(60 * 2)  # Check every 4 minutes
             response = self.session.post(self.auth_stats['url'])
             data = response.json()
             if data.get('authenticated', False):
@@ -245,8 +246,6 @@ class IBNetworker:
     #     }
     #     response = self.session.get(self.urls['query_equities_contracts'], json=query)
     #     return response
-
-
 class IBWss:
     def __init__(self, cookie=os.getenv('IB_COOKIE')):
         if cookie is None:
@@ -283,8 +282,6 @@ class IBWss:
             unit='contract',
             unit_scale=True,
             unit_divisor=1,
-            # disable estimated time calculation
-            dynamic_ncols=True,
         )
 
     # noinspection all
@@ -384,11 +381,12 @@ class IBWss:
 
 
 class MKTDispatcher:
-    def __init__(self, timeout=60, mode="ASK", dryRun=False):
+    def __init__(self, timeout=60, mode="ASK", dryRun=False, force_clear_on_fill=True):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.bind(('localhost', 9972))
         self.clients = []
         self.con_id_to_client = {}
+        self._force_clear_on_fill = force_clear_on_fill
         if not dryRun:
             self.ws = IBWss()
             self.ws.on_close = self._on_close
@@ -409,6 +407,7 @@ class MKTDispatcher:
         self.caches = {}
         self.cache_values = [IBKRFields.SYMBOL, IBKRFields.LAST_PRICE, IBKRFields.SHORTABLE_SHARES]
         self._check_clients_live()
+        self._thread_lock = threading.Lock()
         print('[IMPORTANT] MODE = {}'.format(self.mode))
 
     def _on_close(self, ws, *args):
@@ -435,7 +434,13 @@ class MKTDispatcher:
             print(f"Already streaming market data for contract ID {conid}. Adding client to existing stream.")
             self.con_id_to_client[conid].append(client)
             return
-        self.ws.stream_market_data(conid, self.callback)
+        try:
+            self.ws.stream_market_data(conid, self.callback)
+        except ValueError:
+            self._force_check_clients_live(one_alloc=True)
+            self.ws.stream_market_data(conid, self.callback)
+
+
         try:
             self.con_id_to_client[conid].append(client)
         except KeyError:
@@ -517,26 +522,57 @@ class MKTDispatcher:
         """Send the following character to all clients to check if they are still connected, otherwise
         remove them from the con_id_to_client mapping and unsubscribe from the contract ID if no clients are left."""
         while True:
-            time.sleep(30)
+            time.sleep(5)
             logging.info("Checking for stale subscriptions...")
+            self._force_check_clients_live()
+
+    def _force_check_clients_live(self, one_alloc=False):
+        """
+        Force check if clients are still connected by sending a simple character to each client to ping them.
+        Contracts with no clients will be unsubscribed from the market data stream.
+        :param one_alloc: If true, return when the first stream is closed.
+        :return:
+        """
+        with self._thread_lock:
             x = self.con_id_to_client
             remove_keys = []
-            iterator = tqdm.tqdm(x.items(), desc="Checking subscriptions",
-                                 unit="contract")
+            if not one_alloc:
+                iterator = tqdm.tqdm(x.items(), desc="Checking subscriptions",
+                                     unit="contract")
+            else:
+                iterator = x.items()
+
+            exit_loop = False
             for contract_id, clients in iterator:
+                if exit_loop:
+                    break
                 for client in clients:
                     try:
                         client.sendall(b'$')  # Send a simple character to check if the client is still connected
                     except (OSError, ConnectionResetError):
                         logging.warning(f"Client for {contract_id} disconnected. Removing from subscription.")
-                        self.con_id_to_client[contract_id].remove(client)
+                        try:
+                            self.con_id_to_client[contract_id].remove(client)
+                        except ValueError:
+                            pass
                         if not self.con_id_to_client[contract_id]:
                             logging.info(f"No clients left for contract ID {contract_id}. Unsubscribing.")
                             self.ws.unsubscribe_market_data(contract_id)
                             remove_keys.append(contract_id)
+                            if one_alloc:
+                                # Found the first contract with no clients, exit the loop
+                                exit_loop = True
+                                break
 
-            for key in remove_keys:
-                del self.con_id_to_client[key]
+                    except Exception as e:
+                        traceback.print_exc()
+                        print(f"Error with _check_clients_live: {e}")
+
+            try:
+                for key in remove_keys:
+                    del self.con_id_to_client[key]
+            except KeyError:
+                pass
 
     def callback(self, data: MarketData):
         """Callback function to handle market data"""
@@ -580,18 +616,27 @@ class MKTDispatcher:
                         last_size=0.0,  # Not available for now
                     )
                     final_packet = transmit_mkt_data_with_protocol_2(ibkr_data)
-                    print(f"->{client.getpeername()}: {final_packet}")
+                    # print(f"{client.getpeername()}: {final_packet}")
                     client.sendall(final_packet)
 
 
             except (Exception, OSError) as e:
                 print(f"Error sending data to client: {e}")
-                traceback.print_exc()
+                if not isinstance(e, OSError):
+                    traceback.print_exc()
 
 
-                self.clients.remove(client)
+                try:
+                    self.clients.remove(client)
+                except ValueError:
+                    # client was not in the list, so we can ignore this
+                    pass
+
                 if data.contract_id in self.con_id_to_client:
-                    self.con_id_to_client[data.contract_id].remove(client)
+                    try:
+                        self.con_id_to_client[data.contract_id].remove(client)
+                    except ValueError:
+                        pass
                     if not self.con_id_to_client[data.contract_id]:
                         print(f"Removing contract ID {data.contract_id} from con_id_to_client as no clients are left.")
                         del self.con_id_to_client[data.contract_id]
