@@ -102,37 +102,45 @@ class FADX15FairValue:
                 return
 
             spread = abs(fair_value - etf_value)
-
-            # Spread direction is relative to the etf value, i.e., is the ETF OVERPRICED or UNDERPRICED
-            # if fair_value > etf_value => ETF is overpriced spread_direction = 1
-            # if fair_value < etf_value => ETF is underpriced spread_direction = -1
-
             # Send notification logic
             if not self.spread_alert_sent and spread > 0.003:
+                print('Sending spread alert...')
                 self.spread_alert_sent = True
-                spread_direction = 1 if fair_value > etf_value else -1
-                notify(f"Spread Alert: Spread is high at {spread * 100:.2f}%. Direction: {'Overpriced' if spread_direction == 1 else 'Underpriced'}")
+                msg = f"Spread Alert: Spread is high at {spread * 100:.2f}%. Fair Value: {fair_value * 100:.2f}%, ETF Value: {etf_value * 100:.2f}%"
+                if etf_value > fair_value:
+                    msg += " (ETF is overpriced)"
+                else:
+                    msg += " (ETF is underpriced)"
+
+                notify(msg)
+
             elif self.spread_alert_sent and spread <= 0.003:
                 notify(f"Spread Closed: Spread has come down to {spread * 100:.2f}%")
                 self.spread_alert_sent = False
 
 
-            for key in keys:
-                contribution[key] = contribution[key] / fair_value
+            # for key in keys:
+            #     contribution[key] = contribution[key] / fair_value
 
-            keys = sorted(keys, key=lambda x: contribution[x], reverse=True)
-            nice_pretty = ""
-            for key in keys:
-                nice_pretty += "{}: {:.2f}% | ".format(key, contribution[key] * 100)
-            nice_pretty = nice_pretty[:-3]
+            # keys = sorted(keys, key=lambda x: contribution[x], reverse=True)
+            # nice_pretty = ""
+            # for key in keys:
+            #     nice_pretty += "{}: {:.2f}% | ".format(key, contribution[key] * 100)
+            # nice_pretty = nice_pretty[:-3]
 
             plt.write(spread * 100)
 
-            print("FADX15 Fair Value: {:.2f}% | CHADX15 Value: {} | Spread: {:.2f}% | Spread Distribution: {}".format(
+            #  Spread Distribution: {}"
+            try:
+                subprocess.check_call(['clear'])
+            except subprocess.CalledProcessError:
+                pass
+            print("[{}] FADX15 Fair Value: {:.2f}% | CHADX15 Value: {}% | Spread: {:.2f}%".format(
+                datetime.datetime.now().strftime("%H:%M:%S"),
                 fair_value * 100,
                 self.tickers[self.index_etf]['changePercentage'],
                 spread * 100,
-                nice_pretty
+                # nice_pretty
             ))
 
 

@@ -56,7 +56,7 @@ class DomainCache:
     def get(self, key: str):
         try:
             val = self.cache.cache[self.domain][key]
-            logger.info(f"Cache hit for key: {key[:20]}... in domain: {self.domain}")
+            # logger.info(f"Cache hit for key: {key[:20]}... in domain: {self.domain}")
             return val
         except KeyError:
             raise NotKey(key)

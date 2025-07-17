@@ -1,4 +1,3 @@
-import enum
 import os
 import json
 import tqdm
@@ -11,8 +10,10 @@ import traceback
 import websocket
 import threading
 from utils3 import runAsThread
-from utils3.networking import Session as _RAW_SESSION
+from argus._argus_utils import Notification
 from argus.ib.fields import IBKRFields, SearchResult
+from utils3.networking import Session as _RAW_SESSION
+from argus.ib._shortable_shares_data import ShortableSharesData
 from argus.capital import DomainCache, transmit_mkt_data_with_protocol_2, CapitalComMKTDataLive
 
 
@@ -75,13 +76,16 @@ class IBKR_CapitalComMKTDataLive(CapitalComMKTDataLive):
         # print('Prior to inserting shortable_shares, data is:', data, 'length:', len(data))
 
         # Insert shortable_shares before the last two elements, that is before both timestamps (old capital.com and Python)
-        data.insert(len(data) - 1 - 2, str(self.shortable_shares))
+        data.insert(len(data) - 2, str(self.shortable_shares))
         bytes_packet = ",".join(data).encode('ascii')
         # print('After inserting shortable_shares, data is:', data, 'length:', len(data))
         return bytes_packet
 
 
 _IB_Cache = DomainCache('IBKR')
+_NOTIFICATION = Notification(
+    number=os.getenv("NOTIFICATION_NUMBER", None), active=True if os.getenv("NOTIFICATION_NUMBER", None) else False,
+)
 
 
 class IBError(Exception):
@@ -186,10 +190,16 @@ class IBNetworker:
         while True:
             time.sleep(60 * 2)  # Check every 4 minutes
             response = self.session.post(self.auth_stats['url'])
-            data = response.json()
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                _NOTIFICATION.notify(
+                    title='IBKR Authentication Check Failed',
+                    message=f'Failed to decode JSON response from {self.auth_stats["url"]}. Response: {response.text}'
+                )
             if data.get('authenticated', False):
                 self.authenticated = True
-                print("User is authenticated")
+                print("User is authenticated", 'Response:', data)
             else:
                 print("User is not authenticated")
                 print('Authentication check failed. Re-running setup messages...')
@@ -246,6 +256,8 @@ class IBNetworker:
     #     }
     #     response = self.session.get(self.urls['query_equities_contracts'], json=query)
     #     return response
+
+
 class IBWss:
     def __init__(self, cookie=os.getenv('IB_COOKIE')):
         if cookie is None:
@@ -282,7 +294,55 @@ class IBWss:
             unit='contract',
             unit_scale=True,
             unit_divisor=1,
+            dynamic_ncols=True,
         )
+        self._stream_lock = threading.Lock()
+        self._private_contracts = set() # DO NOT MODIFY
+
+        ######################################################################
+        #          This entire section below is only for statistics          #
+        ######################################################################
+
+        # Monitor how long it has been since the last market data callback
+        self._last_market_data_callback = time.time() - 60 * 60 * 24
+        self._sock_msgs = []
+        self._contracts_subscribed = set()  # Keep track of subscribed contracts
+        self.interactive_functions = {
+            'Time since last contract data': lambda: print(
+                'Time since last contract data: {:.4f} seconds'.format(time.time() - self._last_market_data_callback)),
+            'Total WebSocket messages received': lambda: print(f'Total WebSocket messages received: {self.recv}'),
+            'Write all WebSocket messages to a file': lambda: self._write_sock_msgs_to_file(),
+            'Unique Contracts subscribed (lifetime)': lambda: print(len(self._contracts_subscribed)),
+        }
+
+    def _write_sock_msgs_to_file(self):
+        """Write all WebSocket messages to a file for debugging purposes."""
+        if not self._sock_msgs:
+            print("No WebSocket messages to write.")
+            return
+        with open('ibkr_websocket_messages.txt', 'w', encoding='utf-8') as f:
+            for msg in self._sock_msgs:
+                f.write(f"{msg}\n")
+        print(f"Wrote {len(self._sock_msgs)} WebSocket messages to ibkr_websocket_messages.txt")
+
+    def interactive_mode(self):
+        while True:
+            print("\nInteractive Functions:")
+            for i, func in enumerate(self.interactive_functions.keys(), start=1):
+                print(f"{i}. {func}")
+            print("0. Exit")
+            choice = input("Select an option: ")
+            if choice == '0':
+                break
+            try:
+                choice = int(choice)
+                if 1 <= choice <= len(self.interactive_functions):
+                    func_name = list(self.interactive_functions.keys())[choice - 1]
+                    self.interactive_functions[func_name]()
+                else:
+                    print("Invalid choice. Please try again.")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
 
     # noinspection all
     def stream_market_data(self, contract_id, callback,
@@ -291,32 +351,50 @@ class IBWss:
                                    IBKRFields.SYMBOL)):
         """
         Stream market data for a given contract ID.
+        
+        Args:
+            contract_id: The contract ID to stream market data for.
+            callback: The callback function to call when market data is received.
+            fields: The fields to stream.
         """
-        if self.subscribe_tally >= self._subscribe_tally_max:
-            raise ValueError(
-                f"Maximum number of subscriptions reached: {self._subscribe_tally_max}. "
-                "Please unsubscribe some contracts before subscribing to new ones."
-            )
-        self.subscribe_tally += 1
-        fields = {"fields": list(fields), "backout": True}
-        fields['fields'] = [str(field) for field in fields['fields']]
-        msg = f'smd+{contract_id}+{json.dumps(fields)}'
-        self.contract_callbacks[contract_id] = callback
-        self.ws.send(msg)
-        self._load_progress.update(1)
+        with self._stream_lock:
+            if self.subscribe_tally >= self._subscribe_tally_max:
+                raise ValueError(
+                    f"Maximum number of subscriptions reached: {self._subscribe_tally_max}. "
+                    "Please unsubscribe some contracts before subscribing to new ones."
+                )
+            self._contracts_subscribed.add(contract_id)
+            if not contract_id in self._private_contracts:
+                self._private_contracts.add(contract_id)
+                self.subscribe_tally += 1
+
+            fields = {"fields": list(fields), "backout": True}
+            fields['fields'] = [str(field) for field in fields['fields']]
+            msg = f'smd+{contract_id}+{json.dumps(fields)}'
+            self.contract_callbacks[contract_id] = callback
+            self.ws.send(msg)
+            self._load_progress.update(1)
+
 
     def unsubscribe_market_data(self, contract_id):
         """
         Unsubscribe from market data for a given contract ID.
+        
+        Args:
+            contract_id: The contract ID to unsubscribe from.
         """
-        if contract_id in self.contract_callbacks:
-            del self.contract_callbacks[contract_id]
-        msg = f'umd+{contract_id}' + '{}'
-        self.ws.send(msg)
-        self.subscribe_tally -= 1
-        self._load_progress.update(-1)
-        # force printing the progress bar
-        self._load_progress.refresh()
+        with self._stream_lock:
+            if contract_id in self.contract_callbacks:
+                del self.contract_callbacks[contract_id]
+            if contract_id in self._private_contracts:
+                self._private_contracts.remove(contract_id)
+                self.subscribe_tally -= 1
+                self._load_progress.update(-1)
+                self._load_progress.refresh()
+            msg = f'umd+{contract_id}' + '{}'
+            self.ws.send(msg)
+
+
 
     @runAsThread
     def _heartbeat(self):
@@ -328,11 +406,23 @@ class IBWss:
     def on_message(self, ws, message):
         """Handle incoming messages from the WebSocket"""
         _ = ws, message
+        self._sock_msgs.append(message)
         try:
             message = json.loads(message)
             topic = message.get('topic')
             if 'smd' in topic:
                 self.handle_market_data(message)
+            else:
+                if topic == 'system' and message.get('hb', False):
+                    return  # Heartbeat message, do nothing
+                elif topic == 'system' and message.get('success', False):
+                    self.recv = 1
+                    print('[IMPORTANT] Successfully connected to IBKR WebSocket as {}'.format(message.get('success')))
+
+                _NOTIFICATION.notify(
+                    title='IBKR WebSocket Message',
+                    message=f'Received message on topic {topic}: {message}'
+                )
         except json.JSONDecodeError:
             print("Message:", message, datetime.datetime.now())
 
@@ -349,6 +439,10 @@ class IBWss:
         """Handle WebSocket connection open event"""
         _ = ws
         print("WebSocket connection opened")
+        _NOTIFICATION.notify(
+            title='IBKR WebSocket Connected',
+            message='The IBKR WebSocket connection has been established successfully.'
+        )
 
     @staticmethod
     def on_close(ws, *args):
@@ -356,10 +450,15 @@ class IBWss:
         _ = ws
         _ = args
         print("WebSocket connection closed")
+        _NOTIFICATION.notify(
+            title='IBKR WebSocket Disconnected',
+            message='The IBKR WebSocket connection has been closed.'
+        )
 
     def handle_market_data(self, message):
         """Handle market data messages"""
-        conidEx = message['conidEx']
+        self._last_market_data_callback = time.time()
+        conidEx = message.get('conidEx', None)
         conid = message['conid']
         topic = message['topic']
         server_id = message['server_id']
@@ -381,14 +480,27 @@ class IBWss:
 
 
 class MKTDispatcher:
-    def __init__(self, timeout=60, mode="ASK", dryRun=False, force_clear_on_fill=True):
+    def __init__(self, timeout=60, mode="ASK", dryRun=False):
+        """
+        Initialize the MKTDispatcher.
+
+        Args:
+            timeout (int): Maximum time in seconds to wait for IBKR authentication.
+            mode (str): Data transmission mode. Options include "ASK", "ASK+BID+LAST", "FULL_PKL", "FULL_JSON", "PROTOCOL_2".
+            dryRun (bool): If True, do not start the WebSocket or client listener.
+
+        Sets up a TCP server socket for client connections, initializes the IBKR WebSocket connection,
+        manages client subscriptions, and starts background threads for client and connection management.
+        """
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('localhost', 9972))
         self.clients = []
         self.con_id_to_client = {}
-        self._force_clear_on_fill = force_clear_on_fill
         if not dryRun:
             self.ws = IBWss()
+            self.ws.interactive_functions[
+                'Modify dispatcher configurations interactively'] = self._modify_configs_interactive
             self.ws.on_close = self._on_close
             self._open_ib_wss()
             x = 0
@@ -406,11 +518,47 @@ class MKTDispatcher:
         self.mode = mode
         self.caches = {}
         self.cache_values = [IBKRFields.SYMBOL, IBKRFields.LAST_PRICE, IBKRFields.SHORTABLE_SHARES]
+        self.shortable_shares_data = ShortableSharesData()
         self._check_clients_live()
         self._thread_lock = threading.Lock()
+        self._configs = {
+            'Print data packets': False,
+            'Use TQDM Progress bar for subscription checking': False,
+            'Use TQDM Progress bar for subscription current load': True,
+            'Show search results from quick_add': False,
+        }
+
         print('[IMPORTANT] MODE = {}'.format(self.mode))
 
-    def _on_close(self, ws, *args):
+    def _modify_configs_interactive(self):
+        """Modify the dispatcher configurations interactively."""
+        print("Current configurations:")
+        for key, value in self._configs.items():
+            print(f"{key}: {value}")
+        print("Enter the configuration you want to modify (or 'exit' to quit):")
+        while True:
+            choice = input("Configuration: ").strip()
+            if choice.lower() == 'exit':
+                break
+            if choice in self._configs:
+                new_value = input(f"Enter new value for {choice} (current: {self._configs[choice]}): ")
+                if new_value.lower() == 'true':
+                    self._configs[choice] = True
+                elif new_value.lower() == 'false':
+                    self._configs[choice] = False
+                else:
+                    self._configs[choice] = new_value
+                print(f"Updated {choice} to {self._configs[choice]}")
+            else:
+                print(f"Invalid configuration: {choice}")
+
+    @staticmethod
+    def _on_close(ws, *args):
+        _NOTIFICATION.notify(
+            title='IBKR WebSocket Disconnected',
+            message='The IBKR WebSocket connection has been closed.'
+        )
+        _ = ws, args
         raise Exception("Connection closed")
 
     @runAsThread
@@ -429,9 +577,10 @@ class MKTDispatcher:
             raise ValueError(f"No contract found for symbol: {symbol}")
 
         conid = int(top_hit.conid)
-        print('Top hit for search {} is {}'.format(symbol, top_hit.companyHeader))
+        if self._configs['Show search results from quick_add']:
+            print('Top hit for search {} is {}'.format(symbol, top_hit.companyHeader))
         if conid in self.con_id_to_client:
-            print(f"Already streaming market data for contract ID {conid}. Adding client to existing stream.")
+            # print(f"Already streaming market data for contract ID {conid}. Adding client to existing stream.")
             self.con_id_to_client[conid].append(client)
             return
         try:
@@ -440,11 +589,29 @@ class MKTDispatcher:
             self._force_check_clients_live(one_alloc=True)
             self.ws.stream_market_data(conid, self.callback)
 
+        shortable_shares_num = self.shortable_shares_data.get_shortable_shares(top_hit.symbol)
 
         try:
             self.con_id_to_client[conid].append(client)
         except KeyError:
             self.con_id_to_client[conid] = [client]
+
+        # Force update the cache with the shortable shares by sending MarketData with the shortable shares
+        # IBKR will never send the shortable shares in the market data stream, so we need to do it manually.
+        self._update_cache(
+            MarketData(
+                contract_id=top_hit.conid,
+                server_id=None,
+                contract_exchange=None,
+                topic='smd',
+                data={
+                    IBKRFields.SHORTABLE_SHARES: shortable_shares_num,
+                    str(IBKRFields.SHORTABLE_SHARES): shortable_shares_num
+                },
+            ), ib_fields=[IBKRFields.SHORTABLE_SHARES]
+        )
+
+
 
     @runAsThread
     def _listen_to_client(self, client: socket.socket):
@@ -455,7 +622,8 @@ class MKTDispatcher:
                     break
                 if 'add' in data:
                     search_term = data.split('=')[1].strip()
-                    print(f"Adding contract {search_term} to stream")
+                    if self._configs['Show search results from quick_add']:
+                        print(f"Adding contract {search_term} to stream")
                     self._quick_add(search_term, client)
 
 
@@ -505,16 +673,12 @@ class MKTDispatcher:
         if data.contract_id not in self.caches:
             self.caches[data.contract_id] = {}
 
-        # print("[LOG]", f'Updating cache for contract ID {data.contract_id} with fields {ib_fields}')
-
         for field in ib_fields:
             value = data.get(field, None, strip_commas=False, string_values=False)
-            # print("[LOG]", f'Field {field} has value {value}')
-            if value is not None and value != 'None':
-                # print('SETTING CACHE', data.contract_id, field, value, 'INSTANCE:', type(value))
+            if value is not None and value != 'None' and value != 0.0 and value != '0.0':
+                # print(f'Updating cache for field {data.contract_id}:', field, 'with value:', value, 'old value:', self.caches[data.contract_id])
                 self.caches[data.contract_id][field] = value
             else:
-                # If the value is None, do not update the cache for that field
                 continue
 
     @runAsThread
@@ -523,8 +687,13 @@ class MKTDispatcher:
         remove them from the con_id_to_client mapping and unsubscribe from the contract ID if no clients are left."""
         while True:
             time.sleep(5)
-            logging.info("Checking for stale subscriptions...")
-            self._force_check_clients_live()
+            # logging.info("Checking for stale subscriptions...")
+            try:
+                self._force_check_clients_live()
+            except Exception as e:
+                print('Unable to check clients live')
+                traceback.print_exc()
+                _ = e
 
     def _force_check_clients_live(self, one_alloc=False):
         """
@@ -536,9 +705,16 @@ class MKTDispatcher:
         with self._thread_lock:
             x = self.con_id_to_client
             remove_keys = []
+
+            if x.items() == 0:
+                return
+
             if not one_alloc:
-                iterator = tqdm.tqdm(x.items(), desc="Checking subscriptions",
-                                     unit="contract")
+                if self._configs['Use TQDM Progress bar for subscription checking']:
+                    iterator = tqdm.tqdm(x.items(), desc="Checking subscriptions",
+                                         unit="contract")
+                else:
+                    iterator = x.items()
             else:
                 iterator = x.items()
 
@@ -550,13 +726,13 @@ class MKTDispatcher:
                     try:
                         client.sendall(b'$')  # Send a simple character to check if the client is still connected
                     except (OSError, ConnectionResetError):
-                        logging.warning(f"Client for {contract_id} disconnected. Removing from subscription.")
+                        # logging.warning(f"Client for {contract_id} disconnected. Removing from subscription.")
                         try:
                             self.con_id_to_client[contract_id].remove(client)
                         except ValueError:
                             pass
                         if not self.con_id_to_client[contract_id]:
-                            logging.info(f"No clients left for contract ID {contract_id}. Unsubscribing.")
+                            # logging.info(f"No clients left for contract ID {contract_id}. Unsubscribing.")
                             self.ws.unsubscribe_market_data(contract_id)
                             remove_keys.append(contract_id)
                             if one_alloc:
@@ -584,10 +760,10 @@ class MKTDispatcher:
         data = self._stuff_from_cache(data)
 
         if not clients:
-            print(f"No clients for contract ID {data.contract_id}")
+            # print(f"No clients for contract ID {data.contract_id}")
             # stop streaming if no clients are connected
             self.ws.unsubscribe_market_data(data.contract_id)
-            print(f"Unsubscribed from contract ID {data.contract_id} as no clients are connected.")
+            # print(f"Unsubscribed from contract ID {data.contract_id} as no clients are connected.")
             return
 
         for client in clients:
@@ -606,7 +782,7 @@ class MKTDispatcher:
                 elif self.mode == "PROTOCOL_2":
                     # Convert to IBKR_CapitalComMKTDataLive and send with protocol 2
                     ibkr_data = IBKR_CapitalComMKTDataLive(
-                        shortable_shares=data.get(IBKRFields.SHORTABLE_SHARES, 0.0),
+                        shortable_shares=data.get(IBKRFields.SHORTABLE_SHARES, default=0.0),
                         symbol=data.get(IBKRFields.SYMBOL, default='None'),
                         bid=data.get(IBKRFields.BID_PRICE, default=0.0),
                         bid_size=data.get(IBKRFields.BID_SIZE, default=0),
@@ -616,15 +792,15 @@ class MKTDispatcher:
                         last_size=0.0,  # Not available for now
                     )
                     final_packet = transmit_mkt_data_with_protocol_2(ibkr_data)
-                    # print(f"{client.getpeername()}: {final_packet}")
+                    if self._configs['Print data packets']:
+                        print(f"{client.getpeername()}: {final_packet}")
                     client.sendall(final_packet)
 
 
             except (Exception, OSError) as e:
-                print(f"Error sending data to client: {e}")
+                # print(f"Error sending data to client: {e}")
                 if not isinstance(e, OSError):
                     traceback.print_exc()
-
 
                 try:
                     self.clients.remove(client)
@@ -638,9 +814,9 @@ class MKTDispatcher:
                     except ValueError:
                         pass
                     if not self.con_id_to_client[data.contract_id]:
-                        print(f"Removing contract ID {data.contract_id} from con_id_to_client as no clients are left.")
+                        # print(f"Removing contract ID {data.contract_id} from con_id_to_client as no clients are left.")
                         del self.con_id_to_client[data.contract_id]
-                        print(f"Unsubscribing from contract ID {data.contract_id} as no clients are left.")
+                        # print(f"Unsubscribing from contract ID {data.contract_id} as no clients are left.")
                         self.ws.unsubscribe_market_data(data.contract_id)
 
 
@@ -649,7 +825,7 @@ if __name__ == '__main__':
         print('Running IBKR Reversed... Starting MKTDispatcher...')
         try:
             dispatcher = MKTDispatcher(mode=IBKRModes.PROTOCOL_2)
-            _ = dispatcher
+            dispatcher.ws.interactive_mode()
         except AuthenticationTimeout:
             print('Authentication timed out. Attempting to fetch new credentials...')
             from argus.ib.set_auth import update_cookies

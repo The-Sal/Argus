@@ -1,8 +1,21 @@
 import random
-import socket
-import time
 import unittest
 from argus.ib import MKTDispatcher, IBKRModes, MarketData, IBKRFields
+
+def _empty_mock_socket():
+    """Create a mock socket that does nothing."""
+    class MockSocket:
+        def __getattr__(self, name):
+            if name == 'recv':
+                return lambda bufsize: b''
+            elif name == 'sendall':
+                return lambda data: None
+            elif name == 'close':
+                return lambda: None
+            else:
+                raise AttributeError(f"MockSocket has no attribute '{name}'")
+
+    return MockSocket()
 
 class IBKR_Test(unittest.TestCase):
     def setUp(self):
@@ -12,16 +25,23 @@ class IBKR_Test(unittest.TestCase):
 
 
     def test_stuffing_system(self):
+        mock_socket = _empty_mock_socket()
         dispatcher = self.dispatcher_dry
+        # Define contract_id as a variable instead of using magic number
+        contract_id = 123456
+        
+        # Add mock_socket to the dispatcher's con_id_to_client dictionary
+        dispatcher.con_id_to_client[contract_id] = [mock_socket]
+        
         # Test the stuffing system
         unique_value_one = random.randint(1, 100)
         unique_value_two = random.randint(1, 100)
         data_objs = [
             MarketData(
-                contract_id=123456,
+                contract_id=contract_id,
                 server_id=1,
                 contract_exchange='NASDAQ',
-                topic='smd+123456',
+                topic=f'smd+{contract_id}',
                 data={
                     str(IBKRFields.SYMBOL): 'AAPL',
                     str(IBKRFields.LAST_PRICE): '150.00',
@@ -33,10 +53,10 @@ class IBKR_Test(unittest.TestCase):
                 },
             ),
             MarketData(
-                contract_id=123456,
+                contract_id=contract_id,
                 server_id=1,
                 contract_exchange='NASDAQ',
-                topic='smd+123456',
+                topic=f'smd+{contract_id}',
                 data={
                     str(IBKRFields.LAST_PRICE): '151.00',
                     str(IBKRFields.ASK_PRICE): '151.00',
@@ -51,10 +71,10 @@ class IBKR_Test(unittest.TestCase):
             dispatcher.callback(data)
 
         empty_mkt_data = MarketData(
-            contract_id=123456,
+            contract_id=contract_id,
             server_id=1,
             contract_exchange='NASDAQ',
-            topic='smd+123456',
+            topic=f'smd+{contract_id}',
             data={
                 str(IBKRFields.SYMBOL): 'AAPL',
             }

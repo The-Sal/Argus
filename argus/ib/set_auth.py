@@ -1,23 +1,23 @@
 import os
 import time
-import selenium
 from dotenv import load_dotenv
+from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from selenium import webdriver
 
 
 load_dotenv()
 def get_auth():
     url = 'https://www.interactivebrokers.co.uk/portal/?action=ACCT_MGMT_MAIN&loginType=1&clt=0&locale=en_US&RL=1#/dashboard'
     ops = Options()
-    ops.add_argument('--headless')
+    # ops.add_argument('--headless')
     driver = webdriver.Chrome(options=ops)
     driver.get(url)
 
+    live_paper_toggle_css = 'label'
 
     try:
         # wait for site to load
@@ -27,8 +27,7 @@ def get_auth():
     except Exception as e:
         e.__str__()
         print("Warning: Site may not have loaded properly. Continuing anyway...")
-
-    for _ in range(10):
+    for _ in range(5):
         try:
             # accept cookies
             accept_cookies_button = driver.find_element(By.CSS_SELECTOR, '#btn_accept_cookies')
@@ -38,12 +37,26 @@ def get_auth():
             e.__str__()
             time.sleep(1)
 
+    if os.environ.get('PAPER_ACCOUNT', '0') == '1':
+        try:
+            # wait for live/paper toggle to be present
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, live_paper_toggle_css))
+            )
+            # click the live/paper toggle
+            live_paper_toggle = driver.find_element(By.CSS_SELECTOR, live_paper_toggle_css)
+            live_paper_toggle.click()
+        except Exception as e:
+            e.__str__()
+            print("Warning: Live/Paper toggle not found. Continuing with default account type...")
+
+
     # get the active element
     time.sleep(1)
-    active_element = driver.switch_to.active_element
+    username_element = driver.find_element(By.CSS_SELECTOR, '#xyz-field-username')
     uname = os.environ['USERNAME']
     password = os.environ['PASSWORD']
-    active_element.send_keys(uname)
+    username_element.send_keys(uname)
     pass_element = driver.find_element(By.CSS_SELECTOR, '#xyz-field-password')
     pass_element.send_keys(password)
     time.sleep(1)
@@ -51,9 +64,10 @@ def get_auth():
     pass_element.send_keys(Keys.RETURN)
 
     destination_url = 'https://www.interactivebrokers.co.uk/portal/?loginType=1&action=ACCT_MGMT_MAIN&clt=0#/dashboard'
+    destination_url_2 = 'https://www.interactivebrokers.co.uk/portal/?loginType=2&action=ACCT_MGMT_MAIN&clt=0#/dashboard'
     takes = 0
     MAX_TAKES = 60
-    while driver.current_url != destination_url:
+    while (driver.current_url != destination_url) and (driver.current_url != destination_url_2):
         time.sleep(1)
         print(f"Waiting for login to complete... {takes}/{MAX_TAKES}")
         takes += 1
@@ -90,7 +104,7 @@ def update_cookies(write_env=True):
         with open('.env', 'w') as f:
             for line in lines:
                 if line.startswith('IB_COOKIE'):
-                    f.write(f'IB_COOKIE={cookie_env}\n')
+                    f.write(f'IB_COOKIE=\'{cookie_env}\' \n')
                 else:
                     f.write(line)
     else:
