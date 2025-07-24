@@ -175,9 +175,9 @@ class MKTDispatcher(SvrExport):
     """Market Data Dispatcher for Capital.com API."""
 
     def __init__(self, path='/tmp/argus_capital.sock',
-                 api_key=os.environ['CAPITAL_DOTCOM_API_KEY'],
-                 api_password=os.environ['CAPITAL_DOT_CUSTOM_PW'],
-                 identifier=os.environ['CAPITAL_DOTCOM_IDENTIFIER'], environment=Environment.DEMO):
+                 api_key=os.environ.get("CAPITAL_DOTCOM_API_KEY", None),
+                 api_password=os.environ.get("CAPITAL_DOT_CUSTOM_PW", None),
+                 identifier=os.environ.get("CAPITAL_DOTCOM_IDENTIFIER", None), environment=Environment.DEMO):
         """Initializes the Market Data Dispatcher with API credentials and environment."""
         super().__init__(path=path)
         self.api = CapitalComAPI(

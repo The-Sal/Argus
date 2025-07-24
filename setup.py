@@ -3,7 +3,7 @@ from setuptools import find_packages
 
 setup(
     name='Argus',
-    version='0.0.1',
+    version='0.0.3',
     packages=find_packages(),
     url='',
     license='',

@@ -1,3 +1,5 @@
 .idea
 .env
 building
+.venv_old
+.venv
