@@ -14,8 +14,7 @@ class FADX15FairValue:
         self.fadx15_cache = None
         self.chadx15_cache = None
 
-        self.fadxDataProvider = Ticker(self.fadx_15_callback, "ADX:FADX15", verbose=True,
-                                       auth_token=os.environ['TOKEN'])
+        self.fadxDataProvider = Ticker(self.fadx_15_callback, "ADX:FADX15")
         self.chadxDataProvider = QuoteSession("ADX:CHADX15", self.chadx_15_callback)
         self.fadxDataProvider.start()
 
@@ -26,10 +25,10 @@ class FADX15FairValue:
 
     def fadx_15_callback(self, symbol, data):
         _ = symbol
-        self.fadx15_cache = MarketData(last_price=symbol['price'], change_percentage=symbol['changePercentage'])
+        print(datetime.now(), f"FADX15:", data)
 
     def chadx_15_callback(self, data: MarketData):
-        print(datetime.now(), f"CHADX15: {data.last_price}, Change: {data.change_percentage}")
+        print(datetime.now(), f"CHADX15:", data)
         self.chadx15_cache = data
 
 

@@ -7,4 +7,5 @@ The following sources are available through Argus:
 - Nasdaq: Historical data for stocks and ETFs.
 """
 from argus.ib import *
-from argus.tv import ChartSession, QuoteSession, multisymbol
+from argus.capital import *
+from argus.tv import ChartSession, QuoteSession, multisymbol, MarketData

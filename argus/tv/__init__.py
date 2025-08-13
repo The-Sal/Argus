@@ -24,6 +24,16 @@ class MarketData:
         self.ask_price = ask_price
         self.ask_size = ask_size
 
+    def __repr__(self):
+        return (f"MarketData(last_price={self.last_price}, "
+                f"bid_price={self.bid_price}, bid_size={self.bid_size}, "
+                f"ask_price={self.ask_price}, ask_size={self.ask_size}, "
+                f"change_percentage={self.change_percentage}, change_value={self.change_value})")
+
+    def __getitem__(self, item):
+        """Allow attribute access via dictionary-like syntax"""
+        return getattr(self, item, None)
+
 def force_print_traceback(func):
     """force a traceback to be printed"""
 

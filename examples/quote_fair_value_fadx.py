@@ -1,15 +1,27 @@
+import enum
 import os
 import time
 import datetime
 import subprocess
-from utils3.plot import SimplePlotWriter
 from utils3 import runAsThread
 from dotenv import load_dotenv
+from ic_audit import AuditNotifier
+from utils3.plot import SimplePlotWriter
 from argus.tv.multisymbol import Ticker
-
+from argus import QuoteSession, MarketData
 
 load_dotenv()
 plt = SimplePlotWriter("/Users/Salman/Library/Containers/SVO-Productions.plotview/Data/tmp/plot.plt")
+
+
+an = AuditNotifier(
+    project_name='ADX Arbitrage Fair Value Calculator',
+    project_market='ADX Market',
+    can_execute_trades=False,
+    monitoring_only=True,
+    notify_user=True
+)
+
 
 chadx15_weights = {
     "IHC": 33.72,
@@ -28,6 +40,7 @@ chadx15_weights = {
     "NMDC": 1.01,
 }
 
+
 def notify(message):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     full_message = f"[{timestamp}] {message}"
@@ -37,6 +50,15 @@ def notify(message):
         full_message,
         '+971506940015'
     ])
+
+
+class NotificationSentType(enum.Enum):
+    ACTIONABLE_LONG = "actionable_long"
+    ACTIONABLE_SHORT = "actionable_short"
+    NOT_ACTIONABLE = "not_actionable"
+    CLOSED_SPREAD = "closed_spread"
+    NO_MSG = "no_msg"
+
 
 class FADX15FairValue:
     def __init__(self):
@@ -52,14 +74,37 @@ class FADX15FairValue:
         except KeyError:
             raise ValueError("Please set the TOKEN environment variable.")
 
-        self.tick = Ticker(self.callback, request_ids, verbose=False, auth_token=token, save=True, database_name="ADX_data")
+        # auth_token=token,
+        self.tick = Ticker(self.callback, request_ids, verbose=False,
+                           save=True, database_name="ADX_data")
+
+        self.chadx15Session = QuoteSession("ADX:CHADX15", self._chadx15_callback)
+        self.chadx15LatestBidAsk = None
+
+        runAsThread(self.chadx15Session.ws.run_forever)()
         self.tick.start()
         self.history = []
         self.logFeed = True
         self.spread_alert_sent = False
+        self._last_notification = NotificationSentType.NO_MSG
 
         print('Total Weights: {}%'.format(sum(chadx15_weights.values())))
         self.calculate_fair_value()
+
+    def _chadx15_callback(self, data: MarketData):
+        if self.logFeed:
+            print(datetime.datetime.now(), f'CHADX15 data received: {data} for bid/ask')
+
+        # merge the last bid/ask and the new one so since the updates are only delta updates
+        if self.chadx15LatestBidAsk is None:
+            self.chadx15LatestBidAsk = data
+        else:
+            for key, value in data.__dict__.items():
+                if value is not None:
+                    print('Updating CHADX15 Latest Bid/Ask:', key, value)
+                    setattr(self.chadx15LatestBidAsk, key, value)
+
+            print('Current object:', self.chadx15LatestBidAsk)
 
     def callback(self, symbol, data):
         if self.logFeed:
@@ -70,10 +115,10 @@ class FADX15FairValue:
     @runAsThread
     def calculate_fair_value(self):
         while True:
-            time.sleep(1)
+            time.sleep(0.5)
             contribution = {}
 
-            if len(self.tickers.items()) < len(chadx15_weights)+1:
+            if len(self.tickers.items()) < len(chadx15_weights) + 1:
                 print('Missing: {}'.format(
                     [key for key in chadx15_weights.keys() if f"ADX:{key}" not in self.tickers.keys()]
                 ))
@@ -95,11 +140,36 @@ class FADX15FairValue:
             values = list(contribution.values())
             fair_value = sum(values)
 
+            etf_bid_change_pct = None
+            etf_ask_change_pct = None
+            etf_bid_spread = None
+            etf_ask_spread = None
+
             try:
                 etf_value = float(self.tickers[self.index_etf]['changePercentage']) / 100
+                # calculate the new changePercentage had we executed the bid or the ask
+                etf_price = float(self.tickers[self.index_etf]['price'])
+                # based on the current price and % return calculate the original opening price
+                etf_open_price = etf_price / (1 + etf_value)
+                # calculate the % change it would be from the opening price to the bid/ask price
+                if self.chadx15LatestBidAsk is not None:
+                    try:
+                        etf_bid_price = float(self.chadx15LatestBidAsk.bid_price)
+                        etf_ask_price = float(self.chadx15LatestBidAsk.ask_price)
+                        etf_bid_change_pct = (etf_bid_price / etf_open_price) - 1
+                        etf_ask_change_pct = (etf_ask_price / etf_open_price) - 1
+
+                        # Calculate the % difference between the bid/ask
+                        # (if executed as a %change from the opening price) and the current ETF return %
+                        etf_bid_spread = etf_bid_change_pct - etf_value
+                        etf_ask_spread = etf_ask_change_pct - etf_value
+                    except TypeError:
+                        print("CHADX15 Latest Bid/Ask data is incomplete or not available.")
+                        continue
+
             except KeyError:
                 print("ETF value not found")
-                return
+                continue
 
             spread = abs(fair_value - etf_value)
             # Send notification logic
@@ -112,35 +182,46 @@ class FADX15FairValue:
                 else:
                     msg += " (ETF is underpriced)"
 
+                if any([etf_bid_change_pct, etf_ask_change_pct]) is None:
+                    self.spread_alert_sent = False
+                    msg += "\nNo ETF Bid/Ask Change Percentage available."
+                else:
+                    if fair_value > etf_ask_change_pct:
+                        msg += ("\n✅Actionable Long Opportunity: Fair Value is higher than ETF Ask Change Percentage. "
+                                f"({fair_value * 100:.2f}% > {etf_ask_change_pct * 100:.2f}%)")
+                        msg += "\nExpected Profit: {:.2f}%".format(
+                            (fair_value - etf_ask_change_pct) * 100)
+                    elif fair_value < etf_bid_change_pct:
+                        msg += ("\n✅Actionable Short Opportunity: Fair Value is lower than ETF Bid Change Percentage. "
+                                f"({fair_value * 100:.2f}% < {etf_bid_change_pct * 100:.2f}%)")
+                        msg += "\nExpected Profit: {:.2f}%".format(
+                            (etf_bid_change_pct - fair_value) * 100)
+
+
                 notify(msg)
+
 
             elif self.spread_alert_sent and spread <= 0.003:
                 notify(f"Spread Closed: Spread has come down to {spread * 100:.2f}%")
                 self.spread_alert_sent = False
 
-
-            # for key in keys:
-            #     contribution[key] = contribution[key] / fair_value
-
-            # keys = sorted(keys, key=lambda x: contribution[x], reverse=True)
-            # nice_pretty = ""
-            # for key in keys:
-            #     nice_pretty += "{}: {:.2f}% | ".format(key, contribution[key] * 100)
-            # nice_pretty = nice_pretty[:-3]
-
             plt.write(spread * 100)
 
-            #  Spread Distribution: {}"
             try:
                 subprocess.check_call(['clear'])
             except subprocess.CalledProcessError:
                 pass
-            print("[{}] FADX15 Fair Value: {:.2f}% | CHADX15 Value: {}% | Spread: {:.2f}%".format(
+
+            print("[{}] FADX15 Fair Value: {:.2f}% | CHADX15 Value: {}% | Spread: {:.2f}% | Bid Spread: {}% "
+                  "| Ask Spread: {}% | ETF Bid Change: {}% | ETF Ask Change: {}%".format(
                 datetime.datetime.now().strftime("%H:%M:%S"),
                 fair_value * 100,
                 self.tickers[self.index_etf]['changePercentage'],
                 spread * 100,
-                # nice_pretty
+                f"{etf_bid_spread * 100:.2f}" if etf_bid_spread is not None else "N/A",
+                f"{etf_ask_spread * 100:.2f}" if etf_ask_spread is not None else "N/A",
+                f"{etf_bid_change_pct * 100:.2f}" if etf_bid_change_pct is not None else "N/A",
+                f"{etf_ask_change_pct * 100:.2f}" if etf_ask_change_pct is not None else "N/A",
             ))
 
 

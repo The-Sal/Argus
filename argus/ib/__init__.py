@@ -297,7 +297,7 @@ class IBWss:
             dynamic_ncols=True,
         )
         self._stream_lock = threading.Lock()
-        self._private_contracts = set() # DO NOT MODIFY
+        self._private_contracts = set()  # DO NOT MODIFY
 
         ######################################################################
         #          This entire section below is only for statistics          #
@@ -375,7 +375,6 @@ class IBWss:
             self.ws.send(msg)
             self._load_progress.update(1)
 
-
     def unsubscribe_market_data(self, contract_id):
         """
         Unsubscribe from market data for a given contract ID.
@@ -393,8 +392,6 @@ class IBWss:
                 self._load_progress.refresh()
             msg = f'umd+{contract_id}' + '{}'
             self.ws.send(msg)
-
-
 
     @runAsThread
     def _heartbeat(self):
@@ -565,7 +562,7 @@ class MKTDispatcher:
     def _open_ib_wss(self):
         self.ws.ws.run_forever()
 
-    def _quick_add(self, symbol, client):
+    def _quick_add(self, symbol, client, _retry=True):
         hits = self.ws.networker.search_contract(symbol)
         top_hit = None
         for hit in hits:
@@ -587,7 +584,9 @@ class MKTDispatcher:
             self.ws.stream_market_data(conid, self.callback)
         except ValueError:
             self._force_check_clients_live(one_alloc=True)
-            self.ws.stream_market_data(conid, self.callback)
+            # self.ws.stream_market_data(conid, self.callback)
+            # self._quick_add(symbol, client, _retry=False)
+            raise
 
         shortable_shares_num = self.shortable_shares_data.get_shortable_shares(top_hit.symbol)
 
@@ -610,8 +609,6 @@ class MKTDispatcher:
                 },
             ), ib_fields=[IBKRFields.SHORTABLE_SHARES]
         )
-
-
 
     @runAsThread
     def _listen_to_client(self, client: socket.socket):
@@ -653,6 +650,7 @@ class MKTDispatcher:
             # print("[LOG]", f'No cached values for contract ID {data.contract_id}')
             return data
 
+        # noinspection all
         for field in ib_fields:
             current_value = data.get(field, None, strip_commas=False, string_values=False)
             # print("[LOG]", f'Current value for field {field}: {current_value}', type(current_value))
@@ -660,6 +658,7 @@ class MKTDispatcher:
                 # If the current value is None, use the last cached value
                 cached_value = last_cached.get(field, None)
                 # print("[LOG]", f'Using cached value for field {field}: {cached_value}')
+                # noinspection all
                 if cached_value is not None and cached_value != 'None':
                     data.data[str(field)] = cached_value
                     # print("[LOG]", f'SETTING cached value for field {field}: {cached_value}')

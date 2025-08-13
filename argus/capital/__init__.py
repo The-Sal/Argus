@@ -75,7 +75,7 @@ class CapitalComMKTDataLive:
             'python_timestamp': time.time(),
         }
 
-    def transferable_2(self, encode: bool = True) -> bytes or list[str]:
+    def transferable_2(self, encode: bool = True) -> bytes | list[str]:
         """Returns a dictionary representation of the market data for transfer. When encode is FALSE
         it returns a list of strings instead of a bytes."""
         data = [
