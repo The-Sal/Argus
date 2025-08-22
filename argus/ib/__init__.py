@@ -10,119 +10,16 @@ import traceback
 import websocket
 import threading
 from utils3 import runAsThread
-from argus._argus_utils import Notification
 from argus.ib.fields import IBKRFields, SearchResult
-from utils3.networking import Session as _RAW_SESSION
 from argus.ib._shortable_shares_data import ShortableSharesData
-from argus.capital import DomainCache, transmit_mkt_data_with_protocol_2, CapitalComMKTDataLive
-
-
-class LockedSession(_RAW_SESSION):
-    """A session that is locked to prevent concurrent access."""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.lock = threading.Lock()
-
-    def get(self, url, params=None, **kwargs):
-        with self.lock:
-            return super().get(url, params=params, **kwargs)
-
-    # noinspection all
-    def post(self, url, data=None, json=None, **kwargs):
-        with self.lock:
-            return super().post(url, data=data, json=json, **kwargs)
-
+from argus.capital import transmit_mkt_data_with_protocol_2
+from argus.ib._ib_utils import (LockedSession,
+                                IBKRModes, IBKR_CapitalComMKTDataLive,
+                                AuthenticationTimeout, MarketData, IBError,
+                                NOTIFICATION as _NOTIFICATION, IB_Cache as _IB_Cache, Account)
 
 # enable logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-
-class IBKRModes:
-    ASK = 'ASK'
-    ASK_BID_LAST = 'ASK+BID+LAST'
-    FULL_PKL = 'FULL_PKL'
-    FULL_JSON = 'FULL_JSON'
-    PROTOCOL_2 = 'PROTOCOL_2'
-
-
-class IBKR_CapitalComMKTDataLive(CapitalComMKTDataLive):
-    """This class is an extension of the CapitalComMKTDataLive class to support IBKR fields. Its only
-    purpose is to conform with the 'transmit_mkt_data_with_protocol_2' function.
-    NOTE: Given that this is an extended version of the CapitalComMKTDataLive class with additional
-    attributes the DECODER should be updated to handle the additional fields and orders from protocol 2."""
-
-    def __init__(self, shortable_shares, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.shortable_shares = shortable_shares
-
-    @classmethod
-    def from_capital_com(cls, shortable_shares, capital_com_data: CapitalComMKTDataLive):
-        """Create an instance from a CapitalComMKTDataLive object."""
-        return cls(
-            shortable_shares=shortable_shares,
-            symbol=capital_com_data.symbol,
-            bid=capital_com_data.bid,
-            bid_size=capital_com_data.bid_size,
-            ask=capital_com_data.ask,
-            ask_size=capital_com_data.ask_size,
-            last=capital_com_data.last,
-            last_size=capital_com_data.last_size
-        )
-
-    def transferable_2(self, **kwargs) -> bytes:
-        """This function is used to convert the object to a dictionary that can be used with the protocol 2."""
-        data: list[str] = super().transferable_2(encode=False)
-        # print('Prior to inserting shortable_shares, data is:', data, 'length:', len(data))
-
-        # Insert shortable_shares before the last two elements, that is before both timestamps (old capital.com and Python)
-        data.insert(len(data) - 2, str(self.shortable_shares))
-        bytes_packet = ",".join(data).encode('ascii')
-        # print('After inserting shortable_shares, data is:', data, 'length:', len(data))
-        return bytes_packet
-
-
-_IB_Cache = DomainCache('IBKR')
-_NOTIFICATION = Notification(
-    number=os.getenv("NOTIFICATION_NUMBER", None), active=True if os.getenv("NOTIFICATION_NUMBER", None) else False,
-)
-
-
-class IBError(Exception):
-    pass
-
-
-class AuthenticationTimeout(IBError):
-    pass
-
-
-class MarketData:
-    """User IBKRFields to query for market data"""
-
-    def __init__(self, contract_id, server_id, contract_exchange, topic, data):
-        self.contract_id = contract_id
-        self.server_id = server_id
-        self.contract_exchange = contract_exchange
-        self.topic = topic
-        self.data = data
-
-    def get(self, field: int, default=None, strip_commas=True, string_values=True):
-        a1 = self.data.get(str(field), default)
-        a2 = self.data.get(int(field), default)
-        # if a1 is not None:
-        #     return str(a1).replace(',', '') if strip_commas else a1
-        # else:
-        #     return str(a2).replace(',', '') if strip_commas else a2
-        final_value = a1 if a1 is not None else a2
-        if final_value is None:
-            return default
-
-        if strip_commas:
-            final_value = str(final_value).replace(',', '')
-        if string_values:
-            final_value = str(final_value)
-
-        return final_value
 
 
 class IBNetworker:
@@ -149,12 +46,15 @@ class IBNetworker:
                          "isET": True, "publish": True}
             }
         ]
-
         self.urls = {
             'search': 'https://www.interactivebrokers.co.uk/portal.proxy/v1/portal/iserver/secdef/search',
             'query_equities_contracts': 'https://www.interactivebrokers.co.uk/portal.proxy/v1/portal/iserver/trsrv/stocks',
-        }
 
+            'portfolio_accounts': 'https://api.ibkr.com/v1/api/portfolio/accounts',
+
+            'account_ledger': 'https://api.ibkr.com/v1/api/portfolio/{}/ledger',
+            'account_summary': 'https://api.ibkr.com/v1/api/portfolio/{}/summary',
+        }
         self.tickle = self.setup_msgs[0]
         self.auth_stats = self.setup_msgs[1]
         self.authenticated = False
@@ -162,7 +62,35 @@ class IBNetworker:
             'NYMEX'
         ]
 
-    @runAsThread
+        self._order_data = {}
+        self._trading_account_id = None
+
+    def set_trading_account_id(self, account_id):
+        if self._trading_account_id is not None:
+            raise RuntimeError('Changing trading account ID is not allowed. ')
+        self._trading_account_id = account_id
+        self.setup_trading_account_data()
+
+    def setup_trading_account_data(self):
+        logging.info(f"Setting up trading account data for account ID: {self._trading_account_id}")
+        account_ledger = self.session.get(self.urls['account_ledger'].format(self._trading_account_id)).json()
+        account_summary = self.session.get(self.urls['account_summary'].format(self._trading_account_id)).json()
+
+        logging.info(f"Account Ledger:\n{"*"*50}\n{account_ledger}\n{"*"*50}")
+        logging.info(f"Account Summary:\n{"*"*50}\n{account_summary}\n{"*"*50}")
+
+
+    def get_all_trading_accounts_ids(self):
+        response = self.session.get(self.urls['portfolio_accounts'])
+        try:
+            data = response.json()
+            return list(map(Account.from_dict, data))
+        except json.JSONDecodeError:
+            raise IBError(f"Failed to decode JSON response from {self.urls['portfolio_accounts']}. "
+                          f"Response: {response.text}")
+
+    # Note: run setup messages is blocking after which the rest is all on threads
+    # and will return the function immediately
     def initialize(self):
         self.run_setup_msgs()
         self._check_authentication()
@@ -240,23 +168,6 @@ class IBNetworker:
 
         return results
 
-    # TODO: Finish this function to query multiple equities contracts by their symbols.
-    # @_IB_Cache.cache_decorator('IBNetworker.query_equities_contracts')
-    # def query_equities_contracts(self, symbols: list[str]) -> list[SearchResult]:
-    #     """
-    #     Query multiple equities contracts by their symbols.
-    #     """
-    #     if not isinstance(symbols, list):
-    #         raise ValueError("Symbols must be a list of strings.")
-    #
-    #     results = []
-    #     csv = ','.join(symbols)
-    #     query = {
-    #         'symbols': csv,
-    #     }
-    #     response = self.session.get(self.urls['query_equities_contracts'], json=query)
-    #     return response
-
 
 class IBWss:
     def __init__(self, cookie=os.getenv('IB_COOKIE')):
@@ -277,6 +188,7 @@ class IBWss:
             on_close=self.on_close,
         )
         self.opened = False
+        self._ready = False
         self.stream_messages = [
             'sor+{}',
             'upl+{}'
@@ -396,9 +308,15 @@ class IBWss:
     @runAsThread
     def _heartbeat(self):
         """Send a heartbeat message to keep the connection alive"""
-        while self.opened:
-            self.ws.send("ech+hb")
-            time.sleep(10)
+        while True:
+            if self.opened:
+                self.ws.send("ech+hb")
+                time.sleep(10)
+            else:
+                logging.warning(
+                    "Attempted to send heartbeat before WebSocket was opened. Make websocket is opened first."
+                )
+                time.sleep(5)
 
     def on_message(self, ws, message):
         """Handle incoming messages from the WebSocket"""
@@ -430,6 +348,16 @@ class IBWss:
             self.networker.initialize()
             for msg in self.stream_messages:
                 self.ws.send(msg)
+
+            self._ready = True
+
+    def wait_till_read(self):
+        """Wait until the WebSocket is ready to receive messages"""
+        start_time = time.time()
+        while not self._ready:
+            time.sleep(1)
+            logging.info('Waiting for WebSocket to be ready.. Time elapsed: {:.2f} seconds'.format(time.time() - start_time))
+        return True
 
     @staticmethod
     def on_open(ws):
@@ -500,6 +428,7 @@ class MKTDispatcher:
                 'Modify dispatcher configurations interactively'] = self._modify_configs_interactive
             self.ws.on_close = self._on_close
             self._open_ib_wss()
+            self.ws.wait_till_read()
             x = 0
             while not self.ws.networker.authenticated:
                 print(f'Waiting for authentication... {x}/{timeout}s')
@@ -583,7 +512,7 @@ class MKTDispatcher:
         try:
             self.ws.stream_market_data(conid, self.callback)
         except ValueError:
-            self._force_check_clients_live(one_alloc=True)
+            # self._force_check_clients_live(one_alloc=True)
             # self.ws.stream_market_data(conid, self.callback)
             # self._quick_add(symbol, client, _retry=False)
             raise
@@ -824,6 +753,19 @@ if __name__ == '__main__':
         print('Running IBKR Reversed... Starting MKTDispatcher...')
         try:
             dispatcher = MKTDispatcher(mode=IBKRModes.PROTOCOL_2)
+            accounts_available = dispatcher.ws.networker.get_all_trading_accounts_ids()
+            for index, account in enumerate(accounts_available):
+                print(f"{index + 1}. {account.accountId}")
+
+            account_choice = input("Select an account by number (default is 1): ")
+            if account_choice.strip() == '':
+                account_choice = 0
+            else:
+                account_choice = int(account_choice) - 1
+            selected_account = accounts_available[account_choice]
+            print(f"Selected account: {selected_account.accountId}")
+            dispatcher.ws.networker.set_trading_account_id(selected_account.accountId)
+
             dispatcher.ws.interactive_mode()
         except AuthenticationTimeout:
             print('Authentication timed out. Attempting to fetch new credentials...')

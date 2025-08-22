@@ -1,5 +1,6 @@
 import time
 import socket
+import traceback
 from argus.capital._svr_utils import Protocol2Parser
 
 s = socket.socket()
@@ -29,6 +30,7 @@ try:
             print('Since Timestamp:', time.time() - result_time if result_time else 'N/A')
         except Exception as e:
             print(f"Error parsing data: {e}")
+            traceback.print_exc()
             pass
 except KeyboardInterrupt:
     print("Interrupted by user")

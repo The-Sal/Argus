@@ -1,11 +1,9 @@
 import enum
-import os
 import time
 import datetime
 import subprocess
 from utils3 import runAsThread
 from dotenv import load_dotenv
-from ic_audit import AuditNotifier
 from utils3.plot import SimplePlotWriter
 from argus.tv.multisymbol import Ticker
 from argus import QuoteSession, MarketData
@@ -13,34 +11,23 @@ from argus import QuoteSession, MarketData
 load_dotenv()
 plt = SimplePlotWriter("/Users/Salman/Library/Containers/SVO-Productions.plotview/Data/tmp/plot.plt")
 
-
-an = AuditNotifier(
-    project_name='ADX Arbitrage Fair Value Calculator',
-    project_market='ADX Market',
-    can_execute_trades=False,
-    monitoring_only=True,
-    notify_user=True
-)
-
-
 chadx15_weights = {
-    "IHC": 33.72,
-    "FAB": 14.88,
-    "EAND": 12.89,
-    "ADIB": 7.57,
-    "ADCB": 6.41,
-    "ALDAR": 6.20,
-    "ADNOCGAS": 4.56,
-    "ALPHADHABI": 3.19,
-    "ADNOCDRILL": 2.51,
-    "ADNOCDIST": 1.95,
-    "PUREHEALTH": 1.39,
-    "ADNOCLS": 1.28,
-    "MULTIPLY": 1.24,
-    "NMDC": 1.01,
+    "IHC": 30.14,
+    "FAB": 15.78,
+    "EAND": 11.72,
+    "ADIB": 8.22,
+    "ADCB": 8.40,
+    "ALDAR": 6.89,
+    "ADNOCGAS": 4.31,
+    "ALPHADHABI": 3.43,
+    "ADNOCDRILL": 2.76,
+    "ADNOCDIST": 2.03,
+    "PUREHEALTH": 1.21,
+    "ADNOCLS": 1.41,
+    "MULTIPLY": 1.84,
+    "NMDC": 1.03,
 }
-
-
+NOTIFY_NUM = '+971506940015'
 def notify(message):
     timestamp = datetime.datetime.now().strftime("%H:%M:%S")
     full_message = f"[{timestamp}] {message}"
@@ -48,8 +35,22 @@ def notify(message):
         'imessage-cli',
         '-m',
         full_message,
-        '+971506940015'
+        NOTIFY_NUM
     ])
+    an.notify(
+        event_type=ProjectEvents.UNCLASSIFIED_EVENT,
+        event_description=full_message,
+    )
+
+
+from ic_audit import AuditNotifier, ProjectPrivileges, ProjectEvents
+an = AuditNotifier(
+    project_name="ADX Arbitrage Fair Value Monitor",
+    project_market="ADX",
+    project_description="Monitor the fair value of the CHADX15 index and notify on actionable opportunities.",
+    project_privileges=[ProjectPrivileges.LIVE_MONITORING],
+    notifying_events_to=NOTIFY_NUM
+)
 
 
 class NotificationSentType(enum.Enum):
@@ -70,13 +71,14 @@ class FADX15FairValue:
             request_ids.append(f"ADX:{key}")
 
         try:
+            import os
             token = os.environ['TOKEN']
         except KeyError:
             raise ValueError("Please set the TOKEN environment variable.")
 
         # auth_token=token,
         self.tick = Ticker(self.callback, request_ids, verbose=False,
-                           save=True, database_name="ADX_data")
+                           save=True, database_name="ADX_data", auth_token=token)
 
         self.chadx15Session = QuoteSession("ADX:CHADX15", self._chadx15_callback)
         self.chadx15LatestBidAsk = None
@@ -136,7 +138,7 @@ class FADX15FairValue:
                 changePct = float(value['changePercentage']) / 100
                 contribution[name] = weight * changePct
 
-            keys = list(contribution.keys())
+            # keys = list(contribution.keys())
             values = list(contribution.values())
             fair_value = sum(values)
 
@@ -182,9 +184,9 @@ class FADX15FairValue:
                 else:
                     msg += " (ETF is underpriced)"
 
-                if any([etf_bid_change_pct, etf_ask_change_pct]) is None:
-                    self.spread_alert_sent = False
+                if etf_ask_change_pct is None or etf_bid_change_pct is None:
                     msg += "\nNo ETF Bid/Ask Change Percentage available."
+                    self.spread_alert_sent = False
                 else:
                     if fair_value > etf_ask_change_pct:
                         msg += ("\n✅Actionable Long Opportunity: Fair Value is higher than ETF Ask Change Percentage. "
@@ -196,7 +198,6 @@ class FADX15FairValue:
                                 f"({fair_value * 100:.2f}% < {etf_bid_change_pct * 100:.2f}%)")
                         msg += "\nExpected Profit: {:.2f}%".format(
                             (etf_bid_change_pct - fair_value) * 100)
-
 
                 notify(msg)
 
@@ -212,8 +213,9 @@ class FADX15FairValue:
             except subprocess.CalledProcessError:
                 pass
 
+            # noinspection all
             print("[{}] FADX15 Fair Value: {:.2f}% | CHADX15 Value: {}% | Spread: {:.2f}% | Bid Spread: {}% "
-                  "| Ask Spread: {}% | ETF Bid Change: {}% | ETF Ask Change: {}%".format(
+                  "| Ask Spread: {}% | ETF Bid Change: {}% | ETF Ask Change: {}% | Bid/Ask Prices: {}/{}".format(
                 datetime.datetime.now().strftime("%H:%M:%S"),
                 fair_value * 100,
                 self.tickers[self.index_etf]['changePercentage'],
@@ -222,18 +224,24 @@ class FADX15FairValue:
                 f"{etf_ask_spread * 100:.2f}" if etf_ask_spread is not None else "N/A",
                 f"{etf_bid_change_pct * 100:.2f}" if etf_bid_change_pct is not None else "N/A",
                 f"{etf_ask_change_pct * 100:.2f}" if etf_ask_change_pct is not None else "N/A",
+                etf_bid_price, etf_ask_price
             ))
 
 
 if __name__ == '__main__':
-    plt.reset()
-    time.sleep(2)
-    xx = FADX15FairValue()
-    while True:
-        i = input("")
-        if i == "-":
-            xx.logFeed = False
-        elif i == "+":
-            xx.logFeed = True
-        elif i == "q":
-            break
+    try:
+        plt.reset()
+        time.sleep(2)
+        xx = FADX15FairValue()
+        while True:
+            i = input("")
+            if i == "-":
+                xx.logFeed = False
+            elif i == "+":
+                xx.logFeed = True
+            elif i == "q":
+                an.notify(ProjectEvents.UNCLASSIFIED_EVENT,
+                          "Fair Value Monitor was stopped by user. Exiting...")
+                break
+    except Exception as e:
+        an.notify(event_type=ProjectEvents.ERROR, event_description=f"Error in Fair Value Monitor: {e}")
