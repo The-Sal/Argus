@@ -452,6 +452,7 @@ class MKTDispatcher:
             'Use TQDM Progress bar for subscription checking': False,
             'Use TQDM Progress bar for subscription current load': True,
             'Show search results from quick_add': False,
+            'Block New MKT Data': False
         }
 
         print('[IMPORTANT] MODE = {}'.format(self.mode))
@@ -492,6 +493,9 @@ class MKTDispatcher:
         self.ws.ws.run_forever()
 
     def _quick_add(self, symbol, client, _retry=True):
+        if self._configs['Block New MKT Data']:
+            raise ValueError("New market data subscriptions are blocked. Please enable 'Block New MKT Data' in the dispatcher configurations.")
+
         hits = self.ws.networker.search_contract(symbol)
         top_hit = None
         for hit in hits:

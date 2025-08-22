@@ -35,7 +35,7 @@ def get_auth():
             break
         except Exception as e:
             e.__str__()
-            time.sleep(1)
+            time.sleep(0.1)
 
     if os.environ.get('PAPER_ACCOUNT', '0') == '1':
         try:
