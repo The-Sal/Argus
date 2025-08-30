@@ -79,6 +79,8 @@ class IBError(Exception):
 class AuthenticationTimeout(IBError):
     pass
 
+class MarketDataRefused(IBError):
+    pass
 
 class MarketData:
     """User IBKRFields to query for market data"""

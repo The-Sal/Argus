@@ -16,7 +16,7 @@ from argus.capital import transmit_mkt_data_with_protocol_2
 from argus.ib._ib_utils import (LockedSession,
                                 IBKRModes, IBKR_CapitalComMKTDataLive,
                                 AuthenticationTimeout, MarketData, IBError,
-                                NOTIFICATION as _NOTIFICATION, IB_Cache as _IB_Cache, Account)
+                                NOTIFICATION as _NOTIFICATION, IB_Cache as _IB_Cache, Account, MarketDataRefused)
 
 # enable logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -452,7 +452,8 @@ class MKTDispatcher:
             'Use TQDM Progress bar for subscription checking': False,
             'Use TQDM Progress bar for subscription current load': True,
             'Show search results from quick_add': False,
-            'Block New MKT Data': False
+            'Block New MKT Data': False,
+            'Show blocked MKT Data Warning': False
         }
 
         print('[IMPORTANT] MODE = {}'.format(self.mode))
@@ -494,7 +495,10 @@ class MKTDispatcher:
 
     def _quick_add(self, symbol, client, _retry=True):
         if self._configs['Block New MKT Data']:
-            raise ValueError("New market data subscriptions are blocked. Please enable 'Block New MKT Data' in the dispatcher configurations.")
+            raise MarketDataRefused(
+                "New market data subscriptions are blocked. "
+                "Please enable 'Block New MKT Data' in the dispatcher configurations.")
+
 
         hits = self.ws.networker.search_contract(symbol)
         top_hit = None
@@ -556,6 +560,10 @@ class MKTDispatcher:
                         print(f"Adding contract {search_term} to stream")
                     self._quick_add(search_term, client)
 
+            except MarketDataRefused:
+                if self._configs['Show blocked MKT Data Warning']:
+                    client.sendall(b'New market data subscriptions are blocked. ')
+                    raise
 
             except Exception as e:
                 print(f"Error receiving data from client: {e}")
