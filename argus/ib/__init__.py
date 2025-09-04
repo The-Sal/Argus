@@ -11,12 +11,15 @@ import websocket
 import threading
 from utils3 import runAsThread
 from argus.ib.fields import IBKRFields, SearchResult
-from argus.ib._shortable_shares_data import ShortableSharesData
 from argus.capital import transmit_mkt_data_with_protocol_2
-from argus.ib._ib_utils import (LockedSession,
-                                IBKRModes, IBKR_CapitalComMKTDataLive,
-                                AuthenticationTimeout, MarketData, IBError,
-                                NOTIFICATION as _NOTIFICATION, IB_Cache as _IB_Cache, Account, MarketDataRefused)
+from argus.ib._shortable_shares_data import ShortableSharesData
+from argus.ib._ib_utils import (LockedSession, IBKRModes, IBKR_CapitalComMKTDataLive,
+                                AuthenticationTimeout, MarketData, IBError, NOTIFICATION as _NOTIFICATION,
+                                IB_Cache as _IB_Cache, Account, MarketDataRefused)
+
+
+# noinspection PyUnresolvedReferences
+from argus.capital import Protocol2Parser
 
 # enable logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -339,7 +342,8 @@ class IBWss:
                     message=f'Received message on topic {topic}: {message}'
                 )
         except json.JSONDecodeError:
-            print("Message:", message, datetime.datetime.now())
+            if not message.decode() == 'ech+hb':
+                print("Message:", message, datetime.datetime.now())
 
         if not self.opened:
             self.opened = True

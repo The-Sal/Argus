@@ -9,7 +9,7 @@ from utils3 import runAsThread, assertTypes
 from utils3.networking.sockets import UDSServer
 from argus.capital._caches import DomainCache, NotKey
 from argus.capital._svr_utils import encode_packet, decode_packet, decode_multiple_packets, \
-    transmit_mkt_data_with_protocol_2
+    transmit_mkt_data_with_protocol_2, Protocol2Parser
 from argus.capital._lib import (CapitalComAPI, Environment, TradeDirection, HistoricalPriceResolution,
                                 WebsocketDataType, CapitalComAPIError, WebSocketStatus)
 
@@ -169,7 +169,6 @@ class SvrExport:
         print("Stopping server...")
         self.server.stop()
         print("Server stopped.")
-
 
 class MKTDispatcher(SvrExport):
     """Market Data Dispatcher for Capital.com API."""
@@ -364,6 +363,7 @@ class MKTDispatcher(SvrExport):
                     'status': 'error',
                     'message': "No epic provided for unsubscription."
                 }
+
         elif action == 'resolve/stream/batch/file':
             try:
                 file = data.get('file')
@@ -395,7 +395,6 @@ class MKTDispatcher(SvrExport):
                     'status': 'error',
                     'message': f"File '{file}' not found."
                 }
-
 
         else:
             response = {

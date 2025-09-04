@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from argus.tv.multisymbol import Ticker
 
 
-load_dotenv()
 class NoClue:
     def __init__(self):
         self.ticker = Ticker(self.callback, ["ADX:FADX15", "ADX:CHADX15"], verbose=False, auth_token=os.environ['TOKEN'])
