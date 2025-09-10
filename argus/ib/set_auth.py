@@ -21,7 +21,7 @@ def get_auth():
 
     try:
         # wait for site to load
-        WebDriverWait(driver, 10).until(
+        WebDriverWait(driver, 2).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, '#btn_accept_cookies'))
         )
     except Exception as e:

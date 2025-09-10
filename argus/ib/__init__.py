@@ -228,6 +228,7 @@ class IBWss:
             'Total WebSocket messages received': lambda: print(f'Total WebSocket messages received: {self.recv}'),
             'Write all WebSocket messages to a file': lambda: self._write_sock_msgs_to_file(),
             'Unique Contracts subscribed (lifetime)': lambda: print(len(self._contracts_subscribed)),
+            'Socket Still Open': lambda: print(f'Socket still open: {self.test_conn()}'),
         }
 
     def _write_sock_msgs_to_file(self):
@@ -373,8 +374,7 @@ class IBWss:
             message='The IBKR WebSocket connection has been established successfully.'
         )
 
-    @staticmethod
-    def on_close(ws, *args):
+    def on_close(self, ws, *args):
         """Handle WebSocket connection close event"""
         _ = ws
         _ = args
@@ -383,6 +383,7 @@ class IBWss:
             title='IBKR WebSocket Disconnected',
             message='The IBKR WebSocket connection has been closed.'
         )
+        self.opened = False
 
     def handle_market_data(self, message):
         """Handle market data messages"""
@@ -406,6 +407,15 @@ class IBWss:
                 callback(obj)
             else:
                 print(f"Callback for contract ID {conid} is not callable.")
+
+    def test_conn(self):
+        # try to send a heartbeat if the connection is lost it will raise an exception
+        try:
+            self.ws.send_text("ech+hb")
+            return True
+        except websocket.WebSocketConnectionClosedException:
+            return False
+
 
 
 class MKTDispatcher:
