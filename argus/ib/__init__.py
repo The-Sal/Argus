@@ -384,6 +384,7 @@ class IBWss:
             message='The IBKR WebSocket connection has been closed.'
         )
         self.opened = False
+        raise RuntimeError("WebSocket connection closed")
 
     def handle_market_data(self, message):
         """Handle market data messages"""

@@ -93,6 +93,29 @@ class CapitalComMKTDataLive:
         else:
             return data
 
+    @classmethod
+    def from_protocol_2(cls, data: bytes):
+        """Creates an instance of CapitalComMKTDataLive from protocol 2 encoded data."""
+        _ = data[:4]  # packet_length_header
+
+        packet_symbol_length_header = data[4:8]
+        real_data = data[8:]
+        symbol_length = int.from_bytes(packet_symbol_length_header, byteorder='big')
+        symbol = real_data[:symbol_length].decode('ascii')
+        values = real_data[symbol_length:-1].decode('ascii').split(',')
+        if len(values) != 8:
+            raise ValueError("Invalid data length for protocol 2. Values: " + str(values))
+        return cls(
+            symbol=symbol,
+            bid=float(values[0]),
+            bid_size=float(values[1]),
+            ask=float(values[2]),
+            ask_size=float(values[3]),
+            last=float(values[4]),
+            last_size=float(values[5]),
+            timestamp=int(values[6])
+        )
+
 
 class CapitalComOHLCData:
     """OHLC Data Object for Capital.com API."""
@@ -169,6 +192,7 @@ class SvrExport:
         print("Stopping server...")
         self.server.stop()
         print("Server stopped.")
+
 
 class MKTDispatcher(SvrExport):
     """Market Data Dispatcher for Capital.com API."""
