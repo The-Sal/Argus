@@ -15,7 +15,59 @@ from argus.capital import transmit_mkt_data_with_protocol_2
 from argus.ib._shortable_shares_data import ShortableSharesData
 from argus.ib._ib_utils import (LockedSession, IBKRModes, IBKR_CapitalComMKTDataLive,
                                 AuthenticationTimeout, MarketData, IBError, NOTIFICATION as _NOTIFICATION,
-                                IB_Cache as _IB_Cache, Account, MarketDataRefused)
+                                IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, throw_fuss)
+
+# monkey patch for some sketchy stuff
+setattr(socket.socket, 'idx', 'real')
+
+
+class FakeSocket:
+    # The problem is quite annoying, MKT-Dispatcher is designed around the idea
+    # where it's internal ledger is socket-connections to clients and it automatically
+    # manages sub/unsubs based on client connections we want a callback direcrly
+    # from the Dispatcher without having to open a socket because it's internal-use
+    # i.e. within the `AcounterLedger` class and we don't want to add
+    # P2 serialization for an in memory passing of data but the entire design of
+    # MKT-Dispatcher is based around sockets so we have to fake it. Now we could
+    # contiously call isinstance on the socket object and see if it's a real
+    # socket or fake but that would cause so much overhead compared to checking
+    # one static property `idx` so we just add a property to the "real" for real sockets
+    # and fake sockets and check that instead when data is being sent.
+    # This allows the subscription model not to change, avoid massive refactoring
+    # to create a channel just for AccountLedger without distributing other clients
+    # who may also need the exact contract data. also idx is incredibly begin and does not
+    # change anything fundamentally about the socket object whatsoever just adds a property.
+    # Also since MKT-Dispatcher is the 'final' endpoint for this program [if you are using MKTDispatcher]
+    # there is nothing else 'downstream' that needs to be changed from breaking.
+
+    # The largest issue with modifying MKTDispatcher is that it's wrapped in thread-locks, concurrency,
+    # multiplexing logic, load-balancing and various other logic that would be a nightmare to refactor
+    # without breaking at least something since they all need to play nice together and to-date it's all been
+    # stable for a while even under immense load so let's not play with it too much.
+
+    # Also wondering this solves two problems:
+    # 1. We can pass a callback function to MKTDispatcher that gets called when
+    #    market data is received instead of having to open a socket connection.
+    # 2. MKTDispatcher automatically mamanges connection by sending `pings` to clients
+    #    and removing them if they are not responsive, because this will be a in-memory
+    #    callback we don't have to worry about that since it will always be responsive
+    #    meaning it will never be removed from the subscription list.
+    #    In addition to this we have a backstop in IBWss another critical component that we did not want to modify
+    #    we added the `protected_assets` set which is a list of contract IDs that cannot be unsubscribed from
+    #    no matter what, this is to prevent accidental unsubscriptions from critical assets that must
+    #    always be streamed which are also these assets this class is made to handle for AccountLedger.
+    #    So 1) No Unsub by the automatic connection management in MKTDispatcher, 2) under the case it does get
+    #    unsubscribed we have a backstop in IBWss to just throw an exception and make a big loud bang if that attempts to
+    #    happen. Given IBWss is the socket-layer for MKTDispatcher this is the last line of defense.
+    #    This is about the cleanest possible way to add AccountLedger functionality to MKTDispatcher
+    #    without refactoring the entire codebase and risking breaking something.
+    #    This way we can preserve the prior automatic contract sub/un-sub, load balancing, concurrency magic with very little mods
+    def __init__(self, callback):
+        self.callback = callback
+        self.idx = 'fake'
+
+    def sendall(self, data):
+        self.callback(data)
 
 
 # noinspection PyUnresolvedReferences
@@ -25,6 +77,15 @@ from argus.capital import Protocol2Parser
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
+class ProtectedAssetViolation(IBError):
+    """Raised when attempting to unsubscribe from a protected asset."""
+    pass
+
+
+# NOTE: DO NOT ADD THREAD-LOCKS TO IBNetworker, The LockedSession is already thread-safe
+# the thread-locks for LockedSession are available for the .get and .post methods which covers
+# 99.99% of all the calls within IBNetworker and derived classes.
+# Adding additional thread-locks will only serve to create deadlocks and other issues.
 class IBNetworker:
     def __init__(self, cookie):
         self.cookie = cookie
@@ -52,11 +113,10 @@ class IBNetworker:
         self.urls = {
             'search': 'https://www.interactivebrokers.co.uk/portal.proxy/v1/portal/iserver/secdef/search',
             'query_equities_contracts': 'https://www.interactivebrokers.co.uk/portal.proxy/v1/portal/iserver/trsrv/stocks',
-
             'portfolio_accounts': 'https://api.ibkr.com/v1/api/portfolio/accounts',
-
             'account_ledger': 'https://api.ibkr.com/v1/api/portfolio/{}/ledger',
             'account_summary': 'https://api.ibkr.com/v1/api/portfolio/{}/summary',
+            'account_positions': 'https://api.ibkr.com/v1/api/portfolio/{}/positions'
         }
         self.tickle = self.setup_msgs[0]
         self.auth_stats = self.setup_msgs[1]
@@ -64,9 +124,10 @@ class IBNetworker:
         self.forbidden_strings = [
             'NYMEX'
         ]
-
         self._order_data = {}
         self._trading_account_id = None
+        self._ledger_data = None
+        self._account_summary = None
 
     def set_trading_account_id(self, account_id):
         if self._trading_account_id is not None:
@@ -74,14 +135,36 @@ class IBNetworker:
         self._trading_account_id = account_id
         self.setup_trading_account_data()
 
+    def get_account_ledger(self):
+        account_ledger = self.session.get(self.urls['account_ledger'].format(self._trading_account_id)).json()
+        return account_ledger
+
     def setup_trading_account_data(self):
         logging.info(f"Setting up trading account data for account ID: {self._trading_account_id}")
-        account_ledger = self.session.get(self.urls['account_ledger'].format(self._trading_account_id)).json()
+        # ADD THIS CRITICAL CALL:
+        positions_response = self.session.get(self.urls['account_positions'].format(self._trading_account_id))
+        positions = positions_response.json()
+        logging.info(f"Portfolio Positions: {positions}")
+
         account_summary = self.session.get(self.urls['account_summary'].format(self._trading_account_id)).json()
+        self._ledger_data = self.get_account_ledger()
+        self._account_summary = account_summary
+        logging.info(f"Account Ledger:\n{"*" * 50}\n{self._ledger_data}\n{"*" * 50}")
+        logging.info(f"Account Summary:\n{"*" * 50}\n{account_summary}\n{"*" * 50}")
 
-        logging.info(f"Account Ledger:\n{"*"*50}\n{account_ledger}\n{"*"*50}")
-        logging.info(f"Account Summary:\n{"*"*50}\n{account_summary}\n{"*"*50}")
+        # set account
 
+        # You're maybe wondering why this is not in the dict well the reason
+        # is that for some reason when it's inside the dictionary the
+        #  request fails. Don't ask me why it's just one of those things
+        _url = 'https://www.interactivebrokers.co.uk/portal.proxy/v1/portal/iserver/account'
+        print(f"Setting trading account to {self._trading_account_id}")
+        response = self.session.post(
+            url=_url,
+            json={"acctId": self._trading_account_id}
+        )
+
+        throw_fuss(response.text, notify=False)
 
     def get_all_trading_accounts_ids(self):
         response = self.session.get(self.urls['portfolio_accounts'])
@@ -171,6 +254,36 @@ class IBNetworker:
 
         return results
 
+    def fetch_account_positions(self) -> list[STK_Position]:
+        """Fetch account positions for the given IBKR Account id. Supports STK only!"""
+        response = self.session.get(
+            self.urls['account_positions'].format(self.trading_account_id)
+        )
+        try:
+            data = response.json()
+            portfolio = []
+            for asset in data:
+                if asset["assetClass"] != "STK":
+                    continue
+
+                portfolio.append(STK_Position.from_dict(asset))
+            return portfolio
+        except json.JSONDecodeError:
+            raise IBError(f"Failed to decode JSON response from {self.urls['account_positions']}. "
+                          f"Response: {response.text}")
+
+    @property
+    def trading_account_id(self):
+        return self._trading_account_id
+
+    @property
+    def ledger_data(self):
+        return self._ledger_data
+
+    @property
+    def account_summary(self):
+        return self._account_summary
+
 
 class IBWss:
     def __init__(self, cookie=os.getenv('IB_COOKIE')):
@@ -194,7 +307,7 @@ class IBWss:
         self._ready = False
         self.stream_messages = [
             'sor+{}',
-            'upl+{}'
+            'upl+{}',
         ]
         self.recv = 0
         self.networker = IBNetworker(cookie)
@@ -231,6 +344,15 @@ class IBWss:
             'Socket Still Open': lambda: print(f'Socket still open: {self.test_conn()}'),
         }
 
+        self._protected_assets = set()
+
+    def write_protected_assets(self, assets: list[str]):
+        """Write a list of protected assets that should not be unsubscribed no matter what."""
+        # yes we need to lock-this, because we are adding to a set that
+        # will be read by `unsubscribe_market_data` which is also called on a different threads
+        with self._stream_lock:
+            self._protected_assets = set(assets)
+
     def _write_sock_msgs_to_file(self):
         """Write all WebSocket messages to a file for debugging purposes."""
         if not self._sock_msgs:
@@ -264,10 +386,10 @@ class IBWss:
     def stream_market_data(self, contract_id, callback,
                            fields=(IBKRFields.LAST_PRICE, IBKRFields.ASK_PRICE, IBKRFields.ASK_SIZE,
                                    IBKRFields.BID_PRICE, IBKRFields.BID_SIZE, IBKRFields.SHORTABLE_SHARES,
-                                   IBKRFields.SYMBOL)):
+                                   IBKRFields.SYMBOL, IBKRFields.FORMATTED_UNREALIZED_PNL)):
         """
         Stream market data for a given contract ID.
-        
+
         Args:
             contract_id: The contract ID to stream market data for.
             callback: The callback function to call when market data is received.
@@ -299,6 +421,10 @@ class IBWss:
             contract_id: The contract ID to unsubscribe from.
         """
         with self._stream_lock:
+            if contract_id in self._protected_assets:
+                raise ProtectedAssetViolation(
+                    f"Cannot unsubscribe from protected asset: {contract_id}"
+                )
             if contract_id in self.contract_callbacks:
                 del self.contract_callbacks[contract_id]
             if contract_id in self._private_contracts:
@@ -331,6 +457,10 @@ class IBWss:
             topic = message.get('topic')
             if 'smd' in topic:
                 self.handle_market_data(message)
+            elif 'spl' in topic:
+                print("PNL Update")
+                print(message)
+
             else:
                 if topic == 'system' and message.get('hb', False):
                     return  # Heartbeat message, do nothing
@@ -361,7 +491,8 @@ class IBWss:
         start_time = time.time()
         while not self._ready:
             time.sleep(1)
-            logging.info('Waiting for WebSocket to be ready.. Time elapsed: {:.2f} seconds'.format(time.time() - start_time))
+            logging.info(
+                'Waiting for WebSocket to be ready.. Time elapsed: {:.2f} seconds'.format(time.time() - start_time))
         return True
 
     @staticmethod
@@ -379,6 +510,10 @@ class IBWss:
         _ = ws
         _ = args
         print("WebSocket connection closed")
+        throw_fuss(
+            msg="IBKR WebSocket connection closed unexpectedly. Please restart the application.",
+            boarder="="
+        )
         _NOTIFICATION.notify(
             title='IBKR WebSocket Disconnected',
             message='The IBKR WebSocket connection has been closed.'
@@ -417,6 +552,110 @@ class IBWss:
         except websocket.WebSocketConnectionClosedException:
             return False
 
+    @property
+    def private_contracts(self):
+        return list(self._private_contracts)
+
+
+class AccountProvider:
+    """
+    Provides live-streaming support for account positions and PnL. This class unfortunately
+    requires pulling some interesting tricks to get working the major issue is we do not
+    have a public API to get live-streaming of account positions and PnL so we have to
+    leverage the GET requests, live market data and some internal bookkeeping to get it working. And
+    also re-synchronize the positions between our internal bookkeeping and the real account to make sure
+    we haven't left reality. We have finally figured out how to implement this and it's as follows:
+
+    [IBWss]  <---- [IBNetworker]
+       |______________|_____________|
+       |              |             |
+       V              V             V
+      [AccountProvider] <-----> [MKTDispatcher] <-----> [Clients]
+
+
+    Essentially we have IBWss and IBNetworker as the two main components that interact with IBKR,
+    MKTDispatcher initializes these two components and manages client connections and subscriptions.
+    It then configures them per the users wishes, then MKTDispatcher
+    passes it's configured IBWsss and IBNetworker to AccountProvider which then uses them to provide
+    live-streaming support for account positions and PnL. This data then gets forwarded to MKTDispatcher
+    and then further out to clients. Also as to how does AccountProvider get live-streaming of account positions and PnL?
+    Thats were the magic happens, MKTDispatcher adds AccountProvider as a "client" to itself using FakeSocket
+    for the assets required to be streamed for the account positions and PnL. This way AccountProvider
+    gets all the market data for the assets it needs to track the account positions and PnL. And within AccountProvider
+    it has direct access to IBWss and it adds these assests to the protect assets so they never get unsubscribed from.
+
+    Long/Short
+    ===============================
+    MKTDispatcher (init):
+    1) [IBNetworker] (init) --> [IBWss] (init)
+    2) [AccountProvider] (init with IBWss and IBNetworker)
+
+    AccountProvider (init) calls:
+    1) [IBNetworker] (fetch_account_positions) --> Sets up initial portfolio
+    2) [IBWss] (write_protected_assets) --> Protect assets from unsubscription
+
+    MKTDispatcher (post-AccountProvider init):
+    1) [MKTDispatcher] (_add_clients) --> [AccountProvider] (as FakeSocket client)
+
+    AccountProvider (as FakeSocket client):
+    1) Market data comes in --> Updates internal positions and PnL
+    2) Updates stats and calls MKTDispatcher via callback to forward data to real clients
+
+    MKTDispatcher (on_portfolio_change) [callback]:
+    1) Forwards data to real clients
+    """
+
+    def __init__(self, init_ib_wss: IBWss, init_ib_networker: IBNetworker):
+        if init_ib_networker.trading_account_id is None:
+            raise ValueError("Trading account ID is not set in IBNetworker.")
+
+        self._ib_wss = init_ib_wss
+        self._ib_networker = init_ib_networker
+        self._account_positions = self._ib_networker.fetch_account_positions()
+        self._account_ledger = self._ib_networker.get_account_ledger()
+        self._conids = {}
+        self._symbols_to_conids = {}
+        self.ss = ShortableSharesData()
+
+        print("*" * 50)
+        print("ACCOUNT POSITIONS:")
+        print(self._account_positions)
+        print("*" * 50)
+
+        self._fake_socket = FakeSocket(
+            callback=self._on_market_data
+        )
+
+        self._populate_conids()
+
+    def _on_market_data(self, data: IBKR_CapitalComMKTDataLive):
+        """Handle market data received via FakeSocket"""
+        if not isinstance(data, IBKR_CapitalComMKTDataLive):
+            return
+
+        print(data.__dict__)
+        contract_id = int(self.ss.translate_symbol_to_conid(data.symbol))
+        position: STK_Position = self._conids.get(contract_id)
+        cost = float(position.avg_cost)
+        if data.last != 0:
+            pnl = (float(data.last) - cost) * float(position.position)
+            print(f"PnL for {data.symbol} (ConID: {contract_id}): {pnl:.2f} USD")
+
+
+    def required_assets(self) -> list[int]:
+        """Return a list of contract IDs required to be streamed for account positions and PnL."""
+        return list(self._conids.keys())
+
+    def _populate_conids(self):
+        """We should maintain a dictionary of coinds to positions for quick lookup to update the system"""
+        for position in self._account_positions:
+            self._conids[position.conid] = position
+
+        self._ib_wss.write_protected_assets(list(self._conids.keys()))
+
+    @property
+    def socket(self):
+        return self._fake_socket
 
 
 class MKTDispatcher:
@@ -437,10 +676,12 @@ class MKTDispatcher:
         self.sock.bind(('localhost', 9972))
         self.clients = []
         self.con_id_to_client = {}
+        self.account_provider: AccountProvider = None
         if not dryRun:
             self.ws = IBWss()
             self.ws.interactive_functions[
-                'Modify dispatcher configurations interactively'] = self._modify_configs_interactive
+                'Modify dispatcher configurations interactively'
+            ] = self._modify_configs_interactive
             self.ws.on_close = self._on_close
             self._open_ib_wss()
             self.ws.wait_till_read()
@@ -451,7 +692,6 @@ class MKTDispatcher:
                 x += 1
                 if x == timeout:
                     raise AuthenticationTimeout('Timeout waiting for authentication')
-
             print('Authenticated')
             # self.conid = int(self.ws.networker.search_contract(self.stock_name)[0].conid)
             # self.ws.stream_market_data(self.conid, self.callback)
@@ -467,7 +707,8 @@ class MKTDispatcher:
             'Use TQDM Progress bar for subscription checking': False,
             'Use TQDM Progress bar for subscription current load': True,
             'Show search results from quick_add': False,
-            'Block New MKT Data': False,
+            'Block New MKT Data': True,  # this is to make sure on first-pass we wait till account id is set,
+            # from that point it will be False and can be updated interactively.
             'Show blocked MKT Data Warning': False
         }
 
@@ -497,35 +738,52 @@ class MKTDispatcher:
 
     @staticmethod
     def _on_close(ws, *args):
+        throw_fuss(
+            msg="IBKR WebSocket connection closed unexpectedly. Please restart the application.",
+            boarder="="
+        )
         _NOTIFICATION.notify(
             title='IBKR WebSocket Disconnected',
             message='The IBKR WebSocket connection has been closed.'
         )
         _ = ws, args
+
         raise Exception("Connection closed")
 
     @runAsThread
     def _open_ib_wss(self):
         self.ws.ws.run_forever()
 
-    def _quick_add(self, symbol, client, _retry=True):
+    def _quick_add(self, symbol, client, _retry=True, conid=None):
         if self._configs['Block New MKT Data']:
             raise MarketDataRefused(
                 "New market data subscriptions are blocked. "
                 "Please enable 'Block New MKT Data' in the dispatcher configurations.")
 
+        if symbol is None and conid is None:
+            raise RuntimeError("Either symbol or conid must be provided to quick_add.")
 
-        hits = self.ws.networker.search_contract(symbol)
-        top_hit = None
-        for hit in hits:
-            if hit.symbol.lower() == symbol.lower():
-                top_hit = hit
-                break
+        if conid is None:
+            hits = self.ws.networker.search_contract(symbol)
+            top_hit = None
+            for hit in hits:
+                if hit.symbol.lower() == symbol.lower():
+                    top_hit = hit
+                    break
 
-        if top_hit is None:
-            raise ValueError(f"No contract found for symbol: {symbol}")
+            if top_hit is None:
+                raise ValueError(f"No contract found for symbol: {symbol}")
 
-        conid = int(top_hit.conid)
+            conid = int(top_hit.conid)
+        else:
+            class DummyTopHit:
+                pass
+
+            top_hit = DummyTopHit()
+            setattr(top_hit, 'conid', conid)
+            setattr(top_hit, 'symbol', 'Unknown')
+            setattr(top_hit, 'companyHeader', 'Unknown')
+
         if self._configs['Show search results from quick_add']:
             print('Top hit for search {} is {}'.format(symbol, top_hit.companyHeader))
         if conid in self.con_id_to_client:
@@ -540,7 +798,11 @@ class MKTDispatcher:
             # self._quick_add(symbol, client, _retry=False)
             raise
 
-        shortable_shares_num = self.shortable_shares_data.get_shortable_shares(top_hit.symbol)
+        if top_hit is None:
+            top_hit = "Unknown"
+            shortable_shares_num = self.shortable_shares_data.get_shortable_shares_by_conid(conid)
+        else:
+            shortable_shares_num = self.shortable_shares_data.get_shortable_shares(top_hit.symbol)
 
         try:
             self.con_id_to_client[conid].append(client)
@@ -559,7 +821,7 @@ class MKTDispatcher:
                     IBKRFields.SHORTABLE_SHARES: shortable_shares_num,
                     str(IBKRFields.SHORTABLE_SHARES): shortable_shares_num
                 },
-            ), ib_fields=[IBKRFields.SHORTABLE_SHARES]
+            ), ib_fields=[IBKRFields.SHORTABLE_SHARES, IBKRFields.FORMATTED_UNREALIZED_PNL]
         )
 
     @runAsThread
@@ -711,6 +973,9 @@ class MKTDispatcher:
         # Stuff the last cached values into the data object
 
         # Change as required
+
+
+        # print(data.data)  # Note: This is for debugging to see the 'raw' market data received from IBKR
         self._update_cache(data)
         data = self._stuff_from_cache(data)
 
@@ -744,13 +1009,18 @@ class MKTDispatcher:
                         ask=data.get(IBKRFields.ASK_PRICE, default=0.0),
                         ask_size=data.get(IBKRFields.ASK_SIZE, default=0),
                         last=data.get(IBKRFields.LAST_PRICE, default=0.0),
-                        last_size=0.0,  # Not available for now
+                        last_size=0.0,  # Not available for now,
+                        # PER VERSION ARGUS 0.0.4 THIS IS NOT IMPLEMENTED IN PROTOCOL 2 YET
+                        unrealized_pnl=data.get(IBKRFields.FORMATTED_UNREALIZED_PNL, default=0.0),
                     )
+                    if client.idx != 'real':
+                        client.sendall(ibkr_data)
+                        continue
+
                     final_packet = transmit_mkt_data_with_protocol_2(ibkr_data)
                     if self._configs['Print data packets']:
                         print(f"{client.getpeername()}: {final_packet}")
                     client.sendall(final_packet)
-
 
             except (Exception, OSError) as e:
                 # print(f"Error sending data to client: {e}")
@@ -774,25 +1044,39 @@ class MKTDispatcher:
                         # print(f"Unsubscribing from contract ID {data.contract_id} as no clients are left.")
                         self.ws.unsubscribe_market_data(data.contract_id)
 
+    def select_account_interactive(self):
+        accounts_available = self.ws.networker.get_all_trading_accounts_ids()
+        for index, account in enumerate(accounts_available):
+            print(f"{index + 1}. {account.accountId}")
+
+        account_choice = input("Select an account by number (default is 1): ")
+        if account_choice.strip() == '':
+            account_choice = 0
+        else:
+            account_choice = int(account_choice) - 1
+        selected_account = accounts_available[account_choice]
+        print(f"Selected account: {selected_account.accountId}")
+        self.ws.networker.set_trading_account_id(selected_account.accountId)
+        self.account_provider = AccountProvider(self.ws, self.ws.networker)
+        self._configs['Block New MKT Data'] = False
+        print("New market data subscriptions are now unblocked.")
+        # If this fails the program should crash
+        for conid in self.account_provider.required_assets():
+            # hence why this is main-threaded
+            self._quick_add(symbol=None, client=self.account_provider.socket, _retry=False, conid=conid)
+        print('{} protected assets added from AccountProvider'.format(len(self.account_provider.required_assets())))
+
+        self.ws.ws.send('upl+{}')
+        time.sleep(1)
+        self.ws.ws.send('spl+{}')
+
 
 if __name__ == '__main__':
     def main():
         print('Running IBKR Reversed... Starting MKTDispatcher...')
         try:
             dispatcher = MKTDispatcher(mode=IBKRModes.PROTOCOL_2)
-            accounts_available = dispatcher.ws.networker.get_all_trading_accounts_ids()
-            for index, account in enumerate(accounts_available):
-                print(f"{index + 1}. {account.accountId}")
-
-            account_choice = input("Select an account by number (default is 1): ")
-            if account_choice.strip() == '':
-                account_choice = 0
-            else:
-                account_choice = int(account_choice) - 1
-            selected_account = accounts_available[account_choice]
-            print(f"Selected account: {selected_account.accountId}")
-            dispatcher.ws.networker.set_trading_account_id(selected_account.accountId)
-
+            dispatcher.select_account_interactive()
             dispatcher.ws.interactive_mode()
         except AuthenticationTimeout:
             print('Authentication timed out. Attempting to fetch new credentials...')

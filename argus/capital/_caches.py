@@ -68,19 +68,24 @@ class DomainCache:
 
     def delete(self, key: str):
         """Deletes a key from the cache."""
-        if key in self.cache.cache[self.domain]:
+        try:
             del self.cache.cache[self.domain][key]
             self.cache.save_cache()
-        else:
+        except KeyError:
             raise NotKey(key)
+
+    @staticmethod
+    def generate_key(func_uuid: str, *args, **kwargs) -> str:
+        args_key = tuple(arg for arg in args if 'object at' not in str(arg))
+        key = f"{func_uuid}:{args_key}:{kwargs}"
+        return key
 
     def cache_decorator(self, func_uuid: str):
         """Decorator to cache the result of a function."""
         def decorator(func):
             def wrapper(*args, **kwargs):
                 # remove args that have 'object at' in them these are dynamic objects that should not be cached
-                args_key = tuple(arg for arg in args if 'object at' not in str(arg))
-                key = f"{func_uuid}:{args_key}:{kwargs}"
+                key = self.generate_key(func_uuid, *args, **kwargs)
                 try:
                     return self.get(key)
                 except NotKey:
@@ -89,3 +94,14 @@ class DomainCache:
                     return result
             return wrapper
         return decorator
+
+    def invalidate_key(self, key: str):
+        """Invalidates a specific key in the cache."""
+        try:
+            self.delete(key)
+        except NotKey:
+            print("Unable to find key:", key)
+            print("Available keys:")
+
+            for k in self.cache.cache[self.domain].keys():
+                print(k)

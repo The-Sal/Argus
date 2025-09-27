@@ -72,10 +72,12 @@ def get_auth():
         print(f"Waiting for login to complete... {takes}/{MAX_TAKES}")
         takes += 1
         if takes > MAX_TAKES:
-            print("Login timed out. Exiting...")
-            driver.quit()
-            raise Exception("Login timed out. Exiting...")
-
+            if input("Login taking too long. Continue waiting? (y/n): ").lower() != 'y':
+                print("Exiting...")
+                driver.quit()
+                raise Exception("Login timed out. Exiting...")
+            else:
+                takes = 0
 
 
     print("Login complete. Getting cookies...")

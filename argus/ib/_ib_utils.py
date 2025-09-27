@@ -1,13 +1,14 @@
 import os
 import threading
-from argus._argus_utils import Notification
 from utils3.networking import Session as _RAW_SESSION
 from argus.capital import DomainCache, CapitalComMKTDataLive
+from argus._argus_utils import Notification, macos_notification_with_custom_sound
 
 IB_Cache = DomainCache('IBKR')
 NOTIFICATION = Notification(
     number=os.getenv("NOTIFICATION_NUMBER", None), active=True if os.getenv("NOTIFICATION_NUMBER", None) else False,
 )
+
 
 class LockedSession(_RAW_SESSION):
     """A session that is locked to prevent concurrent access."""
@@ -25,6 +26,7 @@ class LockedSession(_RAW_SESSION):
         with self.lock:
             return super().post(url, data=data, json=json, **kwargs)
 
+
 class IBKRModes:
     ASK = 'ASK'
     ASK_BID_LAST = 'ASK+BID+LAST'
@@ -39,9 +41,10 @@ class IBKR_CapitalComMKTDataLive(CapitalComMKTDataLive):
     NOTE: Given that this is an extended version of the CapitalComMKTDataLive class with additional
     attributes the DECODER should be updated to handle the additional fields and orders from protocol 2."""
 
-    def __init__(self, shortable_shares, *args, **kwargs):
+    def __init__(self, shortable_shares, unrealized_pnl=0.0, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.shortable_shares = shortable_shares
+        self.unrealized_pnl = unrealized_pnl
 
     @classmethod
     def from_capital_com(cls, shortable_shares, capital_com_data: CapitalComMKTDataLive):
@@ -69,9 +72,6 @@ class IBKR_CapitalComMKTDataLive(CapitalComMKTDataLive):
         return bytes_packet
 
 
-
-
-
 class IBError(Exception):
     pass
 
@@ -79,8 +79,10 @@ class IBError(Exception):
 class AuthenticationTimeout(IBError):
     pass
 
+
 class MarketDataRefused(IBError):
     pass
+
 
 class MarketData:
     """User IBKRFields to query for market data"""
@@ -123,7 +125,6 @@ class Account:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
-
     @classmethod
     def from_dict(cls, data: dict):
         """Create an Account instance from a dictionary."""
@@ -131,3 +132,141 @@ class Account:
         if account_id is None:
             raise ValueError("Account ID is required to create an Account instance.")
         return cls(account_id=account_id, **data)
+
+
+class STK_Position:
+    """A class representing an IBKR Stock Position with it's own account id and all other data.
+    Based on the following type of asset:
+       {
+          "acctId":"0",
+          "conid":0,
+          "contractDesc":"TQQQ",
+          "position":0.0,
+          "mktPrice":0.0,
+          "mktValue":0.0,
+          "currency":"USD",
+          "avgCost":0.0,
+          "avgPrice":0.0,
+          "realizedPnl":0.0,
+          "unrealizedPnl":0.0,
+          "exchs":"None",
+          "expiry":"None",
+          "putOrCall":"None",
+          "multiplier":"None",
+          "strike":0.0,
+          "exerciseStyle":"None",
+          "conExchMap":[
+
+          ],
+          "assetClass":"STK",
+          "undConid":0
+       }
+    """
+
+    def __init__(self, account_id: str, conid: int, contract_desc: str, position: float,
+                 mkt_price: float, mkt_value: float, currency: str, avg_cost: float,
+                 avg_price: float, realized_pnl: float, unrealized_pnl: float,
+                 exchs: str, expiry: str, put_or_call: str, multiplier: str,
+                 strike: float, exercise_style: str, con_exch_map: list,
+                 asset_class: str, und_conid: int):
+        self.account_id = account_id
+        self.conid = conid
+        self.contract_desc = contract_desc
+        self.position = position
+        self.mkt_price = mkt_price
+        self.mkt_value = mkt_value
+        self.currency = currency
+        self.avg_cost = avg_cost
+        self.avg_price = avg_price
+        self.realized_pnl = realized_pnl
+        self.unrealized_pnl = unrealized_pnl
+        self.exchs = exchs
+        self.expiry = expiry
+        self.put_or_call = put_or_call
+        self.multiplier = multiplier
+        self.strike = strike
+        self.exercise_style = exercise_style
+        self.con_exch_map = con_exch_map
+        self.asset_class = asset_class
+        self.und_conid = und_conid
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Create an STK_Position instance from a dictionary."""
+        account_id = data.get('acctId')
+        conid = data.get('conid')
+        contract_desc = data.get('contractDesc')
+        position = data.get('position')
+        mkt_price = data.get('mktPrice')
+        mkt_value = data.get('mktValue')
+        currency = data.get('currency')
+        avg_cost = data.get('avgCost')
+        avg_price = data.get('avgPrice')
+        realized_pnl = data.get('realizedPnl')
+        unrealized_pnl = data.get('unrealizedPnl')
+        exchs = data.get('exchs')
+        expiry = data.get('expiry')
+        put_or_call = data.get('putOrCall')
+        multiplier = data.get('multiplier')
+        strike = data.get('strike')
+        exercise_style = data.get('exerciseStyle')
+        con_exch_map = data.get('conExchMap', [])
+        asset_class = data.get('assetClass')
+        und_conid = data.get('undConid')
+
+        if account_id is None or conid is None:
+            raise ValueError("Account ID and ConID are required to create an STK_Position instance.")
+
+        return cls(
+            account_id=account_id,
+            conid=conid,
+            contract_desc=contract_desc,
+            position=position,
+            mkt_price=mkt_price,
+            mkt_value=mkt_value,
+            currency=currency,
+            avg_cost=avg_cost,
+            avg_price=avg_price,
+            realized_pnl=realized_pnl,
+            unrealized_pnl=unrealized_pnl,
+            exchs=exchs,
+            expiry=expiry,
+            put_or_call=put_or_call,
+            multiplier=multiplier,
+            strike=strike,
+            exercise_style=exercise_style,
+            con_exch_map=con_exch_map,
+            asset_class=asset_class,
+            und_conid=und_conid
+        )
+
+    def __repr__(self):
+        return f"STK_Position(account_id={self.account_id}, conid={self.conid}, contract_desc={self.contract_desc}, position={self.position}, mkt_price={self.mkt_price}, mkt_value={self.mkt_value}, currency={self.currency}, avg_cost={self.avg_cost}, avg_price={self.avg_price}, realized_pnl={self.realized_pnl}, unrealized_pnl={self.unrealized_pnl}, exchs={self.exchs}, expiry={self.expiry}, put_or_call={self.put_or_call}, multiplier={self.multiplier}, strike={self.strike}, exercise_style={self.exercise_style}, con_exch_map={self.con_exch_map}, asset_class={self.asset_class}, und_conid={self.und_conid})"
+
+
+def throw_fuss(msg: str, boarder="*", notify=True):
+    """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
+    environment_size = os.get_terminal_size().columns
+    if environment_size < 80:
+        environment_size = 80
+    opening_line = boarder * environment_size
+    closing_line = boarder * environment_size
+    print(opening_line)
+    # message should be centered and maybe multiple lines
+    for line in msg.split('\n'):
+        centered_line = line.center(environment_size)
+        print(centered_line)
+    print(closing_line)
+
+    if notify:
+        macos_notification_with_custom_sound(
+            title="Argus IBKR Alert",
+            message=msg,
+        )
+
+
+if __name__ == '__main__':
+    throw_fuss("Hello World!\nThis is a test of the emergency broadcast system.\nHave a nice day!")
+    throw_fuss("This is still a test of the emergency broadcast system.\nHave a nice day!", boarder="#")
+    # try using emojis
+    throw_fuss("This is an emergency broadcast system test.\nHave a nice day! 😊", boarder="🚨")

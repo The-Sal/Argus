@@ -19,9 +19,26 @@ if platform.system() == "Darwin":
             'imessage-cli', '--message', "{}\n{}".format(title, message), number
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    # Alternative implementation with more sound options:
+    @assertTypes((str, str, str), auto_convert=True)
+    def macos_notification_with_custom_sound(title: str, message: str, sound_name: str = "default") -> None:
+        """Send a macOS notification with custom sound.
+
+        Args:
+            title: Notification title
+            message: Notification message
+            sound_name: Sound to play (default, glass, hero, funk, etc.)
+        """
+        subprocess.check_call([
+            'osascript',
+            '-e',
+            f'display notification "{message}" with title "{title}" sound name "{sound_name}"'
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
 
 class Notification:
     """Dispatcher for notifications."""
+
     def __init__(self, number: str = None, active=True):
         """
         :param number: The phone number to send notifications to.
@@ -29,7 +46,6 @@ class Notification:
         """
         self.number = number
         self.active = active
-
 
     def notify(self, title: str, message: str) -> None:
         """
