@@ -1,8 +1,84 @@
 import os
+import time
+import socket
 import threading
+import traceback
 from utils3.networking import Session as _RAW_SESSION
 from argus.capital import DomainCache, CapitalComMKTDataLive
 from argus._argus_utils import Notification, macos_notification_with_custom_sound
+
+# monkey patch for some sketchy stuff
+setattr(socket.socket, 'idx', 'real')
+
+
+class FakeSocket:
+    # The problem is quite annoying, MKT-Dispatcher is designed around the idea
+    # where it's internal ledger is socket-connections to clients and it automatically
+    # manages sub/unsubs based on client connections we want a callback direcrly
+    # from the Dispatcher without having to open a socket because it's internal-use
+    # i.e. within the `AcounterLedger` class and we don't want to add
+    # P2 serialization for an in memory passing of data but the entire design of
+    # MKT-Dispatcher is based around sockets so we have to fake it. Now we could
+    # contiously call isinstance on the socket object and see if it's a real
+    # socket or fake but that would cause so much overhead compared to checking
+    # one static property `idx` so we just add a property to the "real" for real sockets
+    # and fake sockets and check that instead when data is being sent.
+    # This allows the subscription model not to change, avoid massive refactoring
+    # to create a channel just for AccountLedger without distributing other clients
+    # who may also need the exact contract data. also idx is incredibly begin and does not
+    # change anything fundamentally about the socket object whatsoever just adds a property.
+    # Also since MKT-Dispatcher is the 'final' endpoint for this program [if you are using MKTDispatcher]
+    # there is nothing else 'downstream' that needs to be changed from breaking.
+
+    # The largest issue with modifying MKTDispatcher is that it's wrapped in thread-locks, concurrency,
+    # multiplexing logic, load-balancing and various other logic that would be a nightmare to refactor
+    # without breaking at least something since they all need to play nice together and to-date it's all been
+    # stable for a while even under immense load so let's not play with it too much.
+
+    # Also wondering this solves two problems:
+    # 1. We can pass a callback function to MKTDispatcher that gets called when
+    #    market data is received instead of having to open a socket connection.
+    # 2. MKTDispatcher automatically mamanges connection by sending `pings` to clients
+    #    and removing them if they are not responsive, because this will be a in-memory
+    #    callback we don't have to worry about that since it will always be responsive
+    #    meaning it will never be removed from the subscription list.
+    #    In addition to this we have a backstop in IBWss another critical component that we did not want to modify
+    #    we added the `protected_assets` set which is a list of contract IDs that cannot be unsubscribed from
+    #    no matter what, this is to prevent accidental unsubscriptions from critical assets that must
+    #    always be streamed which are also these assets this class is made to handle for AccountLedger.
+    #    So 1) No Unsub by the automatic connection management in MKTDispatcher, 2) under the case it does get
+    #    unsubscribed we have a backstop in IBWss to just throw an exception and make a big loud bang if that attempts to
+    #    happen. Given IBWss is the socket-layer for MKTDispatcher this is the last line of defense.
+    #    This is about the cleanest possible way to add AccountLedger functionality to MKTDispatcher
+    #    without refactoring the entire codebase and risking breaking something.
+    #    This way we can preserve the prior automatic contract sub/un-sub, load balancing, concurrency magic with very little mods
+    def __init__(self, callback):
+        self.callback = callback
+        self.idx = 'fake'
+
+    def sendall(self, data):
+        self.callback(data)
+
+class AbstractSocketMessage:
+    def __init__(self, content, origin, timestamp=time.time()):
+        self.content = content
+        self.origin = origin
+        self.timestamp = timestamp
+
+    @property
+    def as_dict(self):
+        return {
+            'content': self.content,
+            'origin': self.origin,
+            'timestamp': self.timestamp
+        }
+
+    def time(self):
+        return self.timestamp
+
+    def timestamp_str(self):
+        return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.timestamp))
+
 
 IB_Cache = DomainCache('IBKR')
 NOTIFICATION = Notification(
@@ -264,6 +340,27 @@ def throw_fuss(msg: str, boarder="*", notify=True):
             message=msg,
         )
 
+
+def expand_exception_decorator(func_uuid, propagate=True):
+    """A decorator to expand exceptions and print them in a more readable format."""
+
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                print("" + "=" * 80)
+                print("An exception occurred in function:", func.__name__)
+                print("Function UUID:", func_uuid)
+                print("Arguments:", args, kwargs)
+                print("PRINTING TRACEBACK:")
+                traceback.print_exc()
+                print("=" * 80 + "")
+                time.sleep(1)
+                if propagate:
+                    raise e
+        return wrapper
+    return decorator
 
 if __name__ == '__main__':
     throw_fuss("Hello World!\nThis is a test of the emergency broadcast system.\nHave a nice day!")

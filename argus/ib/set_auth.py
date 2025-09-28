@@ -32,12 +32,14 @@ def get_auth():
             # accept cookies
             accept_cookies_button = driver.find_element(By.CSS_SELECTOR, '#btn_accept_cookies')
             accept_cookies_button.click()
+            time.sleep(1)
             break
         except Exception as e:
             e.__str__()
             time.sleep(0.1)
 
     if os.environ.get('PAPER_ACCOUNT', '0') == '1':
+        print("Using paper account...")
         try:
             # wait for live/paper toggle to be present
             WebDriverWait(driver, 10).until(
@@ -49,6 +51,8 @@ def get_auth():
         except Exception as e:
             e.__str__()
             print("Warning: Live/Paper toggle not found. Continuing with default account type...")
+    else:
+        print("Using live account...")
 
 
     # get the active element

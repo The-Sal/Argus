@@ -7,8 +7,11 @@ s = socket.socket()
 s.connect(('localhost', 9972))
 s.sendall(b'add=QQQ')
 time.sleep(0.1)
-s.sendall(b'add=SPY')
+# s.sendall(b'add=SPY')
+# s.sendall(b'conid=796056051')
 parser = Protocol2Parser(['bid', 'bid_size', 'ask', 'ask_size', 'last', 'last_size', 'shortable_shares', 'timestamp', 'transmission_time'])
+
+print("Waiting for data...")
 try:
     while True:
         data = s.recv(4096)

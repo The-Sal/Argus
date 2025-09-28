@@ -1,5 +1,6 @@
 import os
 import json
+import sys
 import tqdm
 import time
 import pickle
@@ -15,59 +16,9 @@ from argus.capital import transmit_mkt_data_with_protocol_2
 from argus.ib._shortable_shares_data import ShortableSharesData
 from argus.ib._ib_utils import (LockedSession, IBKRModes, IBKR_CapitalComMKTDataLive,
                                 AuthenticationTimeout, MarketData, IBError, NOTIFICATION as _NOTIFICATION,
-                                IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, throw_fuss)
+                                IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, throw_fuss,
+                                FakeSocket)
 
-# monkey patch for some sketchy stuff
-setattr(socket.socket, 'idx', 'real')
-
-
-class FakeSocket:
-    # The problem is quite annoying, MKT-Dispatcher is designed around the idea
-    # where it's internal ledger is socket-connections to clients and it automatically
-    # manages sub/unsubs based on client connections we want a callback direcrly
-    # from the Dispatcher without having to open a socket because it's internal-use
-    # i.e. within the `AcounterLedger` class and we don't want to add
-    # P2 serialization for an in memory passing of data but the entire design of
-    # MKT-Dispatcher is based around sockets so we have to fake it. Now we could
-    # contiously call isinstance on the socket object and see if it's a real
-    # socket or fake but that would cause so much overhead compared to checking
-    # one static property `idx` so we just add a property to the "real" for real sockets
-    # and fake sockets and check that instead when data is being sent.
-    # This allows the subscription model not to change, avoid massive refactoring
-    # to create a channel just for AccountLedger without distributing other clients
-    # who may also need the exact contract data. also idx is incredibly begin and does not
-    # change anything fundamentally about the socket object whatsoever just adds a property.
-    # Also since MKT-Dispatcher is the 'final' endpoint for this program [if you are using MKTDispatcher]
-    # there is nothing else 'downstream' that needs to be changed from breaking.
-
-    # The largest issue with modifying MKTDispatcher is that it's wrapped in thread-locks, concurrency,
-    # multiplexing logic, load-balancing and various other logic that would be a nightmare to refactor
-    # without breaking at least something since they all need to play nice together and to-date it's all been
-    # stable for a while even under immense load so let's not play with it too much.
-
-    # Also wondering this solves two problems:
-    # 1. We can pass a callback function to MKTDispatcher that gets called when
-    #    market data is received instead of having to open a socket connection.
-    # 2. MKTDispatcher automatically mamanges connection by sending `pings` to clients
-    #    and removing them if they are not responsive, because this will be a in-memory
-    #    callback we don't have to worry about that since it will always be responsive
-    #    meaning it will never be removed from the subscription list.
-    #    In addition to this we have a backstop in IBWss another critical component that we did not want to modify
-    #    we added the `protected_assets` set which is a list of contract IDs that cannot be unsubscribed from
-    #    no matter what, this is to prevent accidental unsubscriptions from critical assets that must
-    #    always be streamed which are also these assets this class is made to handle for AccountLedger.
-    #    So 1) No Unsub by the automatic connection management in MKTDispatcher, 2) under the case it does get
-    #    unsubscribed we have a backstop in IBWss to just throw an exception and make a big loud bang if that attempts to
-    #    happen. Given IBWss is the socket-layer for MKTDispatcher this is the last line of defense.
-    #    This is about the cleanest possible way to add AccountLedger functionality to MKTDispatcher
-    #    without refactoring the entire codebase and risking breaking something.
-    #    This way we can preserve the prior automatic contract sub/un-sub, load balancing, concurrency magic with very little mods
-    def __init__(self, callback):
-        self.callback = callback
-        self.idx = 'fake'
-
-    def sendall(self, data):
-        self.callback(data)
 
 
 # noinspection PyUnresolvedReferences
@@ -213,7 +164,7 @@ class IBNetworker:
                 )
             if data.get('authenticated', False):
                 self.authenticated = True
-                print("User is authenticated", 'Response:', data)
+                # print("User is authenticated", 'Response:', data)
             else:
                 print("User is not authenticated")
                 print('Authentication check failed. Re-running setup messages...')
@@ -449,42 +400,50 @@ class IBWss:
                 time.sleep(5)
 
     def on_message(self, ws, message):
-        """Handle incoming messages from the WebSocket"""
-        _ = ws, message
-        self._sock_msgs.append(message)
         try:
-            message = json.loads(message)
-            topic = message.get('topic')
-            if 'smd' in topic:
-                self.handle_market_data(message)
-            elif 'spl' in topic:
-                print("PNL Update")
-                print(message)
+            """Handle incoming messages from the WebSocket"""
+            _ = ws, message
+            self._sock_msgs.append(message)
+            try:
+                message = json.loads(message)
+                topic = message.get('topic')
+                if 'smd' in topic:
+                    self.handle_market_data(message)
+                elif 'spl' in topic:
+                    print("PNL Update")
+                    print(message)
 
-            else:
-                if topic == 'system' and message.get('hb', False):
-                    return  # Heartbeat message, do nothing
-                elif topic == 'system' and message.get('success', False):
-                    self.recv = 1
-                    print('[IMPORTANT] Successfully connected to IBKR WebSocket as {}'.format(message.get('success')))
+                else:
+                    if topic == 'system' and message.get('hb', False):
+                        return  # Heartbeat message, do nothing
+                    elif topic == 'system' and message.get('success', False):
+                        self.recv = 1
+                        print(
+                            '[IMPORTANT] Successfully connected to IBKR WebSocket as {}'.format(message.get('success')))
 
-                _NOTIFICATION.notify(
-                    title='IBKR WebSocket Message',
-                    message=f'Received message on topic {topic}: {message}'
-                )
-        except json.JSONDecodeError:
-            if not message.decode() == 'ech+hb':
-                print("Message:", message, datetime.datetime.now())
+                    _NOTIFICATION.notify(
+                        title='IBKR WebSocket Message',
+                        message=f'Received message on topic {topic}: {message}'
+                    )
+            except json.JSONDecodeError:
+                if not message.decode() == 'ech+hb':
+                    print("Message:", message, datetime.datetime.now())
 
-        if not self.opened:
-            self.opened = True
-        self.recv += 1
-        if self.recv == 2:
-            self.networker.initialize()
-            for msg in self.stream_messages:
-                self.ws.send(msg)
+            if not self.opened:
+                self.opened = True
+            self.recv += 1
+            if self.recv == 2:
+                self._boot()
+        except Exception as e:
+            traceback.print_exc()
+            raise e
 
-            self._ready = True
+    def _boot(self):
+        self.networker.initialize()
+        for msg in self.stream_messages:
+            self.ws.send(msg)
+
+        self._ready = True
 
     def wait_till_read(self):
         """Wait until the WebSocket is ready to receive messages"""
@@ -523,26 +482,32 @@ class IBWss:
 
     def handle_market_data(self, message):
         """Handle market data messages"""
-        self._last_market_data_callback = time.time()
-        conidEx = message.get('conidEx', None)
-        conid = message['conid']
-        topic = message['topic']
-        server_id = message['server_id']
+        try:
+            self._last_market_data_callback = time.time()
+            conidEx = message.get('conidEx', None)
+            conid = message['conid']
+            topic = message['topic']
+            server_id = message['server_id']
+            obj = MarketData(
+                contract_id=conid,
+                server_id=server_id,
+                contract_exchange=conidEx,
+                topic=topic,
+                data=message
+            )
 
-        obj = MarketData(
-            contract_id=conid,
-            server_id=server_id,
-            contract_exchange=conidEx,
-            topic=topic,
-            data=message
-        )
-
-        if conid in self.contract_callbacks:
-            callback = self.contract_callbacks[conid]
-            if callable(callback):
-                callback(obj)
-            else:
-                print(f"Callback for contract ID {conid} is not callable.")
+            if conid in self.contract_callbacks:
+                callback = self.contract_callbacks[conid]
+                if callable(callback):
+                    callback(obj)
+                else:
+                    print(f"Callback for contract ID {conid} is not callable. Data:")
+                    print(obj.__dict__)
+        except Exception as e:
+            print("FAILED TO HANDLE MARKET DATA MESSAGE")
+            print(message)
+            traceback.print_exc()
+            raise e
 
     def test_conn(self):
         # try to send a heartbeat if the connection is lost it will raise an exception
@@ -555,6 +520,16 @@ class IBWss:
     @property
     def private_contracts(self):
         return list(self._private_contracts)
+
+    @runAsThread
+    def run(self):
+        try:
+            self.ws.run_forever()
+        except Exception as e:
+            print("WEBSOCKET FAILED TO RUN")
+            traceback.print_exc()
+            raise e
+
 
 
 class AccountProvider:
@@ -634,13 +609,16 @@ class AccountProvider:
             return
 
         print(data.__dict__)
-        contract_id = int(self.ss.translate_symbol_to_conid(data.symbol))
+        try:
+            contract_id = int(self.ss.translate_symbol_to_conid(data.symbol))
+        except TypeError:
+            print(f"Could not translate symbol {data.symbol} to contract ID.")
+            return
         position: STK_Position = self._conids.get(contract_id)
         cost = float(position.avg_cost)
         if data.last != 0:
             pnl = (float(data.last) - cost) * float(position.position)
             print(f"PnL for {data.symbol} (ConID: {contract_id}): {pnl:.2f} USD")
-
 
     def required_assets(self) -> list[int]:
         """Return a list of contract IDs required to be streamed for account positions and PnL."""
@@ -750,9 +728,8 @@ class MKTDispatcher:
 
         raise Exception("Connection closed")
 
-    @runAsThread
     def _open_ib_wss(self):
-        self.ws.ws.run_forever()
+        self.ws.run()
 
     def _quick_add(self, symbol, client, _retry=True, conid=None):
         if self._configs['Block New MKT Data']:
@@ -836,6 +813,18 @@ class MKTDispatcher:
                     if self._configs['Show search results from quick_add']:
                         print(f"Adding contract {search_term} to stream")
                     self._quick_add(search_term, client)
+
+                elif 'conid' in data:
+                    conid_str = data.split('=')[1].strip()
+                    try:
+                        conid = int(conid_str)
+                    except ValueError:
+                        client.sendall(b'Invalid conid format. Must be an integer. ')
+                        continue
+                    if self._configs['Show search results from quick_add']:
+                        print(f"Adding contract ID {conid} to stream")
+                    self._quick_add(symbol=None, conid=conid, client=client)
+
 
             except MarketDataRefused:
                 if self._configs['Show blocked MKT Data Warning']:
@@ -973,7 +962,6 @@ class MKTDispatcher:
         # Stuff the last cached values into the data object
 
         # Change as required
-
 
         # print(data.data)  # Note: This is for debugging to see the 'raw' market data received from IBKR
         self._update_cache(data)
