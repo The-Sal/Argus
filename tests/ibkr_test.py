@@ -12,8 +12,11 @@ def _empty_mock_socket():
                 return lambda data: None
             elif name == 'close':
                 return lambda: None
+            elif name == 'idx':
+                return 'real'
             else:
                 raise AttributeError(f"MockSocket has no attribute '{name}'")
+
 
     return MockSocket()
 

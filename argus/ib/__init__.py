@@ -17,7 +17,7 @@ from argus.ib._shortable_shares_data import ShortableSharesData
 from argus.ib._ib_utils import (LockedSession, IBKRModes, IBKR_CapitalComMKTDataLive,
                                 AuthenticationTimeout, MarketData, IBError, NOTIFICATION as _NOTIFICATION,
                                 IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, throw_fuss,
-                                FakeSocket)
+                                FakeSocket, enforce_currency, expand_exception_decorator)
 
 
 
@@ -588,7 +588,10 @@ class AccountProvider:
         self._ib_networker = init_ib_networker
         self._account_positions = self._ib_networker.fetch_account_positions()
         self._account_ledger = self._ib_networker.get_account_ledger()
-        self._conids = {}
+
+        # Represents the current portfolio as a dictionary of conid to STK_Position
+        # STK_Positions are lively updated via market data callbacks
+        self._portfolio = {}
         self._symbols_to_conids = {}
         self.ss = ShortableSharesData()
 
@@ -603,33 +606,34 @@ class AccountProvider:
 
         self._populate_conids()
 
+    @expand_exception_decorator('AccountProvider._on_market_data', propagate=False)
     def _on_market_data(self, data: IBKR_CapitalComMKTDataLive):
         """Handle market data received via FakeSocket"""
         if not isinstance(data, IBKR_CapitalComMKTDataLive):
             return
 
-        print(data.__dict__)
         try:
             contract_id = int(self.ss.translate_symbol_to_conid(data.symbol))
         except TypeError:
             print(f"Could not translate symbol {data.symbol} to contract ID.")
             return
-        position: STK_Position = self._conids.get(contract_id)
-        cost = float(position.avg_cost)
+        position: STK_Position = self._portfolio.get(contract_id)
+        cost = enforce_currency(position.avg_cost)
         if data.last != 0:
-            pnl = (float(data.last) - cost) * float(position.position)
-            print(f"PnL for {data.symbol} (ConID: {contract_id}): {pnl:.2f} USD")
+            pnl = (enforce_currency(data.last) - cost) * float(position.position)
+            position.formatted_unrealized_pnl = f"{pnl:.2f}"
+            position.unrealized_pnl = pnl
 
     def required_assets(self) -> list[int]:
         """Return a list of contract IDs required to be streamed for account positions and PnL."""
-        return list(self._conids.keys())
+        return list(self._portfolio.keys())
 
     def _populate_conids(self):
         """We should maintain a dictionary of coinds to positions for quick lookup to update the system"""
         for position in self._account_positions:
-            self._conids[position.conid] = position
+            self._portfolio[position.conid] = position
 
-        self._ib_wss.write_protected_assets(list(self._conids.keys()))
+        self._ib_wss.write_protected_assets(list(self._portfolio.keys()))
 
     @property
     def socket(self):
@@ -992,14 +996,14 @@ class MKTDispatcher:
                     ibkr_data = IBKR_CapitalComMKTDataLive(
                         shortable_shares=data.get(IBKRFields.SHORTABLE_SHARES, default=0.0),
                         symbol=data.get(IBKRFields.SYMBOL, default='None'),
-                        bid=data.get(IBKRFields.BID_PRICE, default=0.0),
-                        bid_size=data.get(IBKRFields.BID_SIZE, default=0),
-                        ask=data.get(IBKRFields.ASK_PRICE, default=0.0),
-                        ask_size=data.get(IBKRFields.ASK_SIZE, default=0),
-                        last=data.get(IBKRFields.LAST_PRICE, default=0.0),
+                        bid=enforce_currency(data.get(IBKRFields.BID_PRICE, default=0.0)),
+                        bid_size=enforce_currency(data.get(IBKRFields.BID_SIZE, default=0)),
+                        ask=enforce_currency(data.get(IBKRFields.ASK_PRICE, default=0.0)),
+                        ask_size=enforce_currency(data.get(IBKRFields.ASK_SIZE, default=0)),
+                        last=enforce_currency(data.get(IBKRFields.LAST_PRICE, default=0.0)),
                         last_size=0.0,  # Not available for now,
                         # PER VERSION ARGUS 0.0.4 THIS IS NOT IMPLEMENTED IN PROTOCOL 2 YET
-                        unrealized_pnl=data.get(IBKRFields.FORMATTED_UNREALIZED_PNL, default=0.0),
+                        unrealized_pnl=enforce_currency(data.get(IBKRFields.FORMATTED_UNREALIZED_PNL, default=0.0)),
                     )
                     if client.idx != 'real':
                         client.sendall(ibkr_data)

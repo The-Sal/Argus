@@ -5,54 +5,14 @@ import copy
 import time
 import traceback
 import threading
+from utils3 import runAsThread
+from tempfile import gettempdir
 from argus.ib.fields import IBKRFields
 from argus.ib import IBWss, AccountProvider, MKTDispatcher
 from argus.ib._ib_utils import (
     throw_fuss, NOTIFICATION as _NOTIFICATION, expand_exception_decorator,
     Account, FakeSocket, IBKR_CapitalComMKTDataLive, AbstractSocketMessage
 )
-
-
-# TODO: Implement FxContractBig, FxContractMini, FxContractMicro classes
-class FxContractBig:
-    """
-    Forcasting Contracts internally are represented like so:
-        The smallest unit:
-        {"market":null,"popularityRank":null,"name":null,"longDescription":null,
-        "putOrCall":null,"expiration":null,"currency":null,"lastTradeMillis":null,
-        "lastTradeDate":null,"lastTradeTime":null,"timezone":null,"commodityCode":null,
-        "eventAuthorityURL":null,"eventFixedPayout":null,"sourceAgency":null,
-        "marketRulesLink":null,"underlyingName":null,"categories":[],
-        "expectedResolutionTime":null,"expectedPayoutTime":null,"timespecifierParam":null,
-        "exchange":null,"priceIncrement":null,"tradingHours":{},"conid":null,
-        "underlyingConid":null,"underlyingSymbol":null,"shortDescription":null,
-        "strike":null,"strikeLabel":null}
-        Call these 'mico' contracts.
-
-        But these are usually in an array for the 'Big' contract:
-        so if the 'big' contract is NYC Mayor then it will have the above
-        as an array of these micro-contracts with TWO per candidate. The reason why
-        is that for each person there is a YES and NO contract. This is represented
-        by the PutOrCall field. Where Put=No and Call=Yes.
-
-        Given that each outcome has two micro-contracts by extension the 'mini' contract
-        will have two micro-contracts per outcome.
-
-        The order will be FxContractBig [mini, mini, mini, ...]
-        where each mini is [micro, micro] for each outcome.
-
-        This allows for comparison at the mini level which is more useful.
-        For example if there are three candidates A, B, C then the big contract will have
-        six micro-contracts:
-            A-Yes, A-No, B-Yes, B-No, C-Yes, C-No
-        but the mini contracts will be:
-            [A-Yes, A-No], [B-Yes, B-No], [C-Yes, C-No]
-
-        So you can compare mini contracts against each other or other platforms.
-    """
-
-
-    pass
 
 
 
@@ -89,7 +49,14 @@ class FXCWss(IBWss):
         self.authenticated_semaphore = threading.Semaphore(0)
         self._configs = {
             'Translate Socket Messages': True,
+            'Realtime Logging': False,
+            'Realtime Logging Interval': 1,
+            'Pause realtime logging': False,
         }
+
+        self.interactive_functions.update({
+            'Modify FxcWss Configs': self.modify_configs_interactive,
+        })
 
     ############################
     # Utility Methods
@@ -106,12 +73,19 @@ class FXCWss(IBWss):
             print(f"Error sending message: {e}")
             raise
 
-    def _write_sock_msgs_to_file(self):
-        """Write received socket messages to a file for debugging purposes"""
+    def _write_sock_msgs_to_file(self, verbose=True,
+                                 filename=f"fxc_socket_messages_{int(time.time())}.log"):
+        """
+        Write received socket messages to a file for debugging purposes
+        Args:
+            verbose: Whether to print a message when done
+            filename: The filename to write to. If None, returns the content as a string
+        Returns:
+            None if filename is provided, otherwise the content as a string
+        """
         if not self._sock_msgs:
-            return
+            return None
 
-        filename = f"fxc_socket_messages_{int(time.time())}.log"
         consolidated_stats = self._conn_statistics.copy()
         consolidated_stats['total_messages'] = len(self._sock_msgs)
         consolidated_stats['topics_received'] = list(set(consolidated_stats['topics_received']))
@@ -132,17 +106,21 @@ class FXCWss(IBWss):
                 # Convert all fieldsIDs into their string 'real' names if possible
                 # this requires converting the content to JSON
                 try:
-                    content_json = json.loads(content)
+                    original_content = json.loads(content)
+                    content_json = original_content.copy()
                     if isinstance(content_json, dict):
-                        for k, v in content_json.items():
+                        for k, v in original_content.items():
                             # check if k is in IBKRFields, first convert to int, then check in the translation dict
                             try:
                                 k_int = int(k)
                                 if k_int in translation:
                                     content_json[translation[k_int]] = v
-                                    del content_json[k]
+                                    continue
                             except (ValueError, KeyError):
                                 pass
+                            # if not, keep the original key
+                            content_json[k] = v
+
                     content = json.dumps(content_json, indent=2)
                 except json.JSONDecodeError:
                     pass  # If it's not JSON, we can't translate it
@@ -155,10 +133,14 @@ class FXCWss(IBWss):
             file_content += f"[{timestamp_str}] ({origin}): {content}\n"
         file_content += segment_sep
 
-        with open(filename, 'w') as f:
-            f.write(file_content)
-
-        print(f"Socket messages written to {filename}")
+        if filename is None:
+            return file_content
+        else:
+            with open(filename, 'w') as f:
+                f.write(file_content)
+            if verbose:
+                print(f"Socket messages written to {filename}")
+            return None
 
     def _countdown_to_exit(self, seconds=10):
         """Countdown to exit the application"""
@@ -169,6 +151,61 @@ class FXCWss(IBWss):
             time.sleep(1)
         print("Exiting now.                     ")
         os.kill(os.getpid(), 9)
+
+    def modify_configs_interactive(self):
+        """
+        Interactive method to modify configurations at runtime. You can
+        index into the configs by an integer generated from the list of keys.
+        """
+        config_keys = list(self._configs.keys())
+        print("Current Configurations:")
+        for idx, key in enumerate(config_keys):
+            print(f"{idx + 1}. {key}: {self._configs[key]}")
+        choice = input("Select a configuration to modify (or 'q' to quit): ")
+        if choice.lower() == 'q':
+            return
+        try:
+            choice = int(choice)
+            if 1 <= choice <= len(config_keys):
+                selected_key = config_keys[choice - 1]
+                current_value = self._configs[selected_key]
+                new_value = input(f"Enter new value for '{selected_key}' (current: {current_value}): ")
+                # Attempt to cast to the type of the current value
+                if isinstance(current_value, bool):
+                    new_value = new_value.lower() in ['true', '1', 'yes']
+                elif isinstance(current_value, int):
+                    new_value = int(new_value)
+                elif isinstance(current_value, float):
+                    new_value = float(new_value)
+                self._configs[selected_key] = new_value
+                print(f"Configuration '{selected_key}' updated to: {new_value}")
+            else:
+                print("Invalid choice. Please try again.")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+        except Exception as e:
+            print(f"Error updating configuration: {e}")
+            traceback.print_exc()
+
+    @runAsThread
+    def real_time_logging(self, interval=1, filename=None):
+        """
+        Real-time logging of socket messages to a file at regular intervals.
+        Args:
+            interval: Time in seconds between log writes
+            filename: The filename to write to. If None, uses a default naming scheme.
+        """
+        if filename is None:
+            # use .log for Monitor app to be able to perpetually read it
+            filename = os.path.join(
+                gettempdir(), f"fxc_socket_messages_realtime_{int(time.time())}.log"
+            )
+
+        print(f"Starting real-time logging to {filename} every {interval} seconds.")
+        while self.opened:
+            if not self._configs['Pause realtime logging']:
+                self._write_sock_msgs_to_file(verbose=False, filename=filename)
+            time.sleep(interval)
 
     ############################
     # Market Data Methods
@@ -212,6 +249,9 @@ class FXCWss(IBWss):
         self.recv = 50  # Again for continuity with IBWss
         self._boot()
         print("FXC WebSocket connection opened")
+        if self._configs['Realtime Logging']:
+            self.real_time_logging(interval=self._configs['Realtime Logging Interval'])
+
         self.authenticated_semaphore.release()
 
     @expand_exception_decorator('fxc.on_close')
@@ -277,7 +317,6 @@ class FXCWss(IBWss):
             return
 
         data = IBKR_CapitalComMKTDataLive
-
 
     @expand_exception_decorator('fxc._act_handler', propagate=False)
     def _act_handler(self, message: dict):

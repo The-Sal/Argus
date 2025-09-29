@@ -271,7 +271,7 @@ class Protocol2Parser:
         # Validate total packet size
         expected_total_length = 5 + packet_length
         if len(packet_bytes) != expected_total_length:
-            raise ValueError(f"Packet length mismatch: expected {expected_total_length}, got {len(packet_bytes)}")
+            raise ValueError(f"Packet length mismatch: expected {expected_total_length}, got {len(packet_bytes)}, full packet: {packet_bytes}")
 
         # Parse symbol length NNNN| (5 bytes)
         try:

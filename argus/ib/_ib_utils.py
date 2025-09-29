@@ -7,6 +7,25 @@ from utils3.networking import Session as _RAW_SESSION
 from argus.capital import DomainCache, CapitalComMKTDataLive
 from argus._argus_utils import Notification, macos_notification_with_custom_sound
 
+
+def enforce_currency(value):
+    """Ensure the currency is converted into a float. Removing any codes or symbols."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        # only remove when starts with 'C'
+        if value.startswith('C'):
+            value = value[1:]
+        # remove any leading or trailing non-numeric characters
+        value = value.strip().lstrip('$').rstrip('USD').strip()
+        try:
+            return float(value)
+        except ValueError:
+            raise ValueError(f"Cannot convert value to float: {value}")
+
+    raise TypeError(f"Unsupported type for currency conversion: {type(value)}")
+
+
 # monkey patch for some sketchy stuff
 setattr(socket.socket, 'idx', 'real')
 
@@ -171,15 +190,11 @@ class MarketData:
         self.data = data
 
     def get(self, field: int, default=None, strip_commas=True, string_values=True):
-        a1 = self.data.get(str(field), default)
-        a2 = self.data.get(int(field), default)
-        # if a1 is not None:
-        #     return str(a1).replace(',', '') if strip_commas else a1
-        # else:
-        #     return str(a2).replace(',', '') if strip_commas else a2
+        a1 = self.data.get(str(field), None)
+        a2 = self.data.get(int(field), None)
         final_value = a1 if a1 is not None else a2
         if final_value is None:
-            return default
+            final_value = default
 
         if strip_commas:
             final_value = str(final_value).replace(',', '')
