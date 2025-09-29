@@ -17,7 +17,7 @@ from argus.ib._shortable_shares_data import ShortableSharesData
 from argus.ib._ib_utils import (LockedSession, IBKRModes, IBKR_CapitalComMKTDataLive,
                                 AuthenticationTimeout, MarketData, IBError, NOTIFICATION as _NOTIFICATION,
                                 IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, throw_fuss,
-                                FakeSocket, enforce_currency, expand_exception_decorator)
+                                FakeSocket, enforce_currency, expand_exception_decorator, AccountBalances)
 
 
 
@@ -277,6 +277,7 @@ class IBWss:
         )
         self._stream_lock = threading.Lock()
         self._private_contracts = set()  # DO NOT MODIFY
+        self._max_contract_buffer = 5
 
         ######################################################################
         #          This entire section below is only for statistics          #
@@ -296,6 +297,7 @@ class IBWss:
         }
 
         self._protected_assets = set()
+        self._pnl_subscriptions = []
 
     def write_protected_assets(self, assets: list[str]):
         """Write a list of protected assets that should not be unsubscribed no matter what."""
@@ -347,7 +349,7 @@ class IBWss:
             fields: The fields to stream.
         """
         with self._stream_lock:
-            if self.subscribe_tally >= self._subscribe_tally_max:
+            if (self.subscribe_tally + self._max_contract_buffer) >= self._subscribe_tally_max:
                 raise ValueError(
                     f"Maximum number of subscriptions reached: {self._subscribe_tally_max}. "
                     "Please unsubscribe some contracts before subscribing to new ones."
@@ -386,18 +388,6 @@ class IBWss:
             msg = f'umd+{contract_id}' + '{}'
             self.ws.send(msg)
 
-    @runAsThread
-    def _heartbeat(self):
-        """Send a heartbeat message to keep the connection alive"""
-        while True:
-            if self.opened:
-                self.ws.send("ech+hb")
-                time.sleep(10)
-            else:
-                logging.warning(
-                    "Attempted to send heartbeat before WebSocket was opened. Make websocket is opened first."
-                )
-                time.sleep(5)
 
     def on_message(self, ws, message):
         try:
@@ -410,8 +400,7 @@ class IBWss:
                 if 'smd' in topic:
                     self.handle_market_data(message)
                 elif 'spl' in topic:
-                    print("PNL Update")
-                    print(message)
+                    self.handle_account_pnl(message)
 
                 else:
                     if topic == 'system' and message.get('hb', False):
@@ -485,7 +474,12 @@ class IBWss:
         try:
             self._last_market_data_callback = time.time()
             conidEx = message.get('conidEx', None)
-            conid = message['conid']
+            conid = message.get('conid', None)
+
+            if conid is None:
+                print('Market data message missing conid:', message)
+                return
+
             topic = message['topic']
             server_id = message['server_id']
             obj = MarketData(
@@ -521,6 +515,20 @@ class IBWss:
     def private_contracts(self):
         return list(self._private_contracts)
 
+
+    @runAsThread
+    def _heartbeat(self):
+        """Send a heartbeat message to keep the connection alive"""
+        while True:
+            if self.opened:
+                self.ws.send("ech+hb")
+                time.sleep(10)
+            else:
+                logging.warning(
+                    "Attempted to send heartbeat before WebSocket was opened. Make websocket is opened first."
+                )
+                time.sleep(5)
+
     @runAsThread
     def run(self):
         try:
@@ -530,6 +538,15 @@ class IBWss:
             traceback.print_exc()
             raise e
 
+    def subscribe_to_portfolio(self, callback):
+        """Subscribe to portfolio updates. """
+        self._pnl_subscriptions.append(callback)
+
+
+    def handle_account_pnl(self, message):
+        """Stub for now. Expect to send down the market-data rails"""
+        for callback in self._pnl_subscriptions:
+            callback(AccountBalances.from_dict(message))
 
 
 class AccountProvider:
@@ -592,6 +609,8 @@ class AccountProvider:
         # Represents the current portfolio as a dictionary of conid to STK_Position
         # STK_Positions are lively updated via market data callbacks
         self._portfolio = {}
+        self._account_balances: AccountBalances = None
+
         self._symbols_to_conids = {}
         self.ss = ShortableSharesData()
 
@@ -600,11 +619,70 @@ class AccountProvider:
         print(self._account_positions)
         print("*" * 50)
 
-        self._fake_socket = FakeSocket(
-            callback=self._on_market_data
-        )
-
+        self._fake_socket = FakeSocket(callback=self._on_market_data)
         self._populate_conids()
+        self._ib_wss.subscribe_to_portfolio(self._on_account_balances)
+
+        ##################################################
+        # DEBUG SOCKETS AND CODE
+        ###################################################
+
+        # While clients may use this for the time being
+        # it's primarily for debugging and development purposes
+        # This data is sent in the format of ~{JSON}L and transmits
+        # both account balances and positions updates
+        # Note: For internal testing the sum(PnL) per position from the
+        # stock-based PnL we send are MORE accurate than the
+        # account-based PnL we get from IBKR directly.
+        # Usually the difference is ~0.01 presumably due to rounding inside IBKR
+
+        self._debug_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._debug_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._debug_clients = set()
+        self._debug_listener()
+
+    @runAsThread
+    def _debug_listener(self):
+        self._debug_socket.bind(('localhost', 9973))
+        while True:
+            self._debug_socket.listen()
+            accepted, addr = self._debug_socket.accept()
+            del addr
+            self._debug_clients.add(accepted)
+
+    def _debug_propagate(self, message: str):
+        for client in list(self._debug_clients):
+            try:
+                client.sendall(message.encode())
+            except (ConnectionResetError, BrokenPipeError):
+                self._debug_clients.remove(client)
+
+    def _transmit(self, asset: STK_Position | None):
+        """
+        Convert the data into JSON and then frames it with ~{JSON}L and sends it to the debug socket.
+        Args:
+            asset (STK_Position | None): The asset to transmit. If None, transmit account balances.
+        """
+        if asset is None:
+            if self._account_balances is None:
+                return None
+            data = {
+                'type': 'account_balances',
+                'data': self._account_balances.to_dict()
+            }
+
+        else:
+            data = {
+                'type': 'position',
+                'data': asset.to_dict()
+            }
+
+        self._debug_propagate(f"~{json.dumps(data)}L")
+        return None
+
+    def _on_account_balances(self, data: AccountBalances):
+        self._account_balances = data
+        self._transmit(None)
 
     @expand_exception_decorator('AccountProvider._on_market_data', propagate=False)
     def _on_market_data(self, data: IBKR_CapitalComMKTDataLive):
@@ -623,6 +701,7 @@ class AccountProvider:
             pnl = (enforce_currency(data.last) - cost) * float(position.position)
             position.formatted_unrealized_pnl = f"{pnl:.2f}"
             position.unrealized_pnl = pnl
+            self._transmit(position)
 
     def required_assets(self) -> list[int]:
         """Return a list of contract IDs required to be streamed for account positions and PnL."""
@@ -638,6 +717,14 @@ class AccountProvider:
     @property
     def socket(self):
         return self._fake_socket
+
+    @property
+    def account_positions(self) -> list[STK_Position]:
+        return list(self._portfolio.values())
+
+    @property
+    def account_balances(self) -> AccountBalances:
+        return self._account_balances
 
 
 class MKTDispatcher:
@@ -913,7 +1000,7 @@ class MKTDispatcher:
         :return:
         """
         with self._thread_lock:
-            x = self.con_id_to_client
+            x = self.con_id_to_client.copy()
             remove_keys = []
 
             if x.items() == 0:

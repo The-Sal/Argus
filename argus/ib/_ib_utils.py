@@ -21,7 +21,7 @@ def enforce_currency(value):
         try:
             return float(value)
         except ValueError:
-            raise ValueError(f"Cannot convert value to float: {value}")
+            raise ValueError(f"Cannot convert value to float: {value}. Type: {type(value)}")
 
     raise TypeError(f"Unsupported type for currency conversion: {type(value)}")
 
@@ -192,6 +192,12 @@ class MarketData:
     def get(self, field: int, default=None, strip_commas=True, string_values=True):
         a1 = self.data.get(str(field), None)
         a2 = self.data.get(int(field), None)
+
+        if a1 == '':
+            a1 = None
+        if a2 == '':
+            a2 = None
+
         final_value = a1 if a1 is not None else a2
         if final_value is None:
             final_value = default
@@ -223,6 +229,113 @@ class Account:
         if account_id is None:
             raise ValueError("Account ID is required to create an Account instance.")
         return cls(account_id=account_id, **data)
+
+from typing import Dict, Optional
+
+
+class AccountBalances:
+    """
+    Parses Interactive Brokers WebSocket 'spl' (Profit and Loss) topic data.
+
+    Example data structure:
+    {'topic': 'spl', 'args': {'U9126451.': {'rowType': 1, 'dpl': 15.72, 'nl': 624.7,
+     'upl': 270.7, 'el': 0.92, 'uel': 0.92, 'mv': 623.2}}}
+    """
+
+    def __init__(
+            self,
+            daily_pnl: float,
+            pnl: float,
+            market_value: float,
+            account_id: Optional[str] = None,
+            net_liquidation: Optional[float] = None,
+            excess_liquidity: Optional[float] = None,
+            unrealized_excess_liquidity: Optional[float] = None,
+            row_type: Optional[int] = None
+    ):
+        self.account_id = account_id
+        self.daily_pnl = daily_pnl  # dpl - Daily Profit/Loss
+        self.pnl = pnl  # upl - Unrealized Profit/Loss
+        self.market_value = market_value  # mv - Margin Value
+        self.net_liquidation = net_liquidation  # nl - Net Liquidation Value
+        self.excess_liquidity = excess_liquidity  # el - Excess Liquidity
+        self.unrealized_excess_liquidity = unrealized_excess_liquidity  # uel
+        self.row_type = row_type
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> 'AccountBalances':
+        """
+        Create AccountBalances instance from WebSocket dictionary response.
+
+        Args:
+            data: Dictionary with structure {'topic': 'spl', 'args': {...}}
+
+        Returns:
+            AccountBalances instance
+
+        Raises:
+            ValueError: If data structure is invalid
+        """
+        if data.get('topic') != 'spl':
+            raise ValueError(f"Expected topic 'spl', got '{data.get('topic')}'")
+
+        args = data.get('args', {})
+        if not args:
+            raise ValueError("No 'args' found in data")
+
+        # Extract account ID and account data
+        # The account key may have a trailing dot (e.g., 'U9126451.')
+        account_id = next(iter(args.keys()))
+        account_data = args[account_id]
+
+        # Clean up account ID (remove trailing dot if present)
+        clean_account_id = account_id.rstrip('.')
+
+        return cls(
+            account_id=clean_account_id,
+            daily_pnl=account_data.get('dpl', 0.0),
+            pnl=account_data.get('upl', 0.0),
+            market_value=account_data.get('mv', 0.0),
+            net_liquidation=account_data.get('nl'),
+            excess_liquidity=account_data.get('el'),
+            unrealized_excess_liquidity=account_data.get('uel'),
+            row_type=account_data.get('rowType')
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"AccountBalances(account={self.account_id}, "
+            f"daily_pnl={self.daily_pnl:.2f}, "
+            f"pnl={self.pnl:.2f}, "
+            f"net_liq={self.net_liquidation:.2f}, "
+            f"mv={self.market_value:.2f}, "
+            f"el={self.excess_liquidity:.2f})"
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"Account: {self.account_id}\n"
+            f"  Daily P&L: ${self.daily_pnl:.2f}\n"
+            f"  Unrealized P&L: ${self.pnl:.2f}\n"
+            f"  Net Liquidation: ${self.net_liquidation:.2f}\n"
+            f"  Market Value: ${self.market_value:.2f}\n"
+            f"  Excess Liquidity: ${self.excess_liquidity:.2f}"
+        )
+
+    def to_dict(self):
+        ec = enforce_currency
+        return {
+            'account_id': self.account_id,
+            'daily_pnl': ec(self.daily_pnl),
+            'pnl': ec(self.pnl),
+            'market_value': ec(self.market_value),
+            'net_liquidation': ec(self.net_liquidation),
+            'excess_liquidity': ec(self.excess_liquidity),
+            'unrealized_excess_liquidity': ec(self.unrealized_excess_liquidity),
+            'row_type': self.row_type
+        }
+
+
 
 
 class STK_Position:
@@ -333,6 +446,31 @@ class STK_Position:
 
     def __repr__(self):
         return f"STK_Position(account_id={self.account_id}, conid={self.conid}, contract_desc={self.contract_desc}, position={self.position}, mkt_price={self.mkt_price}, mkt_value={self.mkt_value}, currency={self.currency}, avg_cost={self.avg_cost}, avg_price={self.avg_price}, realized_pnl={self.realized_pnl}, unrealized_pnl={self.unrealized_pnl}, exchs={self.exchs}, expiry={self.expiry}, put_or_call={self.put_or_call}, multiplier={self.multiplier}, strike={self.strike}, exercise_style={self.exercise_style}, con_exch_map={self.con_exch_map}, asset_class={self.asset_class}, und_conid={self.und_conid})"
+
+    def to_dict(self):
+        ec = enforce_currency
+        return {
+            'account_id': self.account_id,
+            'conid': self.conid,
+            'contract_desc': self.contract_desc,
+            'position': ec(self.position),
+            'mkt_price': ec(self.mkt_price),
+            'mkt_value': ec(self.mkt_value),
+            'currency': self.currency,
+            'avg_cost': ec(self.avg_cost),
+            'avg_price': ec(self.avg_price),
+            'realized_pnl': ec(self.realized_pnl),
+            'unrealized_pnl': ec(self.unrealized_pnl),
+            'exchs': self.exchs,
+            'expiry': self.expiry,
+            'put_or_call': self.put_or_call,
+            'multiplier': self.multiplier,
+            'strike': self.strike,
+            'exercise_style': self.exercise_style,
+            'con_exch_map': self.con_exch_map,
+            'asset_class': self.asset_class,
+            'und_conid': self.und_conid
+        }
 
 
 def throw_fuss(msg: str, boarder="*", notify=True):

@@ -52,6 +52,8 @@ Notes:
 
 
 """
+import numpy as np
+import pandas as pd
 from datetime import datetime
 from utils3 import assertTypes
 from argus.ib.fields import IBKRFields
@@ -470,11 +472,83 @@ class FxContractBig:
         else:
             raise ValueError(f"No micro contract found for conid '{conid}'")
 
+    def table_matrix(self) -> np.ndarray:
+        """
+        Get a matrix represendation of every outcome within the big contract and its data.
+        Missing data is represented by np.nan
+        :return:
+        """
+        matrix = []
+        market_state = self.market_data_state()
+        for strike_label in self.strikes_labels:
+            mini = self.lookup_mini_by_strike_label(strike_label)
+            yes_price, yes_size = (np.nan, np.nan)
+            yes_now_price, yes_now_size = (np.nan, np.nan)
+            if mini.micro_yes.data_available():
+                yes_price, yes_size = mini.yes_data()
+                yes_now_price, yes_now_size = mini.yes_now_data()
+
+            no_price, no_size = (np.nan, np.nan)
+            now_price, no_now_size = (np.nan, np.nan)
+            if mini.micro_no.data_available():
+                no_price, no_size = mini.no_data()
+                now_price, no_now_size = mini.no_now_data()
+
+            row = [
+                strike_label,
+                yes_price, yes_size, yes_now_price, yes_now_size,
+                no_price, no_size, now_price, no_now_size,
+            ]
+
+            matrix.append(row)
+
+
+        return np.array(matrix, dtype=object)
+
+    def table_dataframe(self) -> pd.DataFrame:
+        """
+        Get a DataFrame representation of every outcome within the big contract and its data.
+        Missing data is represented by np.nan
+        :return: pandas DataFrame
+        """
+        matrix = []
+        market_state = self.market_data_state()
+
+        for strike_label in self.strikes_labels:
+            mini = self.lookup_mini_by_strike_label(strike_label)
+            yes_price, yes_size = (np.nan, np.nan)
+            yes_now_price, yes_now_size = (np.nan, np.nan)
+            if mini.micro_yes.data_available():
+                yes_price, yes_size = mini.yes_data()
+                yes_now_price, yes_now_size = mini.yes_now_data()
+
+            no_price, no_size = (np.nan, np.nan)
+            now_price, no_now_size = (np.nan, np.nan)
+            if mini.micro_no.data_available():
+                no_price, no_size = mini.no_data()
+                now_price, no_now_size = mini.no_now_data()
+
+            row = [
+                strike_label,
+                yes_price, yes_size, yes_now_price, yes_now_size,
+                no_price, no_size, now_price, no_now_size,
+            ]
+            matrix.append(row)
+
+        # Define column headers
+        columns = [
+            'Strike Label',
+            'Yes Price', 'Yes Size', 'Yes Now Price', 'Yes Now Size',
+            'No Price', 'No Size', 'No Now Price', 'No Now Size'
+        ]
+
+        return pd.DataFrame(matrix, columns=columns)
+
 
 
 if __name__ == '__main__':
     import json
-    with open('/Users/Salman/Projects/Imperium/Argus/nyc_mayor_data.json') as f:
+    with open('/Users/Salman/Projects/Imperium/Argus/building/ib/misc/nyc_mayor_data.json') as f:
         data = json.load(f)['contracts']
     big = FxContractBig.from_json(data)
     print(big.conids_by_outcome())
@@ -502,4 +576,6 @@ if __name__ == '__main__':
     print(mini.market_data_state())
 
     print(big.market_data_state())
+    print(big.table_dataframe().to_string())
+    print(big.table_matrix())
 
