@@ -688,8 +688,12 @@ class AccountProvider:
     def _on_market_data(self, data: IBKR_CapitalComMKTDataLive):
         """Handle market data received via FakeSocket"""
         if not isinstance(data, IBKR_CapitalComMKTDataLive):
-            return
+            # it could be a ping
+            if isinstance(data, str) or data == b'$' or data == '$':
+                return
 
+            print(f"Received unexpected data type: {type(data)}")
+            print("Value:", data)
         try:
             contract_id = int(self.ss.translate_symbol_to_conid(data.symbol))
         except TypeError:
@@ -1049,6 +1053,8 @@ class MKTDispatcher:
 
     def callback(self, data: MarketData):
         """Callback function to handle market data"""
+        if not isinstance(data, MarketData):
+            raise RuntimeError("Callback received non-MarketData object")
         clients = self.con_id_to_client.get(data.contract_id, [])
         # Stuff the last cached values into the data object
 

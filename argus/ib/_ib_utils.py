@@ -345,9 +345,6 @@ class AccountBalances:
             'row_type': self.row_type
         }
 
-
-
-
 class STK_Position:
     """A class representing an IBKR Stock Position with it's own account id and all other data.
     Based on the following type of asset:

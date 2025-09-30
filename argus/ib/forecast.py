@@ -4,14 +4,13 @@ via WebSocket connections. It includes the FXCWss class for managing WebSocket c
 the FXCDispatcher class for dispatching market data and handling client interactions.
 
 
-BUG WARNING: FxCDispatcher does not report positions through AccountProvider for some reason. But PnL for the portfolio is still there but much slower.
-This is being actively investigated. This does NOT AFFECT MKTDispatcher, only FXCDispatcher.
+
 """
 import os
 import copy
 import json
-import socket
 import time
+import socket
 import inspect
 import threading
 import traceback
@@ -21,7 +20,8 @@ from argus.ib.fields import IBKRFields
 from argus.ib import IBWss, MKTDispatcher
 from argus.ib._forcast_utils import AbstractMarket, FxContractBig, FxCMarketNotFinishedResolution
 from argus.ib._ib_utils import (
-    throw_fuss, NOTIFICATION as _NOTIFICATION, expand_exception_decorator, AbstractSocketMessage, MarketData
+    throw_fuss, NOTIFICATION as _NOTIFICATION, expand_exception_decorator, AbstractSocketMessage, MarketData,
+    IBKRModes
 )
 
 
@@ -51,10 +51,10 @@ class FXCWss(IBWss):
         self.url = "wss://forecasttrader.interactivebrokers.ie/portal.proxy/v1/etp/ws"
         self._topic_routing_table = {
             'act': self._act_handler,
-            'smd': self._handle_market_data,
+            'smd': self.handle_market_data,  # Underlying IBWss handler
             'system': self._system_handler,
             'sts': self._status_handler,
-            'spl': self.handle_account_pnl
+            'spl': self.handle_account_pnl  # Underlying IBWss handler
         }
         self._conn_statistics = {
             'topics_received': [],
@@ -245,7 +245,7 @@ class FXCWss(IBWss):
             IBKRFields.VOLUME, IBKRFields.VOLUME_LONG, IBKRFields.AVERAGE_VOLUME,
             IBKRFields.HISTORICAL_VOLATILITY_PERCENT, IBKRFields.OPTION_IMPLIED_VOL_PERCENT,
             IBKRFields.ASK_PRICE, IBKRFields.ASK_SIZE, IBKRFields.BID_PRICE,
-            IBKRFields.BID_SIZE, IBKRFields.OPTION_OPEN_INTEREST
+            IBKRFields.BID_SIZE, IBKRFields.OPTION_OPEN_INTEREST, IBKRFields.SYMBOL
         ]
 
         super().stream_market_data(
@@ -324,9 +324,6 @@ class FXCWss(IBWss):
 
         # print(msg[:100])  # Print first 100 bytes for debugging
 
-    @expand_exception_decorator('fxc._handle_market_data', propagate=False)
-    def _handle_market_data(self, message: dict):
-        super().handle_market_data(message)
 
     @expand_exception_decorator('fxc._act_handler', propagate=False)
     def _act_handler(self, message: dict):
@@ -367,7 +364,7 @@ class FXCDispatcher(MKTDispatcher):
             'dynamic_func_calls': self._dynamic_func_calls_interactive,
         }
         # dryRun is always True for FXCDispatcher
-        super().__init__(dryRun=True)
+        super().__init__(dryRun=True, mode=IBKRModes.PROTOCOL_2)
         # within MKTDispatcher this is usually called after IBWss is initialized
         # but because we dry-run it's not going to be called
         # so we need to call it manually here
