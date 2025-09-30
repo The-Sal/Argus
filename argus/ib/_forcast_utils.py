@@ -52,10 +52,13 @@ Notes:
 
 
 """
+import json
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from utils3 import assertTypes
+
+from argus import expand_exception_decorator
 from argus.ib.fields import IBKRFields
 from argus.ib._ib_utils import MarketData, IBError
 
@@ -65,7 +68,6 @@ def enforce_type(value, expected_type):
     if not isinstance(value, expected_type):
         return expected_type(value)
     return value
-
 
 def et_decor(etype):
     """Decorator to enforce type on function return value."""
@@ -125,18 +127,24 @@ def _dict_convertor(obj, mapper):
     return new_dict
 
 
-
 class FxCError(IBError):
     pass
-
 
 class FxCMarketNotFinishedResolution(FxCError):
     """Raised when trying to set an active market while the current one is not fully resolved"""
     pass
 
+class NoValueMarketData(FxCError):
+    """Raised when market data is requested but not available"""
+    pass
+
+
+
 class AbstractionError(FxCError):
     """Raised when there is an error in the abstraction layer"""
     pass
+
+
 
 class AbstractMarket:
     """
@@ -241,7 +249,8 @@ class FxContractMicro:
                                  IBKRFields.ASK_PRICE, IBKRFields.ASK_SIZE]
 
         if self.strikeLabel is None:
-            raise AbstractionError("strikeLabel cannot be None for a FxContractMicro. This contract is probably not usable.")
+            raise AbstractionError(
+                "strikeLabel cannot be None for a FxContractMicro. This contract is probably not usable.")
 
         self.market_data: MarketData = None  # To be populated by Market Data subscription
 
@@ -257,7 +266,18 @@ class FxContractMicro:
     def delta_update_market_data(self, mkt_data: MarketData):
         """Delta update the market data for this micro contract."""
         if self.market_data is None:
+            has_valid_value = False
+            for field in self._required_fields:
+                new_value = mkt_data.get(field, default=None)
+                if new_value is not None and new_value != 'None':
+                    has_valid_value = True
+                    break
+
+            if not has_valid_value:
+                raise NoValueMarketData("Cannot perform delta update with no valid fields in market data.")
             self.market_data = mkt_data
+
+
         else:
             for field in self._required_fields:
                 new_value = mkt_data.get(field, default=None)
@@ -368,11 +388,195 @@ class FxContractMini:
             Dict with keys 'yes' and 'no' mapping to arrays of missing fields or empty array if all data is available. Uses
             IBKRFields
         """
+        self._infer_missing_fields()
         state = {
             'yes': self.micro_yes.market_data_state(),
             'no': self.micro_no.market_data_state()
         }
         return state
+
+    def _infer_missing_fields(self):
+        """
+        Infer missing bid prices for Y, N, YN, or NN when IBKR doesn't send them.
+
+        IBKR sometimes omits bid data for contracts that can no longer be bought
+        (typically when the price is too low to be tradeable, e.g., < $0.01).
+
+        We can infer these missing prices using two relationships:
+        1. X_now = 1.01 - X_opposite  (IBKR's internal formula)
+        2. X = X_now - MM_fees        (typically 0.02-0.03 spread)
+
+        Example: Curtis Sliwa contract
+        - Given: N=0.97, YN=0.04, Y=0.0, Ys=0.0
+        - Inference: Y ≈ YN - 0.03 = 0.04 - 0.03 = 0.01
+        - Validation: N >= 0.97 confirms Y must be near-zero
+
+        This inferred price (Y=0.01) is effectively unbuyable on ForecastTrader,
+        which is why IBKR didn't send the Y data in the first place.
+        """
+
+        if not self.data_available():
+            return  # Cannot infer without any data
+
+        buy_yes_price, buy_yes_size = self.yes_data()
+        buy_yes_now_price, buy_yes_now_size = self.yes_now_data()
+        buy_no_price, buy_no_size = self.no_data()
+        buy_no_now_price, buy_no_now_size = self.no_now_data()
+
+        MM_FEE = 0.03  # Market maker spread (typically 0.02-0.03)
+        NEAR_CERTAINTY = 0.97  # Threshold indicating opposite side is near-certain
+
+        # ============================================================
+        # Infer missing YES price when NO side is near-certain
+        # ============================================================
+        yes_is_missing = (buy_yes_price == 0.0 and buy_yes_size == 0.0)
+        no_is_near_certain = (buy_no_price >= NEAR_CERTAINTY and buy_no_size > 0.0)
+        yes_now_exists = (buy_yes_now_price > 0.0 and buy_yes_now_size > 0.0)
+
+        if yes_is_missing and no_is_near_certain and yes_now_exists:
+            # Primary method: Derive from YES_NOW (more direct)
+            # Y = YN - MM_fees
+            inferred_yes_price = max(buy_yes_now_price - MM_FEE, 0.0)
+
+            # Validation: Cross-check using opposite side
+            # Alternative formula: Y = (1.01 - N) - MM_fees
+            validation_price = max(round(1.01 - buy_no_price, 2) - MM_FEE, 0.0)
+
+            # Use the lower of the two estimates (more conservative)
+            inferred_yes_price = round(min(inferred_yes_price, validation_price), 2)
+
+            self.micro_yes.delta_update_market_data(MarketData(
+                contract_id=self.micro_yes.conid,
+                server_id=None,
+                contract_exchange=None,
+                topic=None,
+                data={
+                    IBKRFields.BID_PRICE: inferred_yes_price,
+                    IBKRFields.BID_SIZE: 0.0
+                }
+            ))
+
+        # ============================================================
+        # Infer missing NO price when YES side is near-certain
+        # ============================================================
+        no_is_missing = (buy_no_price == 0.0 and buy_no_size == 0.0)
+        yes_is_near_certain = (buy_yes_price >= NEAR_CERTAINTY and buy_yes_size > 0.0)
+        no_now_exists = (buy_no_now_price > 0.0 and buy_no_now_size > 0.0)
+
+        if no_is_missing and yes_is_near_certain and no_now_exists:
+            # Primary method: Derive from NO_NOW (more direct)
+            # N = NN - MM_fees
+            inferred_no_price = max(buy_no_now_price - MM_FEE, 0.0)
+
+            # Validation: Cross-check using opposite side
+            # Alternative formula: N = (1.01 - Y) - MM_fees
+            validation_price = max(round(1.01 - buy_yes_price, 2) - MM_FEE, 0.0)
+
+            # Use the lower of the two estimates (more conservative)
+            inferred_no_price = round(min(inferred_no_price, validation_price), 2)
+
+            self.micro_no.delta_update_market_data(MarketData(
+                contract_id=self.micro_no.conid,
+                server_id=None,
+                contract_exchange=None,
+                topic=None,
+                data={
+                    IBKRFields.BID_PRICE: inferred_no_price,
+                    IBKRFields.BID_SIZE: 0.0
+                }
+            ))
+
+        # ============================================================
+        # Infer missing YES_NOW price when YES price exists
+        # ============================================================
+        yes_now_is_missing = (buy_yes_now_price == 0.0 and buy_yes_now_size == 0.0)
+        yes_exists = (buy_yes_price > 0.0 and buy_yes_size > 0.0)
+        no_exists_for_validation = (buy_no_price > 0.0 and buy_no_size > 0.0)
+
+        if yes_now_is_missing and yes_exists:
+            # Primary method: Derive from opposite side
+            # YN = 1.01 - N
+            if no_exists_for_validation:
+                inferred_yes_now_price = round(1.01 - buy_no_price, 2)
+                inferred_yes_now_price = max(inferred_yes_now_price, 0.0)
+
+                # Validation: YN should be approximately Y + MM_fees
+                # If Y is very low, YN might be slightly higher
+                validation_price = round(buy_yes_price + MM_FEE, 2)
+
+                # Use the minimum (more conservative for buy prices)
+                inferred_yes_now_price = round(min(inferred_yes_now_price, validation_price), 2)
+
+                self.micro_yes.delta_update_market_data(MarketData(
+                    contract_id=self.micro_yes.conid,
+                    server_id=None,
+                    contract_exchange=None,
+                    topic=None,
+                    data={
+                        IBKRFields.ASK_PRICE: inferred_yes_now_price,
+                        IBKRFields.ASK_SIZE: 0.0
+                    }
+                ))
+            else:
+                # Fallback: If no N price, use Y + MM_fees
+                inferred_yes_now_price = round(min(buy_yes_price + MM_FEE, 1.0), 2)
+
+                self.micro_yes.delta_update_market_data(MarketData(
+                    contract_id=self.micro_yes.conid,
+                    server_id=None,
+                    contract_exchange=None,
+                    topic=None,
+                    data={
+                        IBKRFields.ASK_PRICE: inferred_yes_now_price,
+                        IBKRFields.ASK_SIZE: 0.0
+                    }
+                ))
+
+        # ============================================================
+        # Infer missing NO_NOW price when NO price exists
+        # ============================================================
+        no_now_is_missing = (buy_no_now_price == 0.0 and buy_no_now_size == 0.0)
+        no_exists = (buy_no_price > 0.0 and buy_no_size > 0.0)
+        yes_exists_for_validation = (buy_yes_price > 0.0 and buy_yes_size > 0.0)
+
+        if no_now_is_missing and no_exists:
+            # Primary method: Derive from opposite side
+            # NN = 1.01 - Y
+            if yes_exists_for_validation:
+                inferred_no_now_price = round(1.01 - buy_yes_price, 2)
+                inferred_no_now_price = max(inferred_no_now_price, 0.0)
+
+                # Validation: NN should be approximately N + MM_fees
+                # If N is very low, NN might be slightly higher
+                validation_price = round(buy_no_price + MM_FEE, 2)
+
+                # Use the minimum (more conservative for buy prices)
+                inferred_no_now_price = round(min(inferred_no_now_price, validation_price), 2)
+
+                self.micro_no.delta_update_market_data(MarketData(
+                    contract_id=self.micro_no.conid,
+                    server_id=None,
+                    contract_exchange=None,
+                    topic=None,
+                    data={
+                        IBKRFields.ASK_PRICE: inferred_no_now_price,
+                        IBKRFields.ASK_SIZE: 0.0
+                    }
+                ))
+            else:
+                # Fallback: If no Y price, use N + MM_fees
+                inferred_no_now_price = round(min(buy_no_price + MM_FEE, 1.0), 2)
+
+                self.micro_no.delta_update_market_data(MarketData(
+                    contract_id=self.micro_no.conid,
+                    server_id=None,
+                    contract_exchange=None,
+                    topic=None,
+                    data={
+                        IBKRFields.ASK_PRICE: inferred_no_now_price,
+                        IBKRFields.ASK_SIZE: 0.0
+                    }
+                ))
 
 
 class FxContractBig:
@@ -395,6 +599,12 @@ class FxContractBig:
         self.mini_contracts = mini_contracts
         self.conid = self.mini_contracts[0].micro_yes.underlyingConid
         self.underlyingName = self.mini_contracts[0].micro_yes.underlyingName
+
+        # veryify there are no duplicate strikeLabels
+        strike_labels = [mc.strikeLabel for mc in mini_contracts]
+        if len(strike_labels) != len(set(strike_labels)):
+            raise AbstractionError("Duplicate strikeLabels found in mini_contracts. "
+                                   "Each outcome must be unique. This contract may not be usable.")
 
         # A mapping of conid to micro contract for quick lookup
         if conid_mapping is None:
@@ -615,6 +825,30 @@ class FxContractBig:
 
         return pd.DataFrame(matrix, columns=columns)
 
+    def to_json(self):
+        converters = {
+            datetime: lambda x: x.isoformat(),
+        }
+
+        def _recursive_dict(obj):
+            if isinstance(obj, list):
+                return [_recursive_dict(item) for item in obj]
+            elif isinstance(obj, dict):
+                return {k: _recursive_dict(v) for k, v in obj.items()}
+            elif hasattr(obj, '__dict__'):
+                result = {}
+                for key, value in obj.__dict__.items():
+                    if key.startswith('_'):
+                        continue
+                    result[key] = _recursive_dict(value)
+                return result
+            else:
+                if type(obj) in converters:
+                    return converters[type(obj)](obj)
+                return obj
+
+        return json.dumps(_recursive_dict(self))
+
 
 if __name__ == '__main__':
     import json
@@ -648,5 +882,8 @@ if __name__ == '__main__':
 
     print(big.market_data_state())
     print(big.table_dataframe().to_string())
-    print(big.table_matrix())
-    print(big.all_conid_states())
+    # print(big.table_matrix())
+    # print(big.all_conid_states())
+
+    # print("="*80)
+    # print(json.dumps(json.loads(big.to_json()), indent=2))

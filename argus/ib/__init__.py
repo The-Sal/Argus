@@ -1,6 +1,5 @@
 import os
 import json
-import sys
 import tqdm
 import time
 import pickle
@@ -214,6 +213,9 @@ class IBNetworker:
             data = response.json()
             portfolio = []
             for asset in data:
+                if not isinstance(asset, dict):
+                    print(f"Skipping asset because it's not a dict: {asset}")
+                    continue
                 if asset["assetClass"] != "STK":
                     continue
 
@@ -640,6 +642,18 @@ class AccountProvider:
         self._debug_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._debug_clients = set()
         self._debug_listener()
+        self._last_send = time.time()
+        self._debug_lock = threading.Lock()
+        self.propagate_at_freq(interval=10)
+
+    @runAsThread
+    def propagate_at_freq(self, interval=10):
+        """Every interval seconds propagate the entire portfolio and account balances to the debug socket."""
+        while True:
+            time.sleep(interval)
+            for position in self._portfolio.values():
+                self._transmit(position)
+            self._transmit(None)
 
     @runAsThread
     def _debug_listener(self):
@@ -663,24 +677,28 @@ class AccountProvider:
         Args:
             asset (STK_Position | None): The asset to transmit. If None, transmit account balances.
         """
-        if asset is None:
-            if self._account_balances is None:
-                return None
-            data = {
-                'type': 'account_balances',
-                'data': self._account_balances.to_dict()
-            }
+        with self._debug_lock:
+            self._last_send = time.time()
+            if asset is None:
+                if self._account_balances is None:
+                    return None
+                data = {
+                    'type': 'account_balances',
+                    'data': self._account_balances.to_dict()
+                }
 
-        else:
-            data = {
-                'type': 'position',
-                'data': asset.to_dict()
-            }
+            else:
+                data = {
+                    'type': 'position',
+                    'data': asset.to_dict()
+                }
 
-        self._debug_propagate(f"~{json.dumps(data)}L")
-        return None
+            self._debug_propagate(f"~{json.dumps(data)}L")
+            return None
 
     def _on_account_balances(self, data: AccountBalances):
+        if data.net_liquidation is None:
+            return
         self._account_balances = data
         self._transmit(None)
 
@@ -697,7 +715,7 @@ class AccountProvider:
         try:
             contract_id = int(self.ss.translate_symbol_to_conid(data.symbol))
         except TypeError:
-            print(f"Could not translate symbol {data.symbol} to contract ID.")
+            print(f"Could not translate symbol {data.symbol} to contract ID. Obj={data.__dict__}")
             return
         position: STK_Position = self._portfolio.get(contract_id)
         cost = enforce_currency(position.avg_cost)

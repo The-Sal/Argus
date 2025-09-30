@@ -11,6 +11,52 @@ from argus._argus_utils import Notification, macos_notification_with_custom_soun
 
 logger = logging.getLogger(__name__)
 
+
+
+def throw_fuss(msg: str, boarder="*", notify=True):
+    """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
+    environment_size = os.get_terminal_size().columns
+    if environment_size < 80:
+        environment_size = 80
+    opening_line = boarder * environment_size
+    closing_line = boarder * environment_size
+    print(opening_line)
+    # message should be centered and maybe multiple lines
+    for line in msg.split('\n'):
+        centered_line = line.center(environment_size)
+        print(centered_line)
+    print(closing_line)
+
+    if notify:
+        macos_notification_with_custom_sound(
+            title="Argus IBKR Alert",
+            message=msg,
+        )
+
+
+def expand_exception_decorator(func_uuid, propagate=True):
+    """A decorator to expand exceptions and print them in a more readable format."""
+
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                print("" + "=" * 80)
+                print("An exception occurred in function:", func.__name__)
+                print("Function UUID:", func_uuid)
+                print("Arguments:", args, kwargs)
+                print("PRINTING TRACEBACK:")
+                traceback.print_exc()
+                print("=" * 80 + "")
+                time.sleep(1)
+                if propagate:
+                    raise e
+        return wrapper
+    return decorator
+
+
+@expand_exception_decorator(func_uuid="enforce_currency_v1", propagate=True)
 def enforce_currency(value, raise_on_fail=True, fallback=0.0) -> float:
     """Ensure the currency is converted into a float. Removing any codes or symbols."""
     if isinstance(value, (int, float)):
@@ -211,6 +257,7 @@ class MarketData:
         final_value = a1 if a1 is not None else a2
         if final_value is None:
             final_value = default
+            return final_value
 
         if strip_commas:
             final_value = str(final_value).replace(',', '')
@@ -480,47 +527,6 @@ class STK_Position:
         }
 
 
-def throw_fuss(msg: str, boarder="*", notify=True):
-    """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
-    environment_size = os.get_terminal_size().columns
-    if environment_size < 80:
-        environment_size = 80
-    opening_line = boarder * environment_size
-    closing_line = boarder * environment_size
-    print(opening_line)
-    # message should be centered and maybe multiple lines
-    for line in msg.split('\n'):
-        centered_line = line.center(environment_size)
-        print(centered_line)
-    print(closing_line)
-
-    if notify:
-        macos_notification_with_custom_sound(
-            title="Argus IBKR Alert",
-            message=msg,
-        )
-
-
-def expand_exception_decorator(func_uuid, propagate=True):
-    """A decorator to expand exceptions and print them in a more readable format."""
-
-    def decorator(func):
-        def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except Exception as e:
-                print("" + "=" * 80)
-                print("An exception occurred in function:", func.__name__)
-                print("Function UUID:", func_uuid)
-                print("Arguments:", args, kwargs)
-                print("PRINTING TRACEBACK:")
-                traceback.print_exc()
-                print("=" * 80 + "")
-                time.sleep(1)
-                if propagate:
-                    raise e
-        return wrapper
-    return decorator
 
 if __name__ == '__main__':
     throw_fuss("Hello World!\nThis is a test of the emergency broadcast system.\nHave a nice day!")

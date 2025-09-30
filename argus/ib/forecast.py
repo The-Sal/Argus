@@ -2,14 +2,12 @@
 This module provides classes and methods to interact with Interactive Brokers' Forecasting Contracts (FXC)
 via WebSocket connections. It includes the FXCWss class for managing WebSocket connections and
 the FXCDispatcher class for dispatching market data and handling client interactions.
-
-
-
 """
 import os
 import copy
 import json
 import time
+import base64
 import socket
 import inspect
 import threading
@@ -18,13 +16,11 @@ from utils3 import runAsThread
 from tempfile import gettempdir
 from argus.ib.fields import IBKRFields
 from argus.ib import IBWss, MKTDispatcher
-from argus.ib._forcast_utils import AbstractMarket, FxContractBig, FxCMarketNotFinishedResolution
+from argus.ib._forcast_utils import AbstractMarket, FxContractBig, FxCMarketNotFinishedResolution, NoValueMarketData, AbstractionError
 from argus.ib._ib_utils import (
     throw_fuss, NOTIFICATION as _NOTIFICATION, expand_exception_decorator, AbstractSocketMessage, MarketData,
     IBKRModes
 )
-
-
 
 
 def apply_some_lock(lock_name):
@@ -33,8 +29,11 @@ def apply_some_lock(lock_name):
             lock = getattr(self, lock_name)
             with lock:
                 return func(self, *args, **kwargs)
+
         return wrapper
+
     return decorator
+
 
 class FXCWss(IBWss):
     """
@@ -324,7 +323,6 @@ class FXCWss(IBWss):
 
         # print(msg[:100])  # Print first 100 bytes for debugging
 
-
     @expand_exception_decorator('fxc._act_handler', propagate=False)
     def _act_handler(self, message: dict):
         pass
@@ -343,6 +341,34 @@ class FXCWss(IBWss):
     @property
     def interactive_funcs(self):
         return self.interactive_functions.copy()
+
+
+class FxCTimeout:
+    def __init__(self, timeout_cb, timeout=10, warning_interval=60):
+        self.timeout = timeout
+        self.timeout_cb = timeout_cb
+        self._signaled = False
+        self._last_warning = 0
+        self.warning_interval = warning_interval  # seconds
+
+    def signal(self):
+        self._signaled = True
+
+    @runAsThread
+    def start(self):
+        self._signaled = False
+        start_time = time.time()
+        while not self._signaled:
+            if time.time() - start_time > self.timeout:
+                self.timeout_cb()
+                break
+            if time.time() - self._last_warning > self.warning_interval:
+                print("Warning: {}s left until timeout...".format(
+                    self.timeout - (time.time() - start_time)
+                ))
+                self._last_warning = time.time()
+            time.sleep(0.1)
+
 
 
 class FXCDispatcher(MKTDispatcher):
@@ -381,11 +407,18 @@ class FXCDispatcher(MKTDispatcher):
         self._active_market_memory: dict[int, FxContractBig] = {}
 
         self._configs.update({
-            'Auto-Print Pandas DataFrame on Update': False,
+            'Auto-Print Pandas DataFrame on Update': True,
         })
         self.ws.interactive_functions[
             'Modify dispatcher configurations interactively'
         ] = self._modify_configs_interactive
+
+        self._failed_big_markets: list[dict] = []
+
+        self._resolution_timeout = FxCTimeout(
+            timeout_cb=self._resolution_timeout_callback,
+            timeout=300  # 5 minutes default
+        )
 
         # Market setting, switching, etc. lock
         self.fxc_market_lock = threading.Lock()
@@ -406,11 +439,17 @@ class FXCDispatcher(MKTDispatcher):
             raise TypeError("Callback data must be an instance of MarketData")
         if self._active_market is not None:
             if data.contract_id in self._active_market.all_conids:
-                self._active_market.apply_mkt_data_update(conid=data.contract_id, mkt_data=data)
+                try:
+                    self._active_market.apply_mkt_data_update(conid=data.contract_id, mkt_data=data)
+                    self._propagate_market_update()
+                except NoValueMarketData:
+                    pass  # Ignore no-value updates
+
                 if self._configs['Auto-Print Pandas DataFrame on Update']:
                     self.show_market_state()
 
         if self.market_fully_resolved:
+            self._resolution_timeout.signal()
             throw_fuss(
                 msg=("Market fully resolved! All available data has been received. Unsubscribing from further updates."
                      "Values are saved, you can use .show_market_state() to view the current state."),
@@ -456,7 +495,6 @@ class FXCDispatcher(MKTDispatcher):
         self._all_markets = all_markets
         return self._all_markets
 
-
     @apply_some_lock('fxc_market_lock')
     def activate_market(self, market_contract_id: int) -> FxContractBig:
         """
@@ -486,7 +524,11 @@ class FXCDispatcher(MKTDispatcher):
         )
         response.raise_for_status()
         data = response.json()
-        big = FxContractBig.from_json(data['contracts'])
+        try:
+            big = FxContractBig.from_json(data['contracts'])
+        except AbstractionError as e:
+            self._failed_big_markets.append(data)
+            raise e
         self._active_market = big
         return big
 
@@ -509,6 +551,7 @@ class FXCDispatcher(MKTDispatcher):
                 contract_id=conid,
                 callback=self._internal_callback
             )
+        self._resolution_timeout.start()
 
     # DOES NOT REQUIRE LOCK, as it calls other methods that have the lock
     def activate_and_resolve_market(self, market_contract_id: int) -> FxContractBig:
@@ -532,9 +575,39 @@ class FXCDispatcher(MKTDispatcher):
         df = self._active_market.table_dataframe().to_string()
         throw_fuss(df, boarder='=', notify=False)
 
+    @apply_some_lock('fxc_market_lock')
+    def _resolution_timeout_callback(self):
+        if self._active_market is None:
+            return
+        throw_fuss(
+            msg=f"Market resolution for {self._active_market.underlyingName} timed out after "
+                f"{self._resolution_timeout.timeout} seconds. Market will be deleted from memory "
+                f"and subscriptions will be cancelled.",
+            boarder="="
+        )
+        for conid in self._active_market.all_conids:
+            self.ws.unsubscribe_market_data(conid)
+
+        self.delete_active_market_from_memory()
+
     ############################
     # CLI-Dev Methods
     ############################
+
+    @apply_some_lock('fxc_market_lock')
+    def delete_active_market_from_memory(self):
+        """Delete the currently active market from memory, if it exists"""
+        if self._active_market is None:
+            print("No active market to delete.")
+            return
+        conid = self._active_market.conid
+        if conid in self._active_market_memory:
+            del self._active_market_memory[conid]
+            print(f"Deleted market with contract ID {conid} from memory.")
+        else:
+            print("Active market not found in memory.")
+
+        self._active_market = None
 
     def interactive_mode(self):
         interactive_builtin = list(self.interactive_menu.keys())
@@ -563,7 +636,7 @@ class FXCDispatcher(MKTDispatcher):
                 else:
                     print("Invalid choice. Please try again.")
             except ValueError as e:
-                traceback.print_exc()
+                print("Invalid input. Please enter a number.")
             except Exception as e:
                 print(f"Error executing function: {e}")
                 traceback.print_exc()
@@ -641,6 +714,17 @@ class FXCDispatcher(MKTDispatcher):
     def test_func(self):
         self.activate_and_resolve_market(796056051)
 
+    def save_failed_big_markets(self, filename=None):
+        """Save the failed big markets to a JSON file for later inspection"""
+        if not self._failed_big_markets:
+            print("No failed big markets to save.")
+            return
+        if filename is None:
+            filename = os.path.join(gettempdir(), f"failed_big_markets_{int(time.time())}.json")
+        with open(filename, 'w') as f:
+            json.dump(self._failed_big_markets, f, indent=2)
+        print(f"Saved {len(self._failed_big_markets)} failed big markets to {filename}")
+
     ############################
     # Properties
     ############################
@@ -658,6 +742,11 @@ class FXCDispatcher(MKTDispatcher):
                 return False
         return True
 
+    ############################
+    # Client-Side API
+    ############################
+
+    @runAsThread
     def _listen_to_client(self, client: socket.socket):
         """
         This is the following client-API interface for FXCDispatcher.
@@ -685,7 +774,6 @@ class FXCDispatcher(MKTDispatcher):
         Updates to the state will use the 'command' field as 'market_update' with the field as the base64 encoded CSV string.
 
         Other guarantees:
-        - Server will always lock messages to the client, so no interleaving of messages will occur.
         - If an error occurs within a COMMAND <NOT INTERNAL ERROR> the server will still maintain
           the above guarantee and populate the "error" field in the response.
 
@@ -715,9 +803,146 @@ class FXCDispatcher(MKTDispatcher):
         :param client: A socket object representing the connected client.
         :return:
         """
+        while True:
+            data = client.recv(1024).decode('ascii').strip()
+            if not data:
+                print("Client disconnected: {}".format(client.getpeername()))
+                self.clients.remove(client)
+                break
 
-        # stub not implemented. API is still in development
-        pass
+            cmd_router = {
+                'get_active_market': self.client_get_active_market,
+                'activate_market': self._client_activate_market,
+                'start_market_resolution': self._client_start_market_resolution,
+                'force_start_market_resolution': self._client_force_start_market_resolution,
+                'market_fully_resolved': self._client_market_fully_resolved,
+                'show_market_state': self._client_show_market_state,
+                'verify_socket_sanity': self._client_verify_socket_sanity,
+            }
+
+            if ':' not in data:
+                self._craft_send_response(
+                    client=client,
+                    command="unknown",
+                    value=None,
+                    error="Invalid command format. Expected 'command:arg1,arg2,...'"
+                )
+                continue
+
+            command, *args = data.split(':')
+            args = args[0].split(',') if args else []
+            for arg in args:
+                if arg.strip() == '':
+                    args.remove(arg)
+
+            command = command.strip()
+            possible_cmds = list(cmd_router.keys())
+            if command not in possible_cmds:
+                self._craft_send_response(
+                    client=client,
+                    command=command,
+                    value=None,
+                    error=f"Unknown command '{command}'. Available commands: {possible_cmds}"
+                )
+                continue
+            try:
+                func = cmd_router[command]
+                if len(args) > 0:
+                    # noinspection all
+                    result = func(*args)
+                else:
+                    result = func()
+                self._craft_send_response(
+                    client=client,
+                    command=command,
+                    value=result,
+                    error=None
+                )
+            except Exception as e:
+                tb_str = traceback.format_exc()
+                self._craft_send_response(
+                    client=client,
+                    command=command,
+                    value=None,
+                    error=f"Error executing command '{command}': {e}"
+                )
+                print("ERROR OCCURRED FOR CLIENT {} COMMAND {}:\n {}".format(
+                    client.getpeername(), command, tb_str
+                ))
+
+    def client_get_active_market(self):
+        """Gets the current active market as a JSON string, or None if no active market"""
+        if self._active_market is None:
+            return None
+        active_market: FxContractBig = self._active_market
+        return active_market.to_json()
+
+    def _client_activate_market(self, contract_id: str):
+        try:
+            contract_id = int(contract_id)
+        except ValueError:
+            raise ValueError("contract_id must be an integer")
+
+        market = self.activate_market(contract_id)
+        return "Activated market: {}".format(market.underlyingName)
+
+    def _client_start_market_resolution(self):
+        self.start_market_resolution()
+        return "Started market resolution for active market."
+
+    def _client_force_start_market_resolution(self):
+        self.start_market_resolution(force=True)
+        return "Force started market resolution for active market."
+
+    def _client_market_fully_resolved(self) -> bool:
+        return self.market_fully_resolved
+
+    def _client_show_market_state(self) -> str:
+        if self._active_market is None:
+            return "No active market."
+        df = self._active_market.table_dataframe()
+        csv_str = df.to_csv(index=False)
+        # encode to base64 to ensure safe transmission
+        b64_str = base64.b64encode(csv_str.encode('utf-8')).decode('utf-8')
+        return b64_str
+
+    def _client_verify_socket_sanity(self):
+        if self not in self.clients:
+            self.clients.append(self)
+            return "Socket sanity verified and re-added to client list."
+        return "Socket already in client list."
+
+    def _propagate_market_update(self):
+        """Propagate the current market state to all connected clients as a base64 encoded CSV string."""
+        if self._active_market is None:
+            return
+        df = self._active_market.table_dataframe()
+        csv_str = df.to_csv(index=False)
+        b64_str = base64.b64encode(csv_str.encode('utf-8')).decode('utf-8')
+        for client in self.clients:
+            try:
+                self._craft_send_response(
+                    client=client,
+                    command='market_update',
+                    value=b64_str,
+                    error=None
+                )
+            except Exception as e:
+                print(f"Error sending market update to client {client.getpeername()}: {e}")
+                self.clients.remove(client)
+
+
+
+    @staticmethod
+    def _craft_send_response(client, command: str, value, error: str | None = None) -> str:
+        response = {
+            'command': command,
+            'value': value,
+            'error': error
+        }
+        msg = "~" + json.dumps(response) + "L"
+        client.sendall(msg.encode('ascii'))
+
 
 
 if __name__ == '__main__':

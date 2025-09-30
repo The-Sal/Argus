@@ -9,3 +9,4 @@ The following sources are available through Argus:
 from argus.ib import *
 from argus.capital import *
 from argus.tv import ChartSession, QuoteSession, multisymbol, MarketData
+from argus.nasdaq import NASDAQDataDownloader
