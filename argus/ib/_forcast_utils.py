@@ -57,7 +57,7 @@ import pandas as pd
 from datetime import datetime
 from utils3 import assertTypes
 from argus.ib.fields import IBKRFields
-from argus.ib._ib_utils import MarketData
+from argus.ib._ib_utils import MarketData, IBError
 
 
 def enforce_type(value, expected_type):
@@ -125,6 +125,58 @@ def _dict_convertor(obj, mapper):
     return new_dict
 
 
+
+class FxCError(IBError):
+    pass
+
+
+class FxCMarketNotFinishedResolution(FxCError):
+    """Raised when trying to set an active market while the current one is not fully resolved"""
+    pass
+
+class AbstractionError(FxCError):
+    """Raised when there is an error in the abstraction layer"""
+    pass
+
+class AbstractMarket:
+    """
+    This is an abstract representation of a market or 'Big' contract.
+    Underlying is based on:
+    {
+        "name": "US Coal Electricity Generation", "symbol": "EMUSC",
+        "exchange": "FORECASTX", "conid": 791099715
+    }
+    """
+
+    def __init__(self, name: str, symbol: str, exchange: str, conid: int):
+        self.name = name
+        self.symbol = symbol
+        self.exchange = exchange
+        self.conid = conid
+
+    def __eq__(self, other):
+        if not isinstance(other, AbstractMarket):
+            return False
+        return self.conid == other.conid
+
+    def __hash__(self):
+        return hash(self.conid)
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        """Create an AbstractMarket from a dict."""
+        required_fields = ['name', 'symbol', 'exchange', 'conid']
+        for field in required_fields:
+            if field not in data:
+                raise ValueError(f"Missing required field '{field}' in data")
+        return cls(
+            name=data['name'],
+            symbol=data['symbol'],
+            exchange=data['exchange'],
+            conid=int(data['conid'])
+        )
+
+
 class FxContractMicro:
     """This is the smallest unit of a Forcasting contract."""
     # {"market": null, "popularityRank": null, "name": null, "longDescription": null,
@@ -186,7 +238,10 @@ class FxContractMicro:
         self.strike = data.get("strike")
         self.strikeLabel = data.get("strikeLabel")
         self._required_fields = [IBKRFields.BID_PRICE, IBKRFields.BID_SIZE,
-                          IBKRFields.ASK_PRICE, IBKRFields.ASK_SIZE]
+                                 IBKRFields.ASK_PRICE, IBKRFields.ASK_SIZE]
+
+        if self.strikeLabel is None:
+            raise AbstractionError("strikeLabel cannot be None for a FxContractMicro. This contract is probably not usable.")
 
         self.market_data: MarketData = None  # To be populated by Market Data subscription
 
@@ -206,6 +261,8 @@ class FxContractMicro:
         else:
             for field in self._required_fields:
                 new_value = mkt_data.get(field, default=None)
+                if new_value == 'None':
+                    new_value = None
                 if new_value is not None:
                     self.market_data.data[field] = new_value
 
@@ -248,8 +305,6 @@ class FxContractMicro:
         else:
             missing = self._required_fields.copy()
         return missing
-
-
 
 
 class FxContractMini:
@@ -353,7 +408,6 @@ class FxContractBig:
 
         self._strike_mapping = {mc.strikeLabel: mc for mc in mini_contracts}
 
-
     @classmethod
     def from_json(cls, data: list[dict]):
         """Create a FxContractBig from a list of micro contract dicts."""
@@ -434,6 +488,24 @@ class FxContractBig:
             }
         return structure
 
+    def all_conid_states(self) -> dict[int, list[int]]:
+        """
+        Get a flat mapping of all conids to their missing fields.
+        Example:
+        {
+            12345: [1, 2],  # IBKRFields missing for conid 12345
+            12346: [],      # All data available for conid 12346
+        }
+        :return:
+        """
+        states = {}
+        for mc in self.mini_contracts:
+            yes_conid, no_conid = mc.conids()
+            yes_no_data = mc.market_data_state()
+            states[yes_conid] = yes_no_data['yes']
+            states[no_conid] = yes_no_data['no']
+        return states
+
     def lookup_mini_by_strike_label(self, strike_label: str) -> FxContractMini:
         """Get the mini contract for a specific outcome by its strike label."""
         if strike_label in self._strike_mapping:
@@ -453,7 +525,7 @@ class FxContractBig:
 
     @property
     def all_conids(self) -> list[int]:
-        """Get a flat list of all conids in this big contract."""
+        """Get a flat list of all micro conids in this big contract."""
         conids = []
         for mc in self.mini_contracts:
             yes_conid, no_conid = mc.conids()
@@ -502,7 +574,6 @@ class FxContractBig:
 
             matrix.append(row)
 
-
         return np.array(matrix, dtype=object)
 
     def table_dataframe(self) -> pd.DataFrame:
@@ -545,9 +616,9 @@ class FxContractBig:
         return pd.DataFrame(matrix, columns=columns)
 
 
-
 if __name__ == '__main__':
     import json
+
     with open('/Users/Salman/Projects/Imperium/Argus/building/ib/misc/nyc_mayor_data.json') as f:
         data = json.load(f)['contracts']
     big = FxContractBig.from_json(data)
@@ -578,4 +649,4 @@ if __name__ == '__main__':
     print(big.market_data_state())
     print(big.table_dataframe().to_string())
     print(big.table_matrix())
-
+    print(big.all_conid_states())

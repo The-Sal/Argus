@@ -1,22 +1,31 @@
 import os
-import sys
-import json
 import copy
+import json
+import socket
 import time
-import traceback
+import inspect
 import threading
+import traceback
 from utils3 import runAsThread
 from tempfile import gettempdir
 from argus.ib.fields import IBKRFields
-from argus.ib import IBWss, AccountProvider, MKTDispatcher
+from argus.ib import IBWss, MKTDispatcher
+from argus.ib._forcast_utils import AbstractMarket, FxContractBig, FxCMarketNotFinishedResolution
 from argus.ib._ib_utils import (
-    throw_fuss, NOTIFICATION as _NOTIFICATION, expand_exception_decorator,
-    Account, FakeSocket, IBKR_CapitalComMKTDataLive, AbstractSocketMessage
+    throw_fuss, NOTIFICATION as _NOTIFICATION, expand_exception_decorator, AbstractSocketMessage, MarketData
 )
 
 
 
 
+def apply_some_lock(lock_name):
+    def decorator(func):
+        def wrapper(self, *args, **kwargs):
+            lock = getattr(self, lock_name)
+            with lock:
+                return func(self, *args, **kwargs)
+        return wrapper
+    return decorator
 
 class FXCWss(IBWss):
     """
@@ -36,7 +45,7 @@ class FXCWss(IBWss):
             'smd': self._handle_market_data,
             'system': self._system_handler,
             'sts': self._status_handler,
-            'spl': self._portfolio_handler,
+            'spl': self.handle_account_pnl
         }
         self._conn_statistics = {
             'topics_received': [],
@@ -308,15 +317,7 @@ class FXCWss(IBWss):
 
     @expand_exception_decorator('fxc._handle_market_data', propagate=False)
     def _handle_market_data(self, message: dict):
-        print("Market Data Message:", message)
-        # send to client callbacks
-        contract_id = message.get('conid')
-        callbacks = self.contract_callbacks.get(contract_id, [])
-        if not callbacks:
-            print(f"No callbacks registered for contract ID {contract_id}")
-            return
-
-        data = IBKR_CapitalComMKTDataLive
+        super().handle_market_data(message)
 
     @expand_exception_decorator('fxc._act_handler', propagate=False)
     def _act_handler(self, message: dict):
@@ -328,10 +329,6 @@ class FXCWss(IBWss):
 
     @expand_exception_decorator('fxc._status_handler', propagate=False)
     def _status_handler(self, message: dict):
-        pass
-
-    @expand_exception_decorator('fxc._portfolio_handler', propagate=False)
-    def _portfolio_handler(self, message: dict):
         pass
 
     ############################
@@ -348,7 +345,8 @@ class FXCDispatcher(MKTDispatcher):
     Notes:
         YOU CANNOT USE it with MKTDispatcher.
         Does NOT have the same interface as MKTDispatcher (for clients)
-        Only supports Protocol 2. No support for pickle, JSON, etc.
+        Only supports Protocol JSON and uses the Big/Mini/Micro contracts abstractions
+        from _forcast_utils.py
     """
 
     def __init__(self, cookie=os.getenv('IB_COOKIE')):
@@ -357,9 +355,7 @@ class FXCDispatcher(MKTDispatcher):
         self.ws.authenticated_semaphore.acquire()
 
         self.interactive_menu = {
-            'add_contract': self.add_contract_interactive,
-            # 'remove_contract': self.remove_contract_interactive,
-            # 'list_contracts': self.list_contracts,
+            'dynamic_func_calls': self._dynamic_func_calls_interactive,
         }
         # dryRun is always True for FXCDispatcher
         super().__init__(dryRun=True)
@@ -367,40 +363,172 @@ class FXCDispatcher(MKTDispatcher):
         # but because we dry-run it's not going to be called
         # so we need to call it manually here
         self._add_clients()
-        self._private_socket = FakeSocket(callback=self._internal_callback)
+        self._urls = {
+            'tree': 'https://api.ibkr.com/v1/api/trsrv/event/category-tree',
+            # requires params i.e. market=733131966&exchange=FORECASTX
+            'contract': 'https://api.ibkr.com/v1/api/trsrv/event/contracts?market={}&exchange=FORECASTX'
+            # ^ returns the 'big' contract, from which you can derive the mini and micro
+        }
+        self._all_markets: list[AbstractMarket] | None = None
+        self._active_market: FxContractBig | None = None
 
-    @staticmethod
-    def _internal_callback(data: IBKR_CapitalComMKTDataLive):
+        self._active_market_memory: dict[int, FxContractBig] = {}
+
+        self._configs.update({
+            'Auto-Print Pandas DataFrame on Update': False,
+        })
+        self.ws.interactive_functions[
+            'Modify dispatcher configurations interactively'
+        ] = self._modify_configs_interactive
+
+        # Market setting, switching, etc. lock
+        self.fxc_market_lock = threading.Lock()
+        self.fxc_market_data_lock = threading.Lock()
+
+    ############################
+    # Callbacks
+    ############################
+    @apply_some_lock('fxc_market_data_lock')
+    @expand_exception_decorator('fxc._internal_callback', propagate=False)
+    def _internal_callback(self, data: MarketData):
         """
-        The internal callback class handles incoming market data that
-        was request by the user via the interactive menu. It is NOT streamed
-        to any clients. It simply prints the data to the console.
-        :param data: An instance of IBKR_CapitalComMKTDataLive containing market data.
+        The internal callback class handles incoming market data
+        :param data: An instance of MarketData containing market data.
         :return: None
         """
+        if not isinstance(data, MarketData):
+            raise TypeError("Callback data must be an instance of MarketData")
+        if self._active_market is not None:
+            if data.contract_id in self._active_market.all_conids:
+                self._active_market.apply_mkt_data_update(conid=data.contract_id, mkt_data=data)
+                if self._configs['Auto-Print Pandas DataFrame on Update']:
+                    self.show_market_state()
 
-        if isinstance(data, str):
-            # It's a ping
+        if self.market_fully_resolved:
+            throw_fuss(
+                msg=("Market fully resolved! All available data has been received. Unsubscribing from further updates."
+                     "Values are saved, you can use .show_market_state() to view the current state."),
+                notify=False
+            )
+            for conid in self._active_market.all_conids:
+                self.ws.unsubscribe_market_data(conid)
+
+            self._active_market_memory[self._active_market.conid] = self._active_market
+
+    ############################
+    # API Methods
+    ############################
+
+    ############################
+    # API Methods
+    ############################
+    @expand_exception_decorator('fxc.generate_all_markets', propagate=True)
+    def generate_all_markets(self) -> list[AbstractMarket]:
+        """
+            Generate a dictionary of all markets available in FXC.
+            The dictionary keys are market names, and the values are their corresponding IDs.
+        """
+        if self._all_markets:
+            return self._all_markets  # Return cached version if already generated
+
+        print("Fetching all markets from IBKR...")
+        response = self.ws.networker.session.get(self._urls['tree'])
+        response.raise_for_status()
+        data: dict[str, dict[str, str | list]] = response.json()
+        all_categories = data.keys()
+        print("Found {} categories.".format(len(all_categories)))
+        all_markets = []
+        for category in all_categories:
+            contents: dict = data[category]
+            markets = contents.get('markets', [])
+            if not markets:
+                continue
+            for market in markets:
+                all_markets.append(AbstractMarket.from_dict(market))
+
+        print("Total unique markets found:", len(all_markets))
+        self._all_markets = all_markets
+        return self._all_markets
+
+
+    @apply_some_lock('fxc_market_lock')
+    def activate_market(self, market_contract_id: int) -> FxContractBig:
+        """
+        Activate a market by its contract ID. This fetches the contract details
+        and starts to resolve all market data for it.
+
+        Args:
+            market_contract_id: The contract ID of the market to activate.
+
+        Returns:
+            An instance of FxContractBig representing the activated market.
+        """
+        if self._active_market is not None and not self.market_fully_resolved:
+            raise FxCMarketNotFinishedResolution(
+                "Current market is not fully resolved. Please wait until it is fully resolved before activating a new market."
+            )
+
+        if market_contract_id in self._active_market_memory:
+            self._active_market = self._active_market_memory[market_contract_id]
+            print(
+                f"Market {self._active_market.underlyingName} with contract ID {market_contract_id} re-activated from memory."
+            )
+            return self._active_market
+
+        response = self.ws.networker.session.get(
+            self._urls['contract'].format(market_contract_id)
+        )
+        response.raise_for_status()
+        data = response.json()
+        big = FxContractBig.from_json(data['contracts'])
+        self._active_market = big
+        return big
+
+    @apply_some_lock('fxc_market_lock')
+    def start_market_resolution(self, force: bool = False):
+        """
+        Start the market resolution process for the currently active market.
+        This will stream market data for all associated contracts (big, mini, micro).
+        """
+        if self._active_market is None:
+            raise ValueError("No active market. Please activate a market first.")
+
+        if not force and self.market_fully_resolved:
+            print("Market is already fully resolved. No action taken.")
             return
 
-        msg = "Symbol: {}".format(data.symbol)
-        msg += json.dumps(data.__dict__, indent=2)
-        throw_fuss(msg, boarder='-', notify=False)
-
-    def add_contract_interactive(self):
-        contract_id = input("Enter the contract ID to add: ")
-        try:
-            contract_id = int(contract_id)
+        contracts = self._active_market.all_conids
+        for conid in contracts:
             self.ws.stream_market_data(
-                contract_id=contract_id,
+                contract_id=conid,
                 callback=self._internal_callback
             )
-            print(f"Contract {contract_id} added successfully.")
-        except ValueError:
-            print("Invalid contract ID. Please enter a numeric value.")
-        except Exception as e:
-            print(f"Error adding contract: {e}")
-            traceback.print_exc()
+
+    # DOES NOT REQUIRE LOCK, as it calls other methods that have the lock
+    def activate_and_resolve_market(self, market_contract_id: int) -> FxContractBig:
+        """
+        Activate a market by its contract ID and start the resolution process.
+
+        Args:
+            market_contract_id: The contract ID of the market to activate.
+        Returns:
+            An instance of FxContractBig representing the activated market.
+        """
+        market = self.activate_market(market_contract_id)
+        self.start_market_resolution()
+        return market
+
+    def available_pre_resolved_markets(self) -> list[FxContractBig]:
+        """Return a list of all markets that have been fully resolved and are stored in memory"""
+        return list(self._active_market_memory.values())
+
+    def show_market_state(self):
+        df = self._active_market.table_dataframe().to_string()
+        throw_fuss(df, boarder='=', notify=False)
+
+    ############################
+    # CLI-Dev Methods
+    ############################
 
     def interactive_mode(self):
         interactive_builtin = list(self.interactive_menu.keys())
@@ -428,11 +556,162 @@ class FXCDispatcher(MKTDispatcher):
                     func()
                 else:
                     print("Invalid choice. Please try again.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
+            except ValueError as e:
+                traceback.print_exc()
             except Exception as e:
                 print(f"Error executing function: {e}")
                 traceback.print_exc()
+
+    def _dynamic_func_calls_interactive(self):
+        available_methods = dir(self)
+        callable_methods = [m for m in available_methods if callable(getattr(self, m)) and not m.startswith("_")]
+        # also get properties
+        properties = [p for p in available_methods if isinstance(getattr(type(self), p, None), property)]
+        callable_methods.extend(properties)
+
+        supported_types = {
+            'int': int,
+            'float': float,
+            'str': str,
+            'bool': bool
+        }
+
+        print("\nAvailable Methods:")
+        for idx, method_name in enumerate(callable_methods):
+            print(f"{idx + 1}. {method_name}")
+        choice = input("Select a method to call (or 'q' to quit): ")
+        if choice.lower() == 'q':
+            return
+        try:
+            choice = int(choice)
+            if 1 <= choice <= len(callable_methods):
+                selected_method_name = callable_methods[choice - 1]
+                # if property, just get the value
+                if selected_method_name in properties:
+                    prop_value = getattr(self, selected_method_name)
+                    print(f"Property '{selected_method_name}' value: {prop_value}")
+                    return
+
+                selected_method = getattr(self, selected_method_name)
+                # check if args are needed using inspect
+                sig = inspect.signature(selected_method)
+                params = sig.parameters
+                args = []
+                if params:
+                    print(f"Method '{selected_method_name}' requires {len(params)} argument(s).")
+                    for param_name, param in params.items():
+                        if param.default is param.empty:
+                            user_input = input(f"Enter value for required parameter '{param_name}': ")
+                        else:
+                            user_input = input(
+                                f"Enter value for optional parameter '{param_name}' (default={param.default}): ")
+                            if user_input == '':
+                                user_input = param.default
+
+                        # ask for type
+                        type_input = input(
+                            f"Enter type for parameter '{param_name}' (int, float, str, bool) or press Enter to keep as str: ")
+                        if type_input in supported_types:
+                            cast_type = supported_types[type_input]
+                            try:
+                                user_input = cast_type(user_input)
+                            except ValueError:
+                                print(f"Failed to cast input to {type_input}, keeping as str.")
+                        else:
+                            print("Keeping input as str.")
+                        args.append(user_input)
+
+                result = selected_method(*args)
+
+                print(f"Method '{selected_method_name}' executed successfully. Result: {result}")
+            else:
+                print("Invalid choice. Please try again.")
+        except ValueError:
+            traceback.print_exc()
+        except Exception as e:
+            print(f"Error calling method: {e}")
+            traceback.print_exc()
+
+    def test_func(self):
+        self.activate_and_resolve_market(796056051)
+
+    ############################
+    # Properties
+    ############################
+    @property
+    def market_fully_resolved(self) -> bool:
+        """Check if the current active market has all available data, returns True if current market is fully resolved
+        or is None (no active market)"""
+
+        if self._active_market is None:
+            return True
+
+        conid_missing = self._active_market.all_conid_states()
+        for conid, missing in conid_missing.items():
+            if missing:
+                return False
+        return True
+
+    def _listen_to_client(self, client: socket.socket):
+        """
+        This is the following client-API interface for FXCDispatcher.
+        Output Protocol: ~{JSON}L
+        Input Protocol: cmd:arg1,arg2,arg3...
+
+        Available Commands:
+            - get_active_market: Returns the current active market as JSON (FxContractBig)
+            - activate_market: Activates a market by its contract ID. Args: contract_id
+            - start_market_resolution: Starts the market resolution process for the active market. No args.
+            - force_start_market_resolution: Force starts the market resolution process even if already fully resolved. No args.
+            - market_fully_resolved: Returns True/False if the market is fully resolved. No args.
+            - show_market_state: Returns the current state of the market as a base64 encoded CSV string. No args.
+            - verify_socket_sanity: In the case for whatever reason MKTDispatcher could not ping you, but you are still
+                connected, this will re-add you to the internal list of clients within MKTDispatcher.
+                (this should be impossible to need) alas. No args.
+
+        All responses are in JSON format with the following guaranteed structure:
+        {
+            "command": "whatever_command_was_sent_by_client",
+            "value": SOME_VALUE,  # The value returned by the command, can be of any type
+            "error": null  # If an error occurred, this will be a string describing the error, otherwise null
+        }
+
+        Updates to the state will use the 'command' field as 'market_update' with the field as the base64 encoded CSV string.
+
+        Other guarantees:
+        - Server will always lock messages to the client, so no interleaving of messages will occur.
+        - If an error occurs within a COMMAND <NOT INTERNAL ERROR> the server will still maintain
+          the above guarantee and populate the "error" field in the response.
+
+        NOT GUARANTEED:
+        - Calling get_active_market returns FxContractBig however internally during serialization
+          fields are converted by traversing the 'raw' underlying structure the guarantees that
+          methods like .to_dict() promise such as enforced_currency, etc. may not be enforced.
+          The above does not apply for show_market_state because it uses the methods defined in FxContractBig
+          to generate the DataFrame and then convert it to CSV. Not traversing the raw structure.
+          By extension, it's highly recommended to use show_market_state() for any client-side processing
+          of the market state.
+
+        Notes:
+        - All market-based functions are locked, if the server is busy processing a market function
+          it will not accept other market function commands until the current one is finished.
+        - The underlying MKTDispatcher is still managing the client list, you must be able
+          to handle pings from MKTDispatcher to keep the connection alive.
+
+        When you call 'start_market_resolution' you will get full snapshots of the market state as
+        they are updated, until the market is fully resolved. This is the identical output as
+        show_market_state() but sent automatically when updates occur.
+
+        You can re-call activate_market to switch markets, but only when the current market
+        is fully resolved. Old markets are cached in memory and can be re-activated instantly.
+
+
+        :param client: A socket object representing the connected client.
+        :return:
+        """
+
+        # stub not implemented. API is still in development
+        pass
 
 
 if __name__ == '__main__':

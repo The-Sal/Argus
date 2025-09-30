@@ -105,3 +105,9 @@ class DomainCache:
 
             for k in self.cache.cache[self.domain].keys():
                 print(k)
+
+
+if __name__ == '__main__':
+    # enumerates all domains and the amount of keys in each domain
+    for domain, data in CACHE.cache.items():
+        print(f"Domain: {domain}, Keys: {len(data)}")

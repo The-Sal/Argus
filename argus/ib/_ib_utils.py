@@ -1,6 +1,7 @@
 import os
 import time
 import socket
+import logging
 import threading
 import traceback
 from utils3.networking import Session as _RAW_SESSION
@@ -8,7 +9,9 @@ from argus.capital import DomainCache, CapitalComMKTDataLive
 from argus._argus_utils import Notification, macos_notification_with_custom_sound
 
 
-def enforce_currency(value):
+logger = logging.getLogger(__name__)
+
+def enforce_currency(value, raise_on_fail=True, fallback=0.0) -> float:
     """Ensure the currency is converted into a float. Removing any codes or symbols."""
     if isinstance(value, (int, float)):
         return float(value)
@@ -21,10 +24,17 @@ def enforce_currency(value):
         try:
             return float(value)
         except ValueError:
-            raise ValueError(f"Cannot convert value to float: {value}. Type: {type(value)}")
+            if raise_on_fail:
+                raise ValueError(f"Cannot convert value to float: {value}")
+            else:
+                logger.warning(f"Cannot convert value to float: {value}, returning fallback: {fallback}")
+                return fallback
 
-    raise TypeError(f"Unsupported type for currency conversion: {type(value)}")
+    if raise_on_fail:
+        raise TypeError(f"Unsupported type for currency conversion: {type(value)}")
 
+    logger.warning(f"Unsupported type for currency conversion: {type(value)}, returning fallback: {fallback}")
+    return fallback
 
 # monkey patch for some sketchy stuff
 setattr(socket.socket, 'idx', 'real')
@@ -329,9 +339,9 @@ class AccountBalances:
             'daily_pnl': ec(self.daily_pnl),
             'pnl': ec(self.pnl),
             'market_value': ec(self.market_value),
-            'net_liquidation': ec(self.net_liquidation),
-            'excess_liquidity': ec(self.excess_liquidity),
-            'unrealized_excess_liquidity': ec(self.unrealized_excess_liquidity),
+            'net_liquidation': ec(self.net_liquidation, raise_on_fail=False),
+            'excess_liquidity': ec(self.excess_liquidity, raise_on_fail=False),
+            'unrealized_excess_liquidity': ec(self.unrealized_excess_liquidity, raise_on_fail=False),
             'row_type': self.row_type
         }
 
