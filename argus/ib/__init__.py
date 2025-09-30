@@ -1142,18 +1142,24 @@ class MKTDispatcher:
         selected_account = accounts_available[account_choice]
         print(f"Selected account: {selected_account.accountId}")
         self.ws.networker.set_trading_account_id(selected_account.accountId)
-        self.account_provider = AccountProvider(self.ws, self.ws.networker)
-        self._configs['Block New MKT Data'] = False
-        print("New market data subscriptions are now unblocked.")
-        # If this fails the program should crash
-        for conid in self.account_provider.required_assets():
-            # hence why this is main-threaded
-            self._quick_add(symbol=None, client=self.account_provider.socket, _retry=False, conid=conid)
-        print('{} protected assets added from AccountProvider'.format(len(self.account_provider.required_assets())))
+        if self.mode == IBKRModes.PROTOCOL_2:
+            self.account_provider = AccountProvider(self.ws, self.ws.networker)
+            self._configs['Block New MKT Data'] = False
+            print("New market data subscriptions are now unblocked.")
+            # If this fails the program should crash
+            for conid in self.account_provider.required_assets():
+                # hence why this is main-threaded
+                self._quick_add(symbol=None, client=self.account_provider.socket, _retry=False, conid=conid)
+            print('{} protected assets added from AccountProvider'.format(len(self.account_provider.required_assets())))
 
-        self.ws.ws.send('upl+{}')
-        time.sleep(1)
-        self.ws.ws.send('spl+{}')
+            self.ws.ws.send('upl+{}')
+            time.sleep(1)
+            self.ws.ws.send('spl+{}')
+        else:
+            self._configs['Block New MKT Data'] = False
+            print("New market data subscriptions are now unblocked.")
+            print("Warning: AccountProvider is not initialized in this mode, so account positions and PnL will not be available.")
+            print("Please switch to PROTOCOL_2 mode to enable account positions and PnL streaming.")
 
 
 if __name__ == '__main__':
