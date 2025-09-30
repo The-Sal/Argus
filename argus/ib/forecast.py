@@ -1,3 +1,12 @@
+"""
+This module provides classes and methods to interact with Interactive Brokers' Forecasting Contracts (FXC)
+via WebSocket connections. It includes the FXCWss class for managing WebSocket connections and
+the FXCDispatcher class for dispatching market data and handling client interactions.
+
+
+BUG WARNING: FxCDispatcher does not report positions through AccountProvider for some reason. But PnL for the portfolio is still there but much slower.
+This is being actively investigated. This does NOT AFFECT MKTDispatcher, only FXCDispatcher.
+"""
 import os
 import copy
 import json
