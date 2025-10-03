@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import pickle
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,17 @@ class DomainCache:
             self.cache.save_cache()
 
     def get(self, key: str):
+        timenow = time.time()
+        # check if there is an expiration key and if it has expired
+        exp_key = self.expiration_key(key)
+        if exp_key in self.cache.cache[self.domain]:
+            expiration = self.cache.cache[self.domain][exp_key]
+            if timenow > expiration:
+                logger.info(f"Cache expired for key: {key[:20]}... in domain: {self.domain}")
+                self.delete(key)
+                self.delete(exp_key)
+                raise NotKey(key)
+
         try:
             val = self.cache.cache[self.domain][key]
             # logger.info(f"Cache hit for key: {key[:20]}... in domain: {self.domain}")
@@ -61,9 +73,24 @@ class DomainCache:
         except KeyError:
             raise NotKey(key)
 
-    def set(self, key: str, value):
-        """Sets a value in the cache for the specified key."""
+    @staticmethod
+    def expiration_key(key: str):
+        return f"internal.{key}.expiration"
+
+    def set(self, key: str, value, expiration: int = None):
+        """Sets a value in the cache for the specified key.
+        Args:
+            key (str): The key to set in the
+            value: The value to associate with the key.
+            expiration (int, optional): Expiration time in seconds
+        """
+
         self.cache.cache[self.domain][key] = value
+        if expiration is not None:
+            expiration_timestamp = time.time() + expiration
+            self.cache.cache[self.domain][self.expiration_key(key)] = expiration_timestamp
+
+
         self.cache.save_cache()
 
     def delete(self, key: str):
@@ -80,8 +107,12 @@ class DomainCache:
         key = f"{func_uuid}:{args_key}:{kwargs}"
         return key
 
-    def cache_decorator(self, func_uuid: str):
-        """Decorator to cache the result of a function."""
+    def cache_decorator(self, func_uuid: str, expiration: int = None):
+        """Decorator to cache the result of a function.
+        Args:
+            func_uuid (str): A unique identifier for the function being cached.
+            expiration (int, optional): Expiration time in seconds for the cached value.
+        """
         def decorator(func):
             def wrapper(*args, **kwargs):
                 # remove args that have 'object at' in them these are dynamic objects that should not be cached
@@ -90,7 +121,7 @@ class DomainCache:
                     return self.get(key)
                 except NotKey:
                     result = func(*args, **kwargs)
-                    self.set(key, result)
+                    self.set(key, result, expiration=expiration)
                     return result
             return wrapper
         return decorator
