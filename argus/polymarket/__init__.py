@@ -1,14 +1,13 @@
 """
 Polymarket API
 """
-import os
-import random
 import sys
-import json
 import tqdm
 import time
 import base64
+import pandas as pd
 from dotenv import load_dotenv
+from datetime import datetime, timezone
 from py_clob_client.client import ClobClient
 from argus.capital import DomainCache, NotKey
 from py_clob_client.exceptions import PolyApiException
@@ -34,7 +33,7 @@ _POLYCACHE = DomainCache('Polymarket')
 # client.set_api_creds(client.create_or_derive_api_creds())
 
 class PolymarketAPI:
-    def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com', chain_id=137):
+    def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com', chain_id=137, order_book_depth=1):
         self.client = ClobClient(
             host,
             key=private_key,
@@ -44,6 +43,9 @@ class PolymarketAPI:
         )
         self.client.set_api_creds(self.client.create_or_derive_api_creds())
         self._rate_limit = 0.2  # seconds between requests to avoid rate limiting
+        self._order_book_depth = order_book_depth  # Depth of order book to fetch when resolving markets
+        if self._order_book_depth < 0:
+            raise ValueError("order_book_depth must be at least 1")
 
     def get_markets(self, next_cursor=None):
         if next_cursor is None:
@@ -103,42 +105,84 @@ class PolymarketAPI:
         iterator.close()
         return list(map(lambda x: PMarket(x), all_markets))
 
-
     def resolve_market(self, market: PMarket):
         """Resolves the market and fills the PMarket's .df attribute with the order book data."""
-        if not market.active:
-            # print('Market is not active, cannot resolve.')
-            return
-
         tokens = market.tokens
-        order_data = {}
+        df_data = []
         for token in tokens:
             try:
-                book = self.client.get_order_book(token.token_id)
-                print(book)
-            except Exception as e:
-                # print('Failed tor resolve market:', e, 'market_slug:', market.market_slug)
+                book: OrderBookSummary = self.client.get_order_book(token.token_id)
+                asks = book.asks[:self._order_book_depth]
+                bids = book.bids[:self._order_book_depth]
+
+                for ask in asks:
+                    df_data.append({
+                        'side': 'ask',
+                        'price': ask.price,
+                        'size': ask.size,
+                        'outcome': token.outcome
+                    })
+                for bid in bids:
+                    df_data.append({
+                        'side': 'bid',
+                        'price': bid.price,
+                        'size': bid.size,
+                        'outcome': token.outcome
+                    })
+                time.sleep(self._rate_limit)
+            except PolyApiException as e:
+                print(f"Error fetching order book for token {token.token_id}: {e}")
+                return None
+
+        df_header = ['side', 'price', 'size', 'outcome']
+        market.set_df(pd.DataFrame(df_data, columns=df_header))
+        return market.df
+
+    def filter_markets_by_close_date(self, max_days=30):
+        """Gets ALL markets and filters to those closing within max_days from now. Calls .enumerate_all_markets()."""
+        all_markets = self.enumerate_all_markets()
+        filtered = []
+        now = time.time()
+        for market in all_markets:
+            if not market.active:
                 continue
+            end_date = getattr(market, 'end_date_iso', None) or getattr(market, 'end_date', None)
+            if end_date:
+                if isinstance(end_date, str):
+                    end_timestamp = datetime.fromisoformat(end_date.replace('Z', '+00:00')).timestamp()
+                else:
+                    end_timestamp = end_date
+                days_diff = (end_timestamp - now) / 86400
+                if 0 <= days_diff <= max_days:
+                    filtered.append(market)
+        return filtered
 
 
-if __name__ == '__main__':
-    PRIVATE_KEY = os.environ['POLYMARKET_PRIVATE_KEY']
-    PROXY_FUNDER = os.environ['POLYMARKET_PROXY_FUNDER']
-
-    # _POLYCACHE.invalidate_key(_POLYCACHE.generate_key('PolymarketAPI.enumerate_all_markets'))
-
-    api = PolymarketAPI(PRIVATE_KEY, PROXY_FUNDER)
-    all_markets = api.enumerate_all_markets()
-    print(f"Total markets fetched: {len(all_markets)}")
-    # json.dump(all_markets, open('all_polymarket_markets.json', 'w'), indent=4)
-    books: list[BookParams] = []
-    for market in all_markets:
-        if market.active:
-            for token in market.tokens:
-                books.append(BookParams(token_id=token.token_id))
 
 
-    get_all_books = api.client.get_order_books(books[:50])
-    for book in get_all_books:
-        print(book)
-    print(get_all_books)
+class PolyDispatcher:
+    """
+    High-level TCP-based dispatcher for Polymarket API interactions.
+
+    This is the following client-API interface for PolyDispatcher:
+    Output Protocol: ~{JSON}L
+    Input Protocol: cmd:arg1,arg2,arg3...
+
+    Commands:
+        - enumerate_markets: Enumerates all markets available on Polymarket, cached for 24 hours. Returns list of market slugs
+        - filter_markets_by_close_date(max_days=30): Filters markets closing within max_days from now. Returns list of market slugs (internal call to enumerate_markets)
+        - resolve_market(market_id): Resolves a market by its ID and returns a DataFrame of the order book data. Returns base64-encoded CSV of the DataFrame
+        - get_market_details(market_id): Returns detailed information about a specific market may include order book data if resolved. Returns a JSON
+        - transpose_df(base64_csv): Transposes a base64-encoded CSV DataFrame into a type more easily workable with FxCDispatcher. Returns base64-encoded CSV of the transposed DataFrame
+
+
+    All commands are API rate-limited internally to avoid hitting Polymarket's rate limits. Client does not need to handle this.
+    There are no authentication requirements, pings, or heartbeats the client must handle.
+
+    """
+    def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com', chain_id=137, order_book_depth=1):
+        self.api = PolymarketAPI(private_key, proxy_funder, host, chain_id, order_book_depth)
+
+
+    # TBD.
+
