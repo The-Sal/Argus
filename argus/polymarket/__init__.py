@@ -2,6 +2,7 @@
 Polymarket API
 """
 import os
+import random
 import sys
 import json
 import tqdm
@@ -11,6 +12,8 @@ from dotenv import load_dotenv
 from py_clob_client.client import ClobClient
 from argus.capital import DomainCache, NotKey
 from py_clob_client.exceptions import PolyApiException
+from argus.polymarket._types import PMarket, PMarketToken
+from py_clob_client.clob_types import BookParams, OrderBookSummary
 
 assert load_dotenv()
 _POLYCACHE = DomainCache('Polymarket')
@@ -49,7 +52,7 @@ class PolymarketAPI:
             return self.client.get_markets(next_cursor=next_cursor)
 
     @_POLYCACHE.cache_decorator(func_uuid='PolymarketAPI.enumerate_all_markets', expiration=60 * 60 * 24)
-    def enumerate_all_markets(self):
+    def enumerate_all_markets(self) -> list[PMarket]:
         all_markets = []
         next_cursor = None
         total_markets = 0
@@ -98,14 +101,44 @@ class PolymarketAPI:
         if len(all_markets) > total_cached:
             _POLYCACHE.set('total_markets_length', len(all_markets))
         iterator.close()
-        return all_markets
+        return list(map(lambda x: PMarket(x), all_markets))
+
+
+    def resolve_market(self, market: PMarket):
+        """Resolves the market and fills the PMarket's .df attribute with the order book data."""
+        if not market.active:
+            # print('Market is not active, cannot resolve.')
+            return
+
+        tokens = market.tokens
+        order_data = {}
+        for token in tokens:
+            try:
+                book = self.client.get_order_book(token.token_id)
+                print(book)
+            except Exception as e:
+                # print('Failed tor resolve market:', e, 'market_slug:', market.market_slug)
+                continue
 
 
 if __name__ == '__main__':
     PRIVATE_KEY = os.environ['POLYMARKET_PRIVATE_KEY']
     PROXY_FUNDER = os.environ['POLYMARKET_PROXY_FUNDER']
 
+    # _POLYCACHE.invalidate_key(_POLYCACHE.generate_key('PolymarketAPI.enumerate_all_markets'))
+
     api = PolymarketAPI(PRIVATE_KEY, PROXY_FUNDER)
     all_markets = api.enumerate_all_markets()
     print(f"Total markets fetched: {len(all_markets)}")
-    json.dump(all_markets, open('all_polymarket_markets.json', 'w'), indent=4)
+    # json.dump(all_markets, open('all_polymarket_markets.json', 'w'), indent=4)
+    books: list[BookParams] = []
+    for market in all_markets:
+        if market.active:
+            for token in market.tokens:
+                books.append(BookParams(token_id=token.token_id))
+
+
+    get_all_books = api.client.get_order_books(books[:50])
+    for book in get_all_books:
+        print(book)
+    print(get_all_books)

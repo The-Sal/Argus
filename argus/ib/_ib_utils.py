@@ -217,6 +217,10 @@ class IBKR_CapitalComMKTDataLive(CapitalComMKTDataLive):
         # print('Prior to inserting shortable_shares, data is:', data, 'length:', len(data))
 
         # Insert shortable_shares before the last two elements, that is before both timestamps (old capital.com and Python)
+
+        # example ['bid', 'bid_size', 'ask', 'ask_size', 'last', 'last_size', 'timestamp1', 'timestamp2']
+        # size=8
+        # insert at index -3 to place before last two elements
         data.insert(len(data) - 2, str(self.shortable_shares))
         bytes_packet = ",".join(data).encode('ascii')
         # print('After inserting shortable_shares, data is:', data, 'length:', len(data))

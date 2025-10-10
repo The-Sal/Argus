@@ -1,8 +1,5 @@
+import pandas as pd
 from utils3 import assertTypes
-
-# noinspection PyProtectedMember
-from argus.ib._forcast_utils import _dict_convertor
-
 
 class PMarketToken:
     """
@@ -123,13 +120,24 @@ class PMarket:
         self.image: str = d['image']
         self.rewards: dict = d['rewards']
         self.is_50_50_outcome: bool = d['is_50_50_outcome']
-        self.tokens: list[PMarketToken] = d['tokens']
+        self.tokens: list[PMarketToken] = PMarketToken.make_list_init(d['tokens'])
         self.tags: list = d['tags']
 
+        self._df: pd.DataFrame = None
+
     def to_dict(self):
+        """Returns a dictionary representation of the market, including nested tokens as dictionaries."""
         copy_self = self.__dict__.copy()
         copy_self['tokens'] = list(map(lambda x: x.__dict__, copy_self['tokens']))
         return copy_self
 
+    @property
+    def df(self) -> pd.DataFrame:
+        """Returns the market state as a pandas DataFrame, Returns none if not initialized yet."""
+        return self._df
 
+    @assertTypes([pd.DataFrame], auto_convert=False, class_method=True)
+    def set_df(self, df: pd.DataFrame):
+        """Sets the market state as a pandas DataFrame."""
+        self._df = df
 

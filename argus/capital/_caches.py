@@ -24,7 +24,13 @@ class _FastCache:
         """Initializes the FastCache with a specified cache file."""
         self.cache_file = os.path.expanduser(cache_file)
         self.cache = {}
-        self.load_cache()
+        self._loaded = False  # Track if we've loaded yet
+
+    def _ensure_loaded(self):
+        """Lazy load the cache on first access."""
+        if not self._loaded:
+            self.load_cache()
+            self._loaded = True
 
     def load_cache(self):
         """Loads the cache from the specified file."""
@@ -39,6 +45,7 @@ class _FastCache:
 
     def save_cache(self):
         """Saves the cache to the specified file."""
+        self._ensure_loaded()  # Make sure we've loaded before saving
         with open(self.cache_file, 'wb') as f:
             pickle.dump(self.cache, f)
 
@@ -50,6 +57,7 @@ class DomainCache:
         """Initializes the DomainCache with a specified domain."""
         self.domain = domain
         self.cache = CACHE
+        self.cache._ensure_loaded()  # Lazy load when DomainCache is first used
         if domain not in list(self.cache.cache.keys()):
             self.cache.cache[self.domain] = {}
             self.cache.save_cache()
@@ -131,14 +139,15 @@ class DomainCache:
         try:
             self.delete(key)
         except NotKey:
-            print("Unable to find key:", key)
-            print("Available keys:")
+            logger.warning("Unable to find key: {}".format(key))
+            logger.warning("Available keys:")
 
             for k in self.cache.cache[self.domain].keys():
-                print(k)
+                logger.warning(k)
 
 
 if __name__ == '__main__':
     # enumerates all domains and the amount of keys in each domain
+    CACHE._ensure_loaded()  # Make sure cache is loaded
     for domain, data in CACHE.cache.items():
         print(f"Domain: {domain}, Keys: {len(data)}")
