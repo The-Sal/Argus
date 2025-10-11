@@ -215,6 +215,20 @@ class CacheInspector:
         else:
             print(f"Domain '{domain}' not found in cache.")
 
+    def toggle_cache_file(self):
+        """Switches from capital_cache.pkl to polymarket_cache.pkl and vice versa."""
+        ending = os.path.basename(self.cache_file)
+        if ending == 'capital_cache.pkl':
+            new_file = os.path.join(os.path.dirname(self.cache_file), 'polymarket_cache.pkl')
+        else:
+            new_file = os.path.join(os.path.dirname(self.cache_file), 'capital_cache.pkl')
+        if os.path.exists(new_file):
+            self.cache_file = new_file
+            print(f"Switched cache file to {self.cache_file}")
+        else:
+            print(f"No cache file found at {new_file}, cannot switch.")
+
+
     def cli_loop(self):
         print("Argus Cache Inspector CLI")
         cmds = {
@@ -223,6 +237,7 @@ class CacheInspector:
             '3': ('Restore from Backup', self.restore_from_backup),
             '4': ('Delete Domain from Cache', lambda: self.delete_domain(input("Enter domain to delete: ").strip())),
             '5': ('Generate Transparent Cache', lambda: generate_transparent_cache(self.try_load_cache()) if self.try_load_cache() else print("No valid cache to generate from.")),
+            '6': ('Toggle Cache File (capital <-> polymarket)', self.toggle_cache_file),
             'q': ('Quit', None)
         }
         while True:

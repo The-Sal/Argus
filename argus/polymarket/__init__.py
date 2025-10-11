@@ -1,5 +1,26 @@
 """
-Polymarket API
+Polymarket API client and dispatcher.
+
+
+Warnings:
+    - Polymarket Cache system is separate from the main Argus cache system.
+    - Polymarket cache is stored in ~/.argus/polymarket_cache.pkl by default.
+    - .enumerate_all_markets() is cached for 24 hours by default.
+    - .enumerate_all_markets() creates MASSIVE AMOUNTS OF CACHE DATA, DO NOT INTERRUPT CACHE FILES ON CREATION EVER
+    - .filter_markets_by_close_date calls .enumerate_all_markets() internally.
+    - The 24 cache expiration can be extended by modifying the decorator on .enumerate_all_markets().
+        remember that .enumerate_all_markets() means literally every single market since the inception
+        of Polymarket, so the cache file can grow very large. PolymarketAPI is designed to handle
+        this with aggressive caching, separate caches and .filter_markets_by_close_date(). When
+        request for market data it's STRONGLY recommended to use .filter_markets_by_close_date()
+        to limit the number of markets returned unless you really want everything.
+    - All endpoints are already pre-rate-limited internally to avoid hitting Polymarket's rate limits.
+
+Disclaimer:
+    - Unlike other Argus modules, PolyDispatcher and FxCDispatcher (in argus.ib.forcast) can be run simultaneously.
+        this because they use completely different cache files and backend systems.
+    - While TCP-Contract for FxCDispatcher and PolyDispatcher are similar PolyDispatcher data-frame is
+        not directly compatible with FxCDispatcher data-frame.
 """
 import sys
 import tqdm
@@ -176,5 +197,6 @@ class PolyDispatcher:
     # TBD.
 
 if __name__ == '__main__':
+    load_dotenv()
     from argus.polymarket._ignore import tPoly
     tPoly()
