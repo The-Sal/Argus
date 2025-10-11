@@ -763,6 +763,7 @@ class FXCDispatcher(MKTDispatcher):
             - verify_socket_sanity: In the case for whatever reason MKTDispatcher could not ping you, but you are still
                 connected, this will re-add you to the internal list of clients within MKTDispatcher.
                 (this should be impossible to need) alas. No args.
+            - get_all_markets: Returns a list of all available markets as JSON. No args.
 
         All responses are in JSON format with the following guaranteed structure:
         {
@@ -818,6 +819,7 @@ class FXCDispatcher(MKTDispatcher):
                 'market_fully_resolved': self._client_market_fully_resolved,
                 'show_market_state': self._client_show_market_state,
                 'verify_socket_sanity': self._client_verify_socket_sanity,
+                'get_all_markets': self._client_get_all_markets,
             }
 
             if ':' not in data:
@@ -930,6 +932,11 @@ class FXCDispatcher(MKTDispatcher):
             except Exception as e:
                 print(f"Error sending market update to client {client.getpeername()}: {e}")
                 self.clients.remove(client)
+
+    def _client_get_all_markets(self):
+        markets = self.generate_all_markets()
+        markets_dicts = [market.__dict__ for market in markets]
+        return json.dumps(markets_dicts)
 
 
 
