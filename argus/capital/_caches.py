@@ -1,8 +1,9 @@
 import os
+import time
 import json
 import logging
 import pickle
-import time
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,7 @@ class NotKey(CacheError):
         self.key = key
 
 
-class _FastCache:
+class FastCache:
     """A super simple cache system that also saves to disk. Used to cache data from the Capital.com API especially
     resolution related data or any non-changing data that's wasteful to fetch repeatedly."""
     def __init__(self, cache_file: str = '~/.argus/capital_cache.pkl'):
@@ -25,8 +26,11 @@ class _FastCache:
         self.cache_file = os.path.expanduser(cache_file)
         self.cache = {}
         self._loaded = False  # Track if we've loaded yet
+        self._write_lock = threading.Lock()
+        self._backup_file = self.cache_file + '.bak'
+        self._disabled = os.getenv('ARGUS_CACHES_DISABLED', False) in ['1', 'true', 'True', 'TRUE']
 
-    def _ensure_loaded(self):
+    def ensure_loaded(self):
         """Lazy load the cache on first access."""
         if not self._loaded:
             self.load_cache()
@@ -35,29 +39,62 @@ class _FastCache:
     def load_cache(self):
         """Loads the cache from the specified file."""
         # the directory must exist
+        if self._disabled:
+            return {}
         os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
         if os.path.exists(self.cache_file):
             with open(self.cache_file, 'rb') as f:
                 try:
                     self.cache = pickle.load(f)
                 except (pickle.UnpicklingError, EOFError):
-                    raise ValueError(f"Cache file {self.cache_file} is corrupted or not a valid PICKLE.")
+                    raise ValueError(f"Cache file {self.cache_file} is corrupted or not a valid PICKLE. "
+                                     f"There maybe a backup file at {self._backup_file} you can try to restore from.")
+
+        return None
 
     def save_cache(self):
         """Saves the cache to the specified file."""
-        self._ensure_loaded()  # Make sure we've loaded before saving
-        with open(self.cache_file, 'wb') as f:
-            pickle.dump(self.cache, f)
+        if self._disabled:
+            return
 
-CACHE = _FastCache()
+        with self._write_lock:
+            self.ensure_loaded()  # Make sure we've loaded before saving
+            os.remove(self._backup_file) if os.path.exists(self._backup_file) else None
+            if os.path.exists(self.cache_file):
+                os.rename(self.cache_file, self._backup_file)
+
+            with open(self.cache_file, 'wb') as f:
+                warning_given = False
+                while True:
+                    try:
+                        pickle.dump(self.cache, f)
+                        if warning_given:
+                            print(
+                                'CACHE WRITE COMPLETED, WOULD YOU LIKE TO DISABLE CACHES TO AVOID THIS IN THE FUTURE?')
+                            inp = input('Disable caches? (y/n): ')
+                            if inp.lower() == 'y':
+                                os.environ['ARGUS_CACHES_DISABLED'] = '1'
+                                print(
+                                    'Caches disabled for future runs. You can re-enable by removing ARGUS_CACHES_DISABLED from your environment.')
+                        break
+                    except Exception as e:
+                        print(f"Cache write failed with error: {e}.")
+                        print('!' * 50)
+                        print('WARNING: STOP WHAT YOU ARE DOING! CACHE WRITE FAILED PLEASE WAIT FOR IT TO COMPLETE!')
+                        print('!' * 50)
+                        warning_given = True
+
+
+
+CACHE = FastCache()
 
 class DomainCache:
     """A cache for domain-specific data, such as symbols and their resolutions."""
-    def __init__(self, domain: str):
+    def __init__(self, domain: str, cache: FastCache = CACHE):
         """Initializes the DomainCache with a specified domain."""
         self.domain = domain
-        self.cache = CACHE
-        self.cache._ensure_loaded()  # Lazy load when DomainCache is first used
+        self.cache = cache
+        self.cache.ensure_loaded()  # Lazy load when DomainCache is first used
         if domain not in list(self.cache.cache.keys()):
             self.cache.cache[self.domain] = {}
             self.cache.save_cache()
@@ -148,6 +185,6 @@ class DomainCache:
 
 if __name__ == '__main__':
     # enumerates all domains and the amount of keys in each domain
-    CACHE._ensure_loaded()  # Make sure cache is loaded
+    CACHE.ensure_loaded()  # Make sure cache is loaded
     for domain, data in CACHE.cache.items():
         print(f"Domain: {domain}, Keys: {len(data)}")

@@ -184,7 +184,11 @@ class IBNetworker:
         Search for a contract by its name. THE CONTRACT MUST BE A STOCK NOTHING ELSE IS SUPPORTED.
         """
         payload = {"symbol": contract_name, "secType": "STK", "referrer": "onebar"}
-        response = self.session.post(self.urls['search'], json=payload).json()
+        try:
+            response = self.session.post(self.urls['search'], json=payload).json()
+        except json.JSONDecodeError:
+            raise IBError(f"Failed to decode JSON response from {self.urls['search']}. "
+                          f"Response: {response.text}")
         try:
             results = [SearchResult(**result) for result in response]
             for result in results:

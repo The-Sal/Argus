@@ -9,13 +9,16 @@ import pandas as pd
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 from py_clob_client.client import ClobClient
-from argus.capital import DomainCache, NotKey
 from py_clob_client.exceptions import PolyApiException
 from argus.polymarket._types import PMarket, PMarketToken
 from py_clob_client.clob_types import BookParams, OrderBookSummary
 
-assert load_dotenv()
-_POLYCACHE = DomainCache('Polymarket')
+
+# PolyMarket cache generates LOTs of data, so we separate
+# it from the main Argus cache.
+from argus.capital import FastCache, DomainCache, NotKey
+fCache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
+_POLYCACHE = DomainCache(domain='polymarket', cache=fCache)
 
 
 class PolymarketAPI:
@@ -172,3 +175,6 @@ class PolyDispatcher:
 
     # TBD.
 
+if __name__ == '__main__':
+    from argus.polymarket._ignore import tPoly
+    tPoly()

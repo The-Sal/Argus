@@ -7,7 +7,7 @@ import logging
 from dotenv import load_dotenv
 from utils3 import runAsThread, assertTypes
 from utils3.networking.sockets import UDSServer
-from argus.capital._caches import DomainCache, NotKey
+from argus.capital._caches import DomainCache, NotKey, FastCache
 from argus.capital._svr_utils import encode_packet, decode_packet, decode_multiple_packets, \
     transmit_mkt_data_with_protocol_2, Protocol2Parser
 from argus.capital._lib import (CapitalComAPI, Environment, TradeDirection, HistoricalPriceResolution,

@@ -141,3 +141,55 @@ class PMarket:
         """Sets the market state as a pandas DataFrame."""
         self._df = df
 
+    @classmethod
+    def dummy_init(cls) -> 'PMarket':
+        """Creates a dummy PMarket instance for testing purposes."""
+        dummy_data = {
+            'enable_order_book': False,
+            'active': True,
+            'closed': True,
+            'archived': False,
+            'accepting_orders': False,
+            'accepting_order_timestamp': None,
+            'minimum_order_size': 15,
+            'minimum_tick_size': 0.01,
+            'condition_id': "0x0de4ed9c811667ff9485e0f7aa3788a8db7c2147050f33defef2e2a302665433",
+            'question_id': "0x9f9aa97d3b818387161a93d2fbe59f1642c87529839f393ca503e368800e665f",
+            'question': "2022 NBA Finals: Who will win Celtics vs. Warriors Game 4?",
+            'description': "The 2022 NBA Finals is the championship series...",
+            'market_slug': "2022-nba-finals-who-will-win-celtics-vs-warriors-game-4",
+            'end_date_iso': "2022-06-10T00:00:00Z",
+            'game_start_time': None,
+            'seconds_delay': 0,
+            'fpmm': "0x44140477Eebf99286cAC5968B4c3E2Bdb5d4CC34",
+            'maker_base_fee': 0,
+            'taker_base_fee': 0,
+            'notifications_enabled': True,
+            'neg_risk': False,
+            'neg_risk_market_id': "",
+            'neg_risk_request_id': "",
+            'icon': "https://polymarket-upload.s3.us-east-2.amazonaws.com/Repetitive-markets/Logo+NBA.png",
+            'image': "https://polymarket-upload.s3.us-east-2.amazonaws.com/Repetitive-markets/Logo+NBA.png",
+            'rewards': {
+                'rates': None,
+                'min_size': 0,
+                'max_spread': 0
+            },
+            'is_50_50_outcome': False,
+            'tokens': [
+                {
+                    'token_id': "45119618568427259556353873688243668201774394578145125280438548676993229690946",
+                    'outcome': "Celtics",
+                    'price': 0,
+                    'winner': False
+                },
+                {
+                    'token_id': "93862367603666595364600979608925062192225587043933771308112737299403278286433",
+                    'outcome': "Warriors",
+                    'price': 1,
+                    'winner': False
+                }
+            ],
+            'tags': ["All"]
+        }
+        return cls(dummy_data)
