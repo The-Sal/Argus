@@ -129,7 +129,14 @@ def generate_transparent_cache(cached_obj: dict):
     with open('transparent_cache.txt', 'w') as f:
         for domain, content in human_safe.items():
             f.write(f"Domain: {domain}\n")
-            f.write(content)
+
+            # write the content in chunks of 1000 characters to avoid very long lines
+            for i in range(0, len(content), 1000):
+                try:
+                    f.write(content[i:i + 1000] + '\n')
+                except Exception as e:
+                    print(f"Error writing chunk for domain '{domain}': {e}")
+
             f.write(f"\n{separator}\n")
     print('Transparent cache generation complete.')
 
@@ -227,7 +234,6 @@ class CacheInspector:
             print(f"Switched cache file to {self.cache_file}")
         else:
             print(f"No cache file found at {new_file}, cannot switch.")
-
 
     def cli_loop(self):
         print("Argus Cache Inspector CLI")
