@@ -25,10 +25,14 @@ Disclaimer:
 import sys
 import tqdm
 import time
+import json
+import socket
 import base64
 import pandas as pd
 from dotenv import load_dotenv
+from utils3 import assertTypes, runAsThread
 from datetime import datetime, timezone
+from utils3.networking.sockets import Server
 from py_clob_client.client import ClobClient
 from py_clob_client.exceptions import PolyApiException
 from argus.polymarket._types import PMarket, PMarketToken
@@ -142,7 +146,7 @@ class PolymarketAPI:
                 time.sleep(self._rate_limit)
             except PolyApiException as e:
                 print(f"Error fetching order book for token {token.token_id}: {e}")
-                return None
+                raise e
 
         df_header = ['side', 'price', 'size', 'outcome']
         market.set_df(pd.DataFrame(df_data, columns=df_header))
@@ -173,28 +177,138 @@ class PolymarketAPI:
 class PolyDispatcher:
     """
     High-level TCP-based dispatcher for Polymarket API interactions.
-
-    This is the following client-API interface for PolyDispatcher:
-    Output Protocol: ~{JSON}L
-    Input Protocol: cmd:arg1,arg2,arg3...
-
-    Commands:
-        - enumerate_markets: Enumerates all markets available on Polymarket, cached for 24 hours. Returns list of market slugs
-        - filter_markets_by_close_date(max_days=30): Filters markets closing within max_days from now. Returns list of market slugs (internal call to enumerate_markets)
-        - resolve_market(market_id): Resolves a market by its ID and returns a DataFrame of the order book data. Returns base64-encoded CSV of the DataFrame
-        - get_market_details(market_id): Returns detailed information about a specific market may include order book data if resolved. Returns a JSON
-        - transpose_df(base64_csv): Transposes a base64-encoded CSV DataFrame into a type more easily workable with FxCDispatcher. Returns base64-encoded CSV of the transposed DataFrame
-
-
-    All commands are API rate-limited internally to avoid hitting Polymarket's rate limits. Client does not need to handle this.
-    There are no authentication requirements, pings, or heartbeats the client must handle.
-
     """
-    def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com', chain_id=137, order_book_depth=1):
-        self.api = PolymarketAPI(private_key, proxy_funder, host, chain_id, order_book_depth)
+    def __init__(self, private_key, proxy_funder, api_host='https://clob.polymarket.com',
+                 chain_id=137, order_book_depth=1, listen_host='localhost', listen_port=9962):
+        self.api = PolymarketAPI(private_key, proxy_funder, api_host, chain_id, order_book_depth)
+        self.server = Server(
+            host=listen_host,
+            port=listen_port,
+            on_disconnect=self.on_disconnect,
+            on_recv=self.on_recv
+        )
 
 
-    # TBD.
+    @staticmethod
+    def on_disconnect(client, addr):
+        print(f"Client {addr} disconnected.")
+        _ = client  # Unused
+
+    def on_recv(self, client: socket.socket, addr, data: bytes):
+        """
+        This is the following client-API interface for PolyDispatcher:
+        Output Protocol: ~{JSON}L
+        Input Protocol: cmd:arg1,arg2,arg3...
+
+        Commands:
+            - enumerate_markets: Enumerates all markets available on Polymarket, cached for 24 hours. Returns list of market slugs (JSON)
+            - filter_markets_by_close_date(max_days=30): Filters markets closing within max_days from now. Returns list of market slugs (internal call to enumerate_markets) (JSON)
+            - resolve_market(market_slug): Resolves a by market slug, fetches order book data and returns a CSV DataFrame of the order book (base64-encoded CSV)
+            - get_market_details(market_slug): Returns detailed information about a specific market may include order book data if resolved. Returns a JSON
+            - transpose_df(base64_csv): Transposes a base64-encoded CSV DataFrame into a type more easily workable with FxCDispatcher. Returns base64-encoded CSV of the transposed DataFrame
+
+
+        All commands are API rate-limited internally to avoid hitting Polymarket's rate limits. Client does not need to handle this.
+        There are no authentication requirements, pings, or heartbeats the client must handle.
+        """
+        cmds = {
+            'enumerate_markets': self._client_enumerate_markets,
+            'filter_markets_by_close_date': self._client_filter_markets_by_close_date,
+            'resolve_market': self._client_resolve_market,
+            'get_market_details': self._client_get_market_details,
+            'transpose_df': self._client_transpose_df
+        }
+
+        raw_cmd = data.decode('utf-8').strip()
+        if ':' in raw_cmd:
+            cmd, arg_str = raw_cmd.split(':', 1)
+            args = [arg.strip() for arg in arg_str.split(',') if arg.strip()]
+        else:
+            cmd = raw_cmd
+            args = []
+
+        print(f"Received command from {addr}: {cmd} with args {args}")
+        error = None
+        response = None
+
+        if cmd not in cmds:
+            response = None
+            error = f"Unknown command: {cmd}"
+        else:
+            try:
+                # noinspection all
+                response = cmds[cmd](*args)
+            except (Exception, PolyApiException) as e:
+                error = str(e)
+
+        client.sendall(self.wrap_message({
+            'command': cmd,
+            'value': response,
+            'error': error
+        }))
+        try:
+            print('A response has been sent to {}'.format(client.getpeername()))
+        except OSError:
+            print('A response has been sent to a disconnected client', client)
+
+    def _client_enumerate_markets(self):
+        markets = self.api.enumerate_all_markets()
+        slugs = [market.market_slug for market in markets]
+        return slugs
+
+    @assertTypes((int,), auto_convert=True, class_method=True)
+    def _client_filter_markets_by_close_date(self, max_days=30):
+        markets = self.api.filter_markets_by_close_date(max_days)
+        slugs = [market.market_slug for market in markets]
+        return slugs
+
+    @assertTypes((str,), auto_convert=True, class_method=True)
+    def _client_resolve_market(self, market_slug):
+        all_markets = self.api.enumerate_all_markets()
+        target_market = next((m for m in all_markets if m.market_slug == market_slug), None)
+        if not target_market:
+            return None
+        df = self.api.resolve_market(target_market)
+        if df is None:
+            return None
+        csv_data = df.to_csv(index=False)
+        encoded_csv = base64.b64encode(csv_data.encode('utf-8')).decode('utf-8')
+        return encoded_csv
+
+    @assertTypes((str,), auto_convert=True, class_method=True)
+    def _client_get_market_details(self, market_slug):
+        all_markets = self.api.enumerate_all_markets()
+        target_market = next((m for m in all_markets if m.market_slug == market_slug), None)
+        if not target_market:
+            return None
+        return target_market.to_dict()
+
+    # noinspection PyMethodMayBeStatic
+    @assertTypes((str,), auto_convert=True, class_method=True)
+    def _client_transpose_df(self, base64_csv):
+        return 'Not implemented yet'
+
+    @staticmethod
+    def wrap_message(msg: str | dict) -> bytes:
+        if isinstance(msg, dict):
+            msg_str = json.dumps(msg)
+        else:
+            msg_str = msg
+        return f"~{msg_str}L".encode('utf-8')
+
+    def interactive_mode(self):
+        print('Starting PolyDispatcher on {}:{}'.format(self.server.host, self.server.port))
+        self.run_unblock()
+        print('PolyDispatcher is running.')
+        input('Press Enter to stop the server and exit...\n')
+        exit(0)
+
+
+    @runAsThread
+    def run_unblock(self):
+        self.server.start()
+
+
 
 if __name__ == '__main__':
     load_dotenv()

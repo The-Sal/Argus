@@ -4,6 +4,7 @@ import json
 import logging
 import pickle
 import threading
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -63,10 +64,21 @@ class FastCache:
             if os.path.exists(self.cache_file):
                 os.rename(self.cache_file, self._backup_file)
 
+
+            attempts = 0
             with open(self.cache_file, 'wb') as f:
                 warning_given = False
                 while True:
+
+                    if attempts >= 5:
+                        print('!' * 50)
+                        print('ERROR: CACHE WRITE FAILED MULTIPLE TIMES, CHECK TRACEBACKS ABOVE FOR DETAILS.')
+                        print('ABORTING CACHE WRITE')
+                        print('!' * 50)
+                        break
+
                     try:
+                        attempts += 1
                         pickle.dump(self.cache, f)
                         if warning_given:
                             print(
@@ -78,6 +90,7 @@ class FastCache:
                                     'Caches disabled for future runs. You can re-enable by removing ARGUS_CACHES_DISABLED from your environment.')
                         break
                     except Exception as e:
+                        traceback.print_exc()
                         print(f"Cache write failed with error: {e}.")
                         print('!' * 50)
                         print('WARNING: STOP WHAT YOU ARE DOING! CACHE WRITE FAILED PLEASE WAIT FOR IT TO COMPLETE!')
@@ -152,11 +165,12 @@ class DomainCache:
         key = f"{func_uuid}:{args_key}:{kwargs}"
         return key
 
-    def cache_decorator(self, func_uuid: str, expiration: int = None):
+    def cache_decorator(self, func_uuid: str, expiration: int = None, should_cache_function=None):
         """Decorator to cache the result of a function.
         Args:
             func_uuid (str): A unique identifier for the function being cached.
             expiration (int, optional): Expiration time in seconds for the cached value.
+            should_cache_function (callable, optional): A function that takes the result and returns True if it should be cached, False otherwise.
         """
         def decorator(func):
             def wrapper(*args, **kwargs):
@@ -166,7 +180,12 @@ class DomainCache:
                     return self.get(key)
                 except NotKey:
                     result = func(*args, **kwargs)
-                    self.set(key, result, expiration=expiration)
+                    if should_cache_function is not None:
+                        if should_cache_function(result):
+                            self.set(key, result, expiration=expiration)
+                    else:
+                        self.set(key, result, expiration=expiration)
+
                     return result
             return wrapper
         return decorator

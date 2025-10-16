@@ -754,7 +754,7 @@ class AccountProvider:
 
 
 class MKTDispatcher:
-    def __init__(self, timeout=60, mode="ASK", dryRun=False):
+    def __init__(self, timeout=60, mode="ASK", dryRun=False, host='localhost', port=9972):
         """
         Initialize the MKTDispatcher.
 
@@ -768,7 +768,7 @@ class MKTDispatcher:
         """
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind(('localhost', 9972))
+        self.sock.bind((host, port))
         self.clients = []
         self.con_id_to_client = {}
         self.account_provider: AccountProvider = None
@@ -806,7 +806,8 @@ class MKTDispatcher:
             # from that point it will be False and can be updated interactively.
             'Show blocked MKT Data Warning': False
         }
-
+        self.host = host
+        self.port = port
         print('[IMPORTANT] MODE = {}'.format(self.mode))
 
     def _modify_configs_interactive(self):

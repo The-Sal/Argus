@@ -34,6 +34,11 @@ if platform.system() == "Darwin":
             '-e',
             f'display notification "{message}" with title "{title}" sound name "{sound_name}"'
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+else:
+    def macos_notification_with_custom_sound(title: str, message: str, sound_name: str = "default") -> None:
+        """Placeholder for non-macOS systems."""
+        print(f"macOS notification with sound not supported on this platform: {title} - {message}")
+
 
 
 class Notification:

@@ -16,7 +16,8 @@ from utils3 import runAsThread
 from tempfile import gettempdir
 from argus.ib.fields import IBKRFields
 from argus.ib import IBWss, MKTDispatcher
-from argus.ib._forcast_utils import AbstractMarket, FxContractBig, FxCMarketNotFinishedResolution, NoValueMarketData, AbstractionError
+from argus.ib._forcast_utils import AbstractMarket, FxContractBig, FxCMarketNotFinishedResolution, NoValueMarketData, \
+    AbstractionError
 from argus.ib._ib_utils import (
     throw_fuss, NOTIFICATION as _NOTIFICATION, expand_exception_decorator, AbstractSocketMessage, MarketData,
     IBKRModes
@@ -370,7 +371,6 @@ class FxCTimeout:
             time.sleep(0.1)
 
 
-
 class FXCDispatcher(MKTDispatcher):
     """
     Dispatcher for FXC WebSocket connections.
@@ -381,7 +381,8 @@ class FXCDispatcher(MKTDispatcher):
         from _forcast_utils.py
     """
 
-    def __init__(self, cookie=os.getenv('IB_COOKIE')):
+    # Note: host and port are identical to MKTDispatcher defaults, DO NOT CHANGE
+    def __init__(self, cookie=os.getenv('IB_COOKIE'), host='localhost', port=9972):
         self.ws = FXCWss(cookie=cookie)
         self.ws.run()
         self.ws.authenticated_semaphore.acquire()
@@ -390,7 +391,7 @@ class FXCDispatcher(MKTDispatcher):
             'dynamic_func_calls': self._dynamic_func_calls_interactive,
         }
         # dryRun is always True for FXCDispatcher
-        super().__init__(dryRun=True, mode=IBKRModes.PROTOCOL_2)
+        super().__init__(dryRun=True, mode=IBKRModes.PROTOCOL_2, host=host, port=port)
         # within MKTDispatcher this is usually called after IBWss is initialized
         # but because we dry-run it's not going to be called
         # so we need to call it manually here
@@ -417,7 +418,7 @@ class FXCDispatcher(MKTDispatcher):
 
         self._resolution_timeout = FxCTimeout(
             timeout_cb=self._resolution_timeout_callback,
-            timeout=300  # 5 minutes default
+            timeout=20  # seconds
         )
 
         # Market setting, switching, etc. lock
@@ -478,7 +479,11 @@ class FXCDispatcher(MKTDispatcher):
 
         print("Fetching all markets from IBKR...")
         response = self.ws.networker.session.get(self._urls['tree'])
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except Exception as e:
+            print('Response content:', response.content)
+            raise e
         data: dict[str, dict[str, str | list]] = response.json()
         all_categories = data.keys()
         print("Found {} categories.".format(len(all_categories)))
@@ -594,7 +599,6 @@ class FXCDispatcher(MKTDispatcher):
     # CLI-Dev Methods
     ############################
 
-    @apply_some_lock('fxc_market_lock')
     def delete_active_market_from_memory(self):
         """Delete the currently active market from memory, if it exists"""
         if self._active_market is None:
@@ -678,27 +682,32 @@ class FXCDispatcher(MKTDispatcher):
                 args = []
                 if params:
                     print(f"Method '{selected_method_name}' requires {len(params)} argument(s).")
-                    for param_name, param in params.items():
-                        if param.default is param.empty:
-                            user_input = input(f"Enter value for required parameter '{param_name}': ")
-                        else:
-                            user_input = input(
-                                f"Enter value for optional parameter '{param_name}' (default={param.default}): ")
-                            if user_input == '':
-                                user_input = param.default
+                    # ask the user if they want to skip adding args and just call with no args
+                    skip_args = input("Do you want to skip adding arguments and call with no args? (y/n): ")
+                    if skip_args.lower() == 'y':
+                        args = []
+                    else:
+                        for param_name, param in params.items():
+                            if param.default is param.empty:
+                                user_input = input(f"Enter value for required parameter '{param_name}': ")
+                            else:
+                                user_input = input(
+                                    f"Enter value for optional parameter '{param_name}' (default={param.default}): ")
+                                if user_input == '':
+                                    user_input = param.default
 
-                        # ask for type
-                        type_input = input(
-                            f"Enter type for parameter '{param_name}' (int, float, str, bool) or press Enter to keep as str: ")
-                        if type_input in supported_types:
-                            cast_type = supported_types[type_input]
-                            try:
-                                user_input = cast_type(user_input)
-                            except ValueError:
-                                print(f"Failed to cast input to {type_input}, keeping as str.")
-                        else:
-                            print("Keeping input as str.")
-                        args.append(user_input)
+                            # ask for type
+                            type_input = input(
+                                f"Enter type for parameter '{param_name}' (int, float, str, bool) or press Enter to keep as str: ")
+                            if type_input in supported_types:
+                                cast_type = supported_types[type_input]
+                                try:
+                                    user_input = cast_type(user_input)
+                                except ValueError:
+                                    print(f"Failed to cast input to {type_input}, keeping as str.")
+                            else:
+                                print("Keeping input as str.")
+                            args.append(user_input)
 
                 result = selected_method(*args)
 
@@ -930,15 +939,16 @@ class FXCDispatcher(MKTDispatcher):
                     error=None
                 )
             except Exception as e:
-                print(f"Error sending market update to client {client.getpeername()}: {e}")
+                try:
+                    print(f"Error sending market update to client {client.getpeername()}: {e}")
+                except OSError:
+                    print(f"Error sending market update to a disconnected client, removing from list. {client}, {e}")
                 self.clients.remove(client)
 
     def _client_get_all_markets(self):
         markets = self.generate_all_markets()
         markets_dicts = [market.__dict__ for market in markets]
         return json.dumps(markets_dicts)
-
-
 
     @staticmethod
     def _craft_send_response(client, command: str, value, error: str | None = None) -> str:
@@ -949,7 +959,6 @@ class FXCDispatcher(MKTDispatcher):
         }
         msg = "~" + json.dumps(response) + "L"
         client.sendall(msg.encode('ascii'))
-
 
 
 if __name__ == '__main__':

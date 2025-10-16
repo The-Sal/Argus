@@ -38,7 +38,7 @@ class ShortableSharesData:
             self._server_path
         ], stderr=subprocess.DEVNULL).decode('utf-8').strip()
 
-    @_cache.cache_decorator('get_shortable_shares')
+    @_cache.cache_decorator('get_shortable_shares', expiration=60 * 60 * 48)  # Cache for 48 hours
     def get_shortable_shares(self, symbol):
         """Fetches shortable shares data for a given symbol.
         For symbols >10 Million shares caps at 10 Million. for shares <X returns X-1."""
@@ -61,7 +61,6 @@ class ShortableSharesData:
         except subprocess.CalledProcessError:
             logging.error('No shortable shares data found for symbol: %s', symbol)
             return 0.0
-
 
     @_cache.cache_decorator('get_shortable_shares')
     def get_shortable_shares_by_conid(self, conid):
@@ -91,8 +90,7 @@ class ShortableSharesData:
             logging.error('No shortable shares data found for conid: %s', conid)
             return 0.0
 
-
-    @_cache.cache_decorator('translate_symbol_to_conid')
+    @_cache.cache_decorator('translate_symbol_to_conid', should_cache_function=lambda x: x is not None)
     def translate_symbol_to_conid(self, symbol):
         """Translates a symbol to its corresponding conid using the shortable shares data."""
         try:
@@ -102,7 +100,6 @@ class ShortableSharesData:
                 raise ValueError(f'Unexpected data format: {raw_data}')
             found_symbol = parts[0].strip()
             conid = parts[3].strip()
-
             if found_symbol != symbol.upper():
                 raise ValueError(f'Symbol mismatch: {found_symbol} != {symbol.upper()}')
 
@@ -114,7 +111,9 @@ class ShortableSharesData:
 
 if __name__ == '__main__':
     ss = ShortableSharesData()
-    _cache.invalidate_key(_cache.generate_key('get_shortable_shares', 'AAPL'))
-    _cache.invalidate_key(_cache.generate_key('get_shortable_shares', 72539702))
+    # _cache.invalidate_key(_cache.generate_key('get_shortable_shares', 'AAPL'))
+    # _cache.invalidate_key(_cache.generate_key('get_shortable_shares', 72539702))
+    # _cache.invalidate_key(_cache.generate_key('translate_symbol_to_conid', 'TQQQ'))
     print('AAPL', ss.get_shortable_shares('AAPL'))
     print('TQQQ', ss.get_shortable_shares_by_conid(72539702))
+    print(ss.translate_symbol_to_conid('TQQQ'))
