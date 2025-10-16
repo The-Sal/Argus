@@ -99,7 +99,7 @@ plotly==6.3.0
 pluggy==1.6.0
 poly_eip712_structs==0.0.1
 propcache==0.3.2
-protobuf==3.20.3
+protobuf==4.25.8
 PSNLib @ git+https://github.com/the-sal/PSNLib@1a83672b6eb47724c04820829611be36ce6df0f8
 psutil==7.0.0
 py-code-cleaner==1.3.0
