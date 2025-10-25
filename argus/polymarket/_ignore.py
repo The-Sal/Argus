@@ -29,7 +29,18 @@ def tPoly(resolve_max: int = 2):
             break
         time.sleep(0.2)
 
+def resolve_slug(slug: str):
+    api = PolyDispatcher(
+        private_key=os.environ['POLYMARKET_PRIVATE_KEY'],
+        proxy_funder=os.environ['POLYMARKET_PROXY_FUNDER']
+    )
+    df = api._client_resolve_market(slug)
+    if df is not None:
+        print(df)
+    else:
+        print(f"Failed to resolve market: ", slug)
 
 
 if __name__ == '__main__':
-    tPoly(resolve_max=5)
+    # tPoly(resolve_max=5)
+    resolve_slug('new-york-city-mayoral-election')

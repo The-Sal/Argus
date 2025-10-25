@@ -265,7 +265,9 @@ class PolyDispatcher:
     @assertTypes((str,), auto_convert=True, class_method=True)
     def _client_resolve_market(self, market_slug):
         all_markets = self.api.enumerate_all_markets()
+        print('Client requested to resolve market:', market_slug)
         target_market = next((m for m in all_markets if m.market_slug == market_slug), None)
+        print('Found market:', target_market)
         if not target_market:
             return None
         df = self.api.resolve_market(target_market)
