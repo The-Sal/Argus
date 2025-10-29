@@ -30,8 +30,9 @@ import socket
 import base64
 import pandas as pd
 from dotenv import load_dotenv
-from utils3 import assertTypes, runAsThread
 from datetime import datetime, timezone
+from utils3 import assertTypes, runAsThread
+from argus._argus_utils import Introspective
 from utils3.networking.sockets import Server
 from py_clob_client.client import ClobClient
 from py_clob_client.exceptions import PolyApiException
@@ -174,7 +175,7 @@ class PolymarketAPI:
 
 
 
-class PolyDispatcher:
+class PolyDispatcher(Introspective):
     """
     High-level TCP-based dispatcher for Polymarket API interactions.
     """
@@ -187,6 +188,7 @@ class PolyDispatcher:
             on_disconnect=self.on_disconnect,
             on_recv=self.on_recv
         )
+        super().__init__()
 
 
     @staticmethod
@@ -302,8 +304,9 @@ class PolyDispatcher:
         print('Starting PolyDispatcher on {}:{}'.format(self.server.host, self.server.port))
         self.run_unblock()
         print('PolyDispatcher is running.')
-        input('Press Enter to stop the server and exit...\n')
-        exit(0)
+        self._interactive_ui(functions={})
+        input('Press Enter to stop the PolyDispatcher...\n')
+        self.server.stop()
 
 
     @runAsThread
