@@ -92,6 +92,7 @@ class EnhancedPM(ClobClient):
                 'type': 'market'
             }))
 
+
     ############################################
     # WSS METHODS
     ############################################
@@ -119,6 +120,7 @@ class EnhancedPM(ClobClient):
             return
 
         self.init_websockets()
+        self.start_market_ws()
 
     def _on_ws_message(self, ws, message):
         try:
