@@ -85,12 +85,6 @@ class EnhancedPM(ClobClient):
                                       on_error=self.on_error,
                                       on_close=self._on_ws_close)
 
-        # check for any existing subscriptions and resubscribe
-        if self.idx_to_callback:
-            self.market_ws.send(json.dumps({
-                'assets_ids': list(self.idx_to_callback.keys()),
-                'type': 'market'
-            }))
 
 
     ############################################
@@ -121,6 +115,12 @@ class EnhancedPM(ClobClient):
 
         self.init_websockets()
         self.start_market_ws()
+        time.sleep(1)
+        if self.idx_to_callback:
+            self.market_ws.send(json.dumps({
+                'assets_ids': list(self.idx_to_callback.keys()),
+                'type': 'market'
+            }))
 
     def _on_ws_message(self, ws, message):
         try:
