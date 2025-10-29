@@ -20,8 +20,8 @@ class NotKey(CacheError):
 
 
 class FastCache:
-    """A super simple cache system that also saves to disk. Used to cache data from the Capital.com API especially
-    resolution related data or any non-changing data that's wasteful to fetch repeatedly."""
+    """A super simple cache system that also saves to disk. Used to cache data from the Capital.com API,
+    especially resolution-related data or any non-changing data that's wasteful to fetch repeatedly."""
     def __init__(self, cache_file: str = '~/.argus/capital_cache.pkl'):
         """Initializes the FastCache with a specified cache file."""
         self.cache_file = os.path.expanduser(cache_file)

@@ -6,32 +6,9 @@ import threading
 import traceback
 from utils3.networking import Session as _RAW_SESSION
 from argus.capital import DomainCache, CapitalComMKTDataLive
-from argus._argus_utils import Notification, macos_notification_with_custom_sound
-
+from argus._argus_utils import Notification
 
 logger = logging.getLogger(__name__)
-
-
-
-def throw_fuss(msg: str, boarder="*", notify=True):
-    """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
-    environment_size = os.get_terminal_size().columns
-    if environment_size < 80:
-        environment_size = 80
-    opening_line = boarder * environment_size
-    closing_line = boarder * environment_size
-    print(opening_line)
-    # message should be centered and maybe multiple lines
-    for line in msg.split('\n'):
-        centered_line = line.center(environment_size)
-        print(centered_line)
-    print(closing_line)
-
-    if notify:
-        macos_notification_with_custom_sound(
-            title="Argus IBKR Alert",
-            message=msg,
-        )
 
 
 def expand_exception_decorator(func_uuid, propagate=True):
@@ -532,8 +509,8 @@ class STK_Position:
 
 
 
-if __name__ == '__main__':
-    throw_fuss("Hello World!\nThis is a test of the emergency broadcast system.\nHave a nice day!")
-    throw_fuss("This is still a test of the emergency broadcast system.\nHave a nice day!", boarder="#")
-    # try using emojis
-    throw_fuss("This is an emergency broadcast system test.\nHave a nice day! 😊", boarder="🚨")
+# if __name__ == '__main__':
+#     throw_fuss("Hello World!\nThis is a test of the emergency broadcast system.\nHave a nice day!")
+#     throw_fuss("This is still a test of the emergency broadcast system.\nHave a nice day!", boarder="#")
+#     # try using emojis
+#     throw_fuss("This is an emergency broadcast system test.\nHave a nice day! 😊", boarder="🚨")

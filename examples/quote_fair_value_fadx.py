@@ -43,6 +43,7 @@ def notify(message):
     )
 
 
+# noinspection PyUnresolvedReferences
 from ic_audit import AuditNotifier, ProjectPrivileges, ProjectEvents
 an = AuditNotifier(
     project_name="ADX Arbitrage Fair Value Monitor",

@@ -17,16 +17,17 @@ to provide results. This module also supports a 'dry' mode where you do NOT need
 supports real-time market data subscriptions via WebSocket. The keys are usually only for order placement.
 
 """
-import os
 import json
-import datetime
 import time
-
 import requests
+from argus import throw_fuss
 from utils3 import runAsThread
 from websocket import WebSocketApp
 from py_clob_client.client import ClobClient
+from argus.polymarket import fCache, DomainCache
 from argus.polymarket_direct._types import PolymarketEvent
+
+dCache = DomainCache(domain='polymarket.direct', cache=fCache)
 
 #############################################
 # ENHANCED ENDPOINTS
@@ -59,21 +60,65 @@ class EnhancedPM(ClobClient):
             self.set_api_creds(self.create_or_derive_api_creds())
 
         self.bd = order_book_depth
-        self.market_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/market',
-                                      on_open=self._on_ws_open,
-                                      on_message=self._on_ws_message,
-                                      on_close=lambda ws: exit(500))
         self.user_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/user')
         self.session = requests.Session()
         self.idx_to_callback = {}
         self.ws_messages = []
         self._write_messages_to_file()
+        self.ws_errors = 0
+        self.market_ws: WebSocketApp = None
+        self.init_websockets()
+
+    @runAsThread
+    def ping_pong(self):
+        while True:
+            time.sleep(30)
+            try:
+                self.market_ws.send(b'PING')
+            except Exception as e:
+                print("Error sending ping:", e)
+
+    def init_websockets(self):
+        self.market_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/market',
+                                      on_open=self._on_ws_open,
+                                      on_message=self._on_ws_message,
+                                      on_error=self.on_error,
+                                      on_close=self._on_ws_close)
+
+        # check for any existing subscriptions and resubscribe
+        if self.idx_to_callback:
+            self.market_ws.send(json.dumps({
+                'assets_ids': list(self.idx_to_callback.keys()),
+                'type': 'market'
+            }))
 
     ############################################
     # WSS METHODS
     ############################################
-    def _on_ws_open(self, ws):
+    @staticmethod
+    def _on_ws_open(ws):
         print("Market WebSocket Opened")
+
+    def on_error(self, ws, error):
+        throw_fuss(
+            msg=f"WebSocket Error: {error}",
+            title="Polymarket WebSocket Error"
+        )
+
+    def _on_ws_close(self, ws, close_status_code, close_msg):
+        throw_fuss(
+            msg=f"Market WebSocket Closed, attempting to reconnect... and resubscribe to markets. attempts: {self.ws_errors}",
+            title="Polymarket WebSocket Closed"
+        )
+        self.ws_errors += 1
+        if self.ws_errors > 5:
+            throw_fuss(
+                msg=f"Market WebSocket Failed to reconnect after {self.ws_errors} attempts, giving up.",
+                title="Polymarket WebSocket Failed"
+            )
+            return
+
+        self.init_websockets()
 
     def _on_ws_message(self, ws, message):
         try:
@@ -82,13 +127,20 @@ class EnhancedPM(ClobClient):
         except Exception as e:
             print("Error parsing WebSocket message:", e)
             data = message
+            self.ws_messages.append(data)
             print(data, len(data), type(data))
+            return
+
+        if not isinstance(data, dict):
+            print("Error parsing WebSocket message:", data)
             return
 
         changes = data.get('price_changes', [])
         for change in changes:
             asset_id = change.get('asset_id')
             callback = self.idx_to_callback.get(asset_id)
+            if callback is None:
+                raise ValueError(f"No callback found for asset_id: {asset_id}")
             callback(change)
 
     @runAsThread
@@ -98,7 +150,6 @@ class EnhancedPM(ClobClient):
             with open(filename, 'w') as f:
                 for msg in self.ws_messages:
                     f.write(str(msg) + '\n')
-
 
     ############################################
     # PUBLIC METHODS
@@ -121,19 +172,26 @@ class EnhancedPM(ClobClient):
         return returns
 
     # Subscribe to real-time market data via a callback function
-    def subscribe_to_market_data(self, market_ids, callback):
-        for idx in market_ids:
+    def subscribe_to_market_data(self, asset_id, callback):
+        for idx in asset_id:
             self.idx_to_callback[idx] = callback
         self.market_ws.send(json.dumps({
-            'assets_ids': market_ids,
+            'assets_ids': asset_id,
             'type': 'market'
         }))
 
-    def unsubscribe_from_market_data(self, market_ids):
-        for idx in market_ids:
+    def unsubscribe_from_market_data(self, asset_id):
+        """
+        Unsubscribe from real-time market data for the given market IDs.
+        Due to how polymarket's ws works, there is no actual unsubscribing, instead
+        we set the callback to a no-op lambda function.
 
+        :param asset_id: The asset IDs to unsubscribe from.
+        :return:
+        """
+        for idx in asset_id:
             if idx in self.idx_to_callback:
-                del self.idx_to_callback[idx]
+                self.idx_to_callback[idx] = lambda x: None
 
     @runAsThread
     def start_market_ws(self):

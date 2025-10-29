@@ -11,5 +11,4 @@ from argus.ib import *
 from argus.capital import *
 from argus.nasdaq import NASDAQDataDownloader
 from argus.tv import ChartSession, QuoteSession, multisymbol, MarketData
-from argus.polymarket import PolymarketAPI, PolyDispatcher, PolyApiException, PMarket, PMarketToken
 

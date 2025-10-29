@@ -1,5 +1,6 @@
 """Utilities for the Argus package."""
 import inspect
+import os
 import platform
 import traceback
 import subprocess
@@ -197,3 +198,24 @@ class Introspective:
                 print(f"Failed to call method: {e2}")
         except Exception as e:
             print(f"Error calling method: {e}")
+
+
+def throw_fuss(msg: str, boarder="*", notify=True, title="Argus IBKR Alert") -> None:
+    """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
+    environment_size = os.get_terminal_size().columns
+    if environment_size < 80:
+        environment_size = 80
+    opening_line = boarder * environment_size
+    closing_line = boarder * environment_size
+    print(opening_line)
+    # message should be centered and maybe multiple lines
+    for line in msg.split('\n'):
+        centered_line = line.center(environment_size)
+        print(centered_line)
+    print(closing_line)
+
+    if notify:
+        macos_notification_with_custom_sound(
+            title=title,
+            message=msg,
+        )

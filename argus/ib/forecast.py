@@ -19,9 +19,10 @@ from argus.ib import IBWss, MKTDispatcher
 from argus.ib._forcast_utils import AbstractMarket, FxContractBig, FxCMarketNotFinishedResolution, NoValueMarketData, \
     AbstractionError
 from argus.ib._ib_utils import (
-    throw_fuss, NOTIFICATION as _NOTIFICATION, expand_exception_decorator, AbstractSocketMessage, MarketData,
+    NOTIFICATION as _NOTIFICATION, expand_exception_decorator, AbstractSocketMessage, MarketData,
     IBKRModes
 )
+from argus import throw_fuss
 
 
 def apply_some_lock(lock_name):

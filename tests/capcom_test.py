@@ -36,7 +36,7 @@ class TestCapcom(unittest.TestCase):
             )
             print(f"Resolved symbol {result['instrument']['name']} successfully.")
 
-
+    # noinspection PyUnresolvedReferences
     def test_socket_systems_and_mkt_data(self):
         from tests.test import test_mkt_dispatcher
         self.dispatcher.start_server()

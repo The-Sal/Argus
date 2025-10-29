@@ -213,6 +213,7 @@ class Ticker:
         signal.signal(signal.SIGTERM, self.cleanup_on_exit)  # SIGTERM (termination signal)
 
     # stop it :(
+    # noinspection PyUnresolvedReferences
     def stop(self):
         self.run = False
         self.task.cancel()

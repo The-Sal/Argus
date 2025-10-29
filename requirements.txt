@@ -10,3 +10,4 @@ requests~=2.32.4
 matplotlib~=3.10.3
 setuptools~=80.9.0
 utils3 @ git+https://github.com/the-sal/utils3
+termcolor
