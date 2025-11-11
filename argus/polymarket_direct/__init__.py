@@ -17,9 +17,11 @@ to provide results. This module also supports a 'dry' mode where you do NOT need
 supports real-time market data subscriptions via WebSocket. The keys are usually only for order placement.
 
 """
+import copy
 import json
 import time
 import requests
+import threading
 from argus import throw_fuss
 from utils3 import runAsThread
 from websocket import WebSocketApp
@@ -67,32 +69,32 @@ class EnhancedPM(ClobClient):
         self._write_messages_to_file()
         self.ws_errors = 0
         self.market_ws: WebSocketApp = None
-        self.init_websockets()
+        self.init_market_ws()
+        self._internally_closed = False
 
-    @runAsThread
-    def ping_pong(self):
-        while True:
-            time.sleep(30)
-            try:
-                self.market_ws.send(b'PING')
-            except Exception as e:
-                print("Error sending ping:", e)
 
-    def init_websockets(self):
+        # This should be reset everytime after use. It will be blocked
+        # when you call init_market_ws until the ws connection is open.
+        self.market_open_semaphore = threading.Semaphore(0)
+
+    ############################################
+    # NON-PUBLIC METHODS
+    ############################################
+
+    def init_market_ws(self):
+        self.market_open_semaphore = threading.Semaphore(0)
         self.market_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/market',
                                       on_open=self._on_ws_open,
                                       on_message=self._on_ws_message,
                                       on_error=self.on_error,
                                       on_close=self._on_ws_close)
 
-
-
     ############################################
     # WSS METHODS
     ############################################
-    @staticmethod
-    def _on_ws_open(ws):
+    def _on_ws_open(self, ws):
         print("Market WebSocket Opened")
+        self.market_open_semaphore.release()
 
     def on_error(self, ws, error):
         throw_fuss(
@@ -101,6 +103,8 @@ class EnhancedPM(ClobClient):
         )
 
     def _on_ws_close(self, ws, close_status_code, close_msg):
+        if self._internally_closed:
+            return
         throw_fuss(
             msg=f"Market WebSocket Closed, attempting to reconnect... and resubscribe to markets. attempts: {self.ws_errors}",
             title="Polymarket WebSocket Closed"
@@ -113,9 +117,8 @@ class EnhancedPM(ClobClient):
             )
             return
 
-        self.init_websockets()
-        self.start_market_ws()
-        time.sleep(1)
+        self.restart_ws_connections()
+        time.sleep(2)
         if self.idx_to_callback:
             self.market_ws.send(json.dumps({
                 'assets_ids': list(self.idx_to_callback.keys()),
@@ -173,12 +176,31 @@ class EnhancedPM(ClobClient):
 
         return returns
 
+
+    def restart_ws_connections(self):
+        """
+        You should call this function often to ensure the ws connections are alive.
+        :return:
+        """
+        print('Re-initializing market ws for subscription...')
+        self._internally_closed = True
+        self.market_ws.close()
+        self.init_market_ws()
+        self.start_market_ws()
+        self.market_open_semaphore.acquire()
+        self._internally_closed = False
+
     # Subscribe to real-time market data via a callback function
-    def subscribe_to_market_data(self, asset_id, callback):
-        for idx in asset_id:
+    def subscribe_to_market_data(self, asset_ids, callback):
+        """
+        :param asset_ids: A list of asset IDs to subscribe to.
+        :param callback: A callback function that takes a single argument (the market data update).
+        :return:
+        """
+        for idx in asset_ids:
             self.idx_to_callback[idx] = callback
         self.market_ws.send(json.dumps({
-            'assets_ids': asset_id,
+            'assets_ids': asset_ids,
             'type': 'market'
         }))
 

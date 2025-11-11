@@ -4,6 +4,8 @@ import json
 import pickle
 import datetime
 import threading
+
+import websocket
 from termcolor import colored
 from dotenv import load_dotenv
 from argus.polymarket_direct import EnhancedPM, PolymarketEvent
@@ -237,6 +239,7 @@ def example_usage():
                         'token_id': token_id,
                         'secs_till_close': secs_till_close,
                         'payload': dict(orderbook_data),
+                        'timestamp': time.time()
                     }
                     recorder.append(rec)
                 except Exception as e:
@@ -268,18 +271,39 @@ def example_usage():
                 return i  # upcoming: start from this
         return -1  # past all
 
-    def _release_at(dt_utc: datetime.datetime, sem: threading.Semaphore):
+    def _wait_until(dt_utc: datetime.datetime, label: str = "") -> bool:
+        """Block until the target UTC time using a local semaphore and a timer.
+        Returns True when the target time has passed (either via timer firing or timeout safeguard).
+        """
         now = datetime.datetime.now(datetime.UTC)
         delay = (dt_utc - now).total_seconds()
+        # If already past target, return immediately
         if delay <= 0:
-            sem.release()
-            return
-        timer = threading.Timer(delay, sem.release)
+            return True
+        # Use a local semaphore to avoid cross-release between phases
+        sem_local = threading.Semaphore(0)
+
+        def _release_and_log():
+            try:
+                print(f"[Timer] Reached {datetime.datetime.strftime(dt_utc, '%Y-%m-%d %H:%M:%S UTC')} {f'({label})' if label else ''}; releasing.")
+            except Exception:
+                pass
+            sem_local.release()
+
+        timer = threading.Timer(delay, _release_and_log)
         timer.daemon = True
         timer.start()
+        try:
+            print(f"[Timer] Waiting {delay:.2f}s until {datetime.datetime.strftime(dt_utc, '%Y-%m-%d %H:%M:%S UTC')} {f'({label})' if label else ''}")
+        except Exception:
+            pass
+        # Add a small cushion to ensure we don't miss due to scheduling jitter
+        acquired = sem_local.acquire(timeout=delay + 5.0)
+        if not acquired:
+            print(f"[Timer] Timeout after {delay + 5.0:.2f}s waiting for {label or 'target'}; proceeding.")
+        return True
 
     # main loop
-    sem = threading.Semaphore(0)
     idx = _find_start_index(datetime.datetime.now(datetime.UTC))
     if idx == -1:
         print("All events are in the past. Nothing to subscribe to.")
@@ -296,16 +320,20 @@ def example_usage():
 
             # If we're before start, wait until start (no subscription yet)
             now = datetime.datetime.now(datetime.UTC)
-            if now < st:
-                print(f"Waiting until {datetime.datetime.strftime(st, '%Y-%m-%d %H:%M:%S UTC')} to start {ev.ticker}...")
-                _release_at(st, sem)
-                sem.acquire()
+            # if now < st:
+            #     print(f"Waiting until {datetime.datetime.strftime(st, '%Y-%m-%d %H:%M:%S UTC')} to start {ev.ticker}...")
+            #     _wait_until(st, f"start {ev.ticker}")
 
-            # Subscribe for this event and set a timer to release at end
+            # Subscribe for this event and wait until end time
+            enhanced_pm.restart_ws_connections()
+            time.sleep(5.0)  # brief pause to ensure ws is ready
             current_tokens = _subscribe_for_event(ev)
             print(f"Subscribed. Will switch at end time {datetime.datetime.strftime(et, '%Y-%m-%d %H:%M:%S UTC')}\n")
-            _release_at(et, sem)
-            sem.acquire()
+            now = datetime.datetime.now(datetime.UTC)
+            if now >= et:
+                print(f"End time {datetime.datetime.strftime(et, '%Y-%m-%d %H:%M:%S UTC')} already passed; switching immediately.")
+            else:
+                _wait_until(et, f"end {ev.ticker}")
 
             # Time to switch: unsubscribe and continue to next
             print(f"Event ended: {ev.ticker}. Switching...")
@@ -320,4 +348,5 @@ def example_usage():
             print("Error stopping recorder:", e)
 
 if __name__ == '__main__':
+    websocket.enableTrace(True)
     example_usage()

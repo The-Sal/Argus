@@ -214,7 +214,7 @@ def throw_fuss(msg: str, boarder="*", notify=True, title="Argus IBKR Alert") -> 
         print(centered_line)
     print(closing_line)
 
-    if notify:
+    if notify and os.getenv('ARGUS_DISABLE_NOTIFICATIONS', '0') != '1':
         macos_notification_with_custom_sound(
             title=title,
             message=msg,
