@@ -4,3 +4,6 @@ building
 .venv_old
 .venv
 examples/ADX_data
+*.pkl
+*.fk
+*.json
