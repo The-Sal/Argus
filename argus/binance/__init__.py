@@ -79,6 +79,10 @@ class BinanceWss:
         self.api_secret = api_secret
         self.testnet = testnet
 
+        # Check connectivity to Binance before initializing
+        if not testnet:
+            self._check_binance_connectivity()
+
         # Initialize client (for symbol validation if needed)
         if api_key and api_secret:
             self.client = Client(api_key, api_secret, testnet=testnet)
@@ -110,6 +114,58 @@ class BinanceWss:
         self.running = False
 
         logger.info(f"Initialized BinanceWss (testnet={testnet})")
+
+    def _check_binance_connectivity(self):
+        """
+        Check if we can reach Binance production endpoints.
+        Raises BinanceError if connectivity fails.
+        """
+        import socket as sock
+
+        host = 'stream.binance.com'
+        port = 9443
+        timeout = 5
+
+        logger.info(f"Checking connectivity to {host}:{port}...")
+
+        try:
+            # Try to establish a TCP connection
+            test_socket = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+            test_socket.settimeout(timeout)
+            test_socket.connect((host, port))
+            test_socket.close()
+            logger.info(f"Successfully connected to {host}:{port}")
+        except sock.timeout:
+            raise BinanceError(
+                f"Connection to {host}:{port} timed out after {timeout}s.\n"
+                f"Binance production endpoint is unreachable from your network.\n\n"
+                f"Possible causes:\n"
+                f"  - Firewall blocking cryptocurrency exchanges\n"
+                f"  - ISP blocking Binance\n"
+                f"  - Regional restrictions\n"
+                f"  - Network connectivity issues\n\n"
+                f"Solutions:\n"
+                f"  1. Use testnet: python runtime.py binance --testnet\n"
+                f"  2. Try a different network (mobile hotspot, VPN)\n"
+                f"  3. Check firewall settings\n"
+                f"  4. Contact your network administrator"
+            )
+        except sock.gaierror as e:
+            raise BinanceError(
+                f"Cannot resolve hostname {host}: {e}\n"
+                f"DNS resolution failed. Check your internet connection."
+            )
+        except ConnectionRefusedError:
+            raise BinanceError(
+                f"Connection to {host}:{port} was refused.\n"
+                f"Binance endpoint is actively blocking your connection."
+            )
+        except Exception as e:
+            raise BinanceError(
+                f"Failed to connect to {host}:{port}: {e}\n\n"
+                f"Cannot reach Binance production endpoint.\n"
+                f"Try using testnet: python runtime.py binance --testnet"
+            )
 
     def start(self):
         """Start the WebSocket manager."""
