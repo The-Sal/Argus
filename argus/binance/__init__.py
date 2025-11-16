@@ -3,6 +3,13 @@ Binance Market Data Dispatcher
 
 This module provides a market data dispatcher for Binance, similar to the IB MKTDispatcher.
 It uses python-binance for WebSocket connections and follows Protocol 2 for data transmission.
+
+Features:
+- Real-time WebSocket streaming using python-binance
+- Protocol 2 compatible data transmission
+- TCP server for client connections
+- Interactive mode with manual symbol management
+- Automatic connectivity check for production endpoints
 """
 import os
 import json
