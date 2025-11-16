@@ -203,6 +203,11 @@ class BinanceWss:
             self.running = True
             logger.info("BinanceWss started")
 
+            # Wait for the internal async loop to initialize
+            # Without this delay, the first subscription may fail silently
+            time.sleep(0.5)
+            logger.info("BinanceWss ready for subscriptions")
+
     def stop(self):
         """Stop the WebSocket manager and close all streams."""
         if self.running:
