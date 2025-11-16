@@ -86,7 +86,16 @@ class BinanceWss:
             self.client = None
 
         # ThreadedWebsocketManager for handling streams
-        self.twm = ThreadedWebsocketManager(api_key=api_key, api_secret=api_secret, testnet=testnet)
+        # For public streams (market data), no API credentials are needed
+        # Only pass credentials if they're actually provided
+        if api_key and api_secret:
+            self.twm = ThreadedWebsocketManager(api_key=api_key, api_secret=api_secret, testnet=testnet)
+        else:
+            # Public streams only - no authentication needed
+            if testnet:
+                self.twm = ThreadedWebsocketManager(testnet=testnet)
+            else:
+                self.twm = ThreadedWebsocketManager()
 
         # Track subscriptions: symbol -> (stream_name, callback)
         self.subscriptions: Dict[str, tuple] = {}
