@@ -593,6 +593,8 @@ class MKTDispatcher:
 
 if __name__ == '__main__':
     # Example usage
+    from dotenv import load_dotenv
+    load_dotenv()
     api_key = os.getenv('BINANCE_API_KEY')
     api_secret = os.getenv('BINANCE_API_SECRET')
 
