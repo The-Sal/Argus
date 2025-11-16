@@ -128,6 +128,7 @@ class BinanceWss:
         Raises BinanceError if connectivity fails.
         """
         import socket as sock
+        import ssl
 
         host = 'stream.binance.com'
         port = 9443
@@ -135,13 +136,12 @@ class BinanceWss:
 
         logger.info(f"Checking connectivity to {host}:{port}...")
 
+        # First check basic TCP connectivity
         try:
-            # Try to establish a TCP connection
             test_socket = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
             test_socket.settimeout(timeout)
             test_socket.connect((host, port))
             test_socket.close()
-            logger.info(f"Successfully connected to {host}:{port}")
         except sock.timeout:
             raise BinanceError(
                 f"Connection to {host}:{port} timed out after {timeout}s.\n"
@@ -172,6 +172,28 @@ class BinanceWss:
                 f"Failed to connect to {host}:{port}: {e}\n\n"
                 f"Cannot reach Binance production endpoint.\n"
                 f"Try using testnet: python runtime.py binance --testnet"
+            )
+
+        # Now check TLS/SSL connection (deeper check)
+        logger.info(f"Checking TLS connectivity to {host}:{port}...")
+        try:
+            context = ssl.create_default_context()
+            with sock.create_connection((host, port), timeout=timeout) as raw_socket:
+                with context.wrap_socket(raw_socket, server_hostname=host) as secure_socket:
+                    # If we get here, TLS handshake succeeded
+                    pass
+            logger.info(f"Successfully connected to {host}:{port} with TLS")
+        except ssl.SSLError as e:
+            logger.warning(
+                f"TLS connection to {host}:{port} failed: {e}\n"
+                f"Your network may be intercepting or blocking encrypted connections to Binance.\n"
+                f"WebSocket connections may fail even though basic TCP works."
+            )
+            # Don't raise here - let it try anyway, but warn the user
+        except Exception as e:
+            logger.warning(
+                f"TLS connectivity check failed: {e}\n"
+                f"Production WebSocket may not work properly."
             )
 
     def start(self):
