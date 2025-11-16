@@ -267,6 +267,22 @@ Symbol format: `{BASE}{QUOTE}` (e.g., BTCUSDT = BTC/USDT)
 - No historical data (real-time only)
 - Rate limits: 10 messages/second per connection, max 1024 streams
 
+## Known Issues
+
+### Production WebSocket Connection Errors
+
+Some users may experience "Connection reset by peer" errors when using `testnet=False` (production) while testnet works fine. This is typically due to:
+
+- **Network/Firewall restrictions**: Production endpoints (`stream.binance.com`) may be blocked
+- **Regional access limitations**: Some regions have restricted access to Binance production
+- **Rate limiting**: Production has stricter rate limits than testnet
+
+**Workarounds:**
+1. Use testnet for development/testing: `python runtime.py binance --testnet`
+2. Check firewall settings to allow connections to `stream.binance.com:9443`
+3. Try from a different network or use a VPN
+4. Contact your network administrator if behind corporate firewall
+
 ## Future Enhancements
 
 - [ ] Futures market support
