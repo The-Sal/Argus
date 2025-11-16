@@ -442,10 +442,14 @@ class MKTDispatcher:
         print("=" * 50)
 
         # Create a fake socket for manual subscriptions
+        # The FakeSocket receives Protocol 2 bytes from _broadcast_market_data
+        # We don't need to do anything with it - just keep the subscription alive
         from argus.ib._ib_utils import FakeSocket
 
-        def manual_callback(market_data: BinanceMarketData):
-            self._broadcast_market_data(market_data.symbol, market_data)
+        def manual_callback(data):
+            # FakeSocket receives Protocol 2 bytes - just ignore it
+            # The data has already been broadcast by _broadcast_market_data
+            pass
 
         manual_socket = FakeSocket(callback=manual_callback)
         manual_socket.idx = 'manual'
