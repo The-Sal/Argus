@@ -47,13 +47,17 @@ pip install python-binance==1.0.32
 
 ## Configuration
 
-Set environment variables in your `.env` file:
+**Note:** API credentials are **optional** for public market data streams (ticker, depth, trades). They are only required for authenticated endpoints (user data, account information).
+
+Set environment variables in your `.env` file (optional):
 
 ```bash
 # Optional: Only needed for authenticated endpoints
 BINANCE_API_KEY=your_api_key_here
 BINANCE_API_SECRET=your_api_secret_here
 ```
+
+The dispatcher works perfectly fine without credentials for streaming public market data.
 
 ## Usage
 
