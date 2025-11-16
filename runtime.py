@@ -20,12 +20,13 @@ from argus.polymarket import PolyDispatcher
 from argus.ib.forecast import FXCDispatcher
 from argus.ib import MKTDispatcher, IBKRModes
 from argus.capital import MKTDispatcher as CapitalComDispatcher, Environment
+from argus.binance import MKTDispatcher as BinanceDispatcher
 
 
 if not load_dotenv():
     print("Warning: .env was not loaded")
 
-choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com']
+choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance']
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
@@ -33,6 +34,7 @@ def main(argv=None):
     parser.add_argument('--host', dest='host', help='Listening host (if supported by dispatcher)')
     parser.add_argument('--port', dest='port', type=int, help='Listening port (if supported by dispatcher)')
     parser.add_argument('--capital-env', dest='capital_env', choices=['demo', 'live'], help='Capital.com environment (demo or live)')
+    parser.add_argument('--testnet', dest='testnet', action='store_true', help='Use Binance testnet (for binance dispatcher)')
 
     args = parser.parse_args(argv)
 
@@ -78,6 +80,20 @@ def main(argv=None):
         dispatcher.start_server()
         input('Press enter to exit.')
         dispatcher.api.logout()
+    elif args.target == 'binance':
+        binance_kwargs = {
+            'api_key': os.environ.get('BINANCE_API_KEY'),
+            'api_secret': os.environ.get('BINANCE_API_SECRET'),
+            'testnet': args.testnet
+        }
+        if args.host:
+            binance_kwargs['host'] = args.host
+        if args.port is not None:
+            binance_kwargs['port'] = args.port
+        print(f'Starting Binance dispatcher (testnet={args.testnet})')
+        dispatcher = BinanceDispatcher(**binance_kwargs)
+        dispatcher.start()
+        dispatcher.interactive_mode()
     else:
         parser.error('Unknown target')
 
