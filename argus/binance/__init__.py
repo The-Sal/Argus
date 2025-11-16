@@ -426,16 +426,20 @@ class MKTDispatcher:
 
         with self.client_lock:
             if symbol not in self.symbol_to_clients:
-                # First client for this symbol - subscribe to WebSocket
+                # First client for this symbol - add client FIRST, then subscribe to WebSocket
+                # This prevents race condition where data arrives before client is in the list
+                self.symbol_to_clients[symbol] = [client]
+
                 def callback(market_data: BinanceMarketData):
                     self._broadcast_market_data(symbol, market_data)
 
                 try:
                     self.ws.subscribe_ticker(symbol, callback)
-                    self.symbol_to_clients[symbol] = [client]
                     logger.info(f"Subscribed to {symbol} for client")
                 except Exception as e:
                     logger.error(f"Failed to subscribe to {symbol}: {e}")
+                    # Remove client since subscription failed
+                    del self.symbol_to_clients[symbol]
                     client.sendall(f"ERROR: Failed to subscribe to {symbol}".encode())
                     return
             else:
