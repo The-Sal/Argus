@@ -18,10 +18,10 @@ import socket
 import logging
 import threading
 import traceback
-from typing import Dict, List, Callable, Optional
-from binance import ThreadedWebsocketManager
-from binance.client import Client
 from utils3 import runAsThread
+from binance.client import Client
+from typing import Dict, List, Callable
+from binance import ThreadedWebsocketManager
 from argus.capital import transmit_mkt_data_with_protocol_2, CapitalComMKTDataLive
 
 # Enable logging
