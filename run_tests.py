@@ -1,5 +1,5 @@
 """
-This script is for the automated CI/CD pipeline connected to The-Sal/Argus repository to use
+This script is for the automated CI/CD pipeline connected to The-Sal/Argus repository to use.
 """
 import os
 import sys
