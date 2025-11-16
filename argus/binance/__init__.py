@@ -206,7 +206,7 @@ class MKTDispatcher:
     """
     def __init__(self, host: str = 'localhost', port: int = 9974,
                  api_key: str = None, api_secret: str = None, testnet: bool = False,
-                 checkpoint_url: str = "https://sals-macbook-pro.tail34e8af.ts.net/finished"):
+                 checkpoint_url: str = None):
         """
         Initialize the Binance MKTDispatcher.
 
@@ -216,7 +216,7 @@ class MKTDispatcher:
             api_key: Binance API key (optional for public data)
             api_secret: Binance API secret (optional for public data)
             testnet: Use Binance testnet
-            checkpoint_url: URL for progress checkpoints
+            checkpoint_url: Optional URL for progress checkpoints
         """
         self.host = host
         self.port = port
@@ -241,13 +241,19 @@ class MKTDispatcher:
         self.configs = {
             'Print data packets': False,
             'Show client messages': True,
+            'Show live stream': False,
         }
+
+        # Live stream monitoring
+        self.live_stream_symbol = None
 
         logger.info(f"MKTDispatcher initialized on {host}:{port}")
         self._checkpoint("MKTDispatcher.__init__", "complete")
 
     def _checkpoint(self, task_name: str, status: str):
         """Send checkpoint notification."""
+        if not self.checkpoint_url:
+            return
         try:
             import requests
             requests.post(
@@ -374,6 +380,10 @@ class MKTDispatcher:
             if self.configs['Print data packets']:
                 logger.info(f"Broadcasting {symbol}: {market_data}")
 
+            # Live stream display
+            if self.configs['Show live stream'] and symbol == self.live_stream_symbol:
+                print(f"\r[LIVE] {symbol}: Bid={market_data.bid:.8f} Ask={market_data.ask:.8f} Last={market_data.last:.8f}", end='', flush=True)
+
             # Send to all clients
             for client in clients[:]:  # Copy list to avoid modification during iteration
                 try:
@@ -422,11 +432,26 @@ class MKTDispatcher:
         print("\nBinance MKTDispatcher Interactive Mode")
         print("=" * 50)
 
+        # Create a fake socket for manual subscriptions
+        from argus.ib._ib_utils import FakeSocket
+
+        def manual_callback(market_data: BinanceMarketData):
+            self._broadcast_market_data(market_data.symbol, market_data)
+
+        manual_socket = FakeSocket(callback=manual_callback)
+        manual_socket.idx = 'manual'
+
         while True:
+            if self.configs['Show live stream']:
+                print()  # New line after live stream display
+
             print("\nOptions:")
             print("1. Show subscribed symbols")
             print("2. Show connected clients")
             print("3. Toggle packet printing")
+            print("4. Add symbol manually")
+            print("5. Remove symbol manually")
+            print("6. Toggle live stream display")
             print("0. Exit")
 
             choice = input("\nSelect option: ").strip()
@@ -444,6 +469,47 @@ class MKTDispatcher:
             elif choice == '3':
                 self.configs['Print data packets'] = not self.configs['Print data packets']
                 print(f"Packet printing: {self.configs['Print data packets']}")
+
+            elif choice == '4':
+                symbol = input("Enter symbol to add (e.g., BTCUSDT): ").strip().upper()
+                if symbol:
+                    try:
+                        self._add_symbol(symbol, manual_socket)
+                        print(f"Successfully subscribed to {symbol}")
+                    except Exception as e:
+                        print(f"Error subscribing to {symbol}: {e}")
+
+            elif choice == '5':
+                symbol = input("Enter symbol to remove (e.g., BTCUSDT): ").strip().upper()
+                if symbol:
+                    try:
+                        self._remove_symbol(symbol, manual_socket)
+                        print(f"Successfully unsubscribed from {symbol}")
+                    except Exception as e:
+                        print(f"Error unsubscribing from {symbol}: {e}")
+
+            elif choice == '6':
+                if self.configs['Show live stream']:
+                    # Turn off
+                    self.configs['Show live stream'] = False
+                    self.live_stream_symbol = None
+                    print("Live stream display: OFF")
+                else:
+                    # Turn on - ask for symbol
+                    symbol = input("Enter symbol to display (e.g., BTCUSDT): ").strip().upper()
+                    if symbol:
+                        # Subscribe if not already subscribed
+                        if symbol not in self.symbol_to_clients:
+                            try:
+                                self._add_symbol(symbol, manual_socket)
+                            except Exception as e:
+                                print(f"Error subscribing to {symbol}: {e}")
+                                continue
+
+                        self.live_stream_symbol = symbol
+                        self.configs['Show live stream'] = True
+                        print(f"Live stream display: ON for {symbol}")
+                        print("(Press Enter to stop live stream)")
 
             elif choice == '0':
                 break
