@@ -7,3 +7,7 @@ examples/ADX_data
 *.pkl
 *.fk
 *.json
+*.pyc
+*.DS_Store
+*.pkl*
+
