@@ -204,69 +204,21 @@ class BinanceWss:
             logger.info("BinanceWss started")
 
             # Wait for the internal async loop to initialize
-            # Without this delay, the first subscription may fail silently
+            # Without this delay, subscriptions may fail silently
             time.sleep(0.5)
-
-            # Prime the WebSocket manager with a permanent heartbeat subscription
-            # The first few subscriptions after start() often fail silently in python-binance
-            # Keeping a permanent subscription keeps the WebSocket event loop active
-            logger.info("Starting permanent heartbeat subscription...")
-
-            # Use BNBUSDT as a permanent heartbeat (common symbol, low overhead)
-            _heartbeat_received = {'value': False}
-
-            def _heartbeat_callback(msg):
-                # Track if we received data to confirm WebSocket is working
-                if not _heartbeat_received['value']:
-                    logger.info("Heartbeat subscription active - WebSocket is ready")
-                    _heartbeat_received['value'] = True
-
-            try:
-                # Start heartbeat subscription and keep it running permanently
-                heartbeat_key = self.twm.start_symbol_ticker_socket(
-                    callback=_heartbeat_callback,
-                    symbol='BNBUSDT'
-                )
-
-                if heartbeat_key:
-                    logger.info(f"Heartbeat subscription created with key: {heartbeat_key}")
-                    # Store the heartbeat key so we can stop it on shutdown
-                    self._heartbeat_key = heartbeat_key
-
-                    # Wait for first heartbeat data to confirm it's working
-                    time.sleep(2.0)
-
-                    if _heartbeat_received['value']:
-                        logger.info("Heartbeat confirmed - system ready for subscriptions")
-                    else:
-                        logger.warning("Heartbeat subscription created but no data received yet")
-                else:
-                    logger.warning("Heartbeat subscription returned no connection key")
-                    self._heartbeat_key = None
-            except Exception as e:
-                logger.warning(f"Heartbeat subscription failed: {e}")
-                self._heartbeat_key = None
 
             logger.info("BinanceWss ready for subscriptions")
 
     def stop(self):
         """Stop the WebSocket manager and close all streams."""
         if self.running:
-            # Stop heartbeat subscription if it exists
-            if hasattr(self, '_heartbeat_key') and self._heartbeat_key:
-                try:
-                    self.twm.stop_socket(self._heartbeat_key)
-                    logger.info("Heartbeat subscription stopped")
-                except Exception as e:
-                    logger.debug(f"Error stopping heartbeat: {e}")
-
             self.twm.stop()
             self.running = False
             logger.info("BinanceWss stopped")
 
     def subscribe_ticker(self, symbol: str, callback: Callable):
         """
-        Subscribe to real-time ticker data for a symbol.
+        Subscribe to real-time ticker data for a symbol with automatic retry.
 
         Args:
             symbol: Trading pair symbol (e.g., 'BTCUSDT')
@@ -279,15 +231,20 @@ class BinanceWss:
                 logger.warning(f"Already subscribed to {symbol}")
                 return
 
-            # Track if we've received data for this subscription (for diagnostics)
-            first_message_received = {'value': False}
+            # Track if we've received data for this subscription
+            subscription_state = {
+                'first_message_received': False,
+                'retry_count': 0,
+                'conn_key': None,
+                'callback': callback
+            }
 
             # Create a wrapper callback to normalize the data
             def ticker_callback(msg):
-                # Log first message received for diagnostics
-                if not first_message_received['value']:
+                # Log first message received
+                if not subscription_state['first_message_received']:
                     logger.info(f"First message received for {symbol}")
-                    first_message_received['value'] = True
+                    subscription_state['first_message_received'] = True
 
                 if msg['e'] == 'error':
                     logger.error(f"WebSocket error for {symbol}: {msg}")
@@ -295,7 +252,6 @@ class BinanceWss:
 
                 try:
                     # Parse Binance ticker data
-                    # Binance ticker format: https://developers.binance.com/docs/binance-spot-api-docs/web-socket-streams#individual-symbol-ticker-streams
                     market_data = BinanceMarketData(
                         symbol=msg['s'],
                         bid=float(msg['b']),
@@ -304,38 +260,79 @@ class BinanceWss:
                         ask_qty=float(msg['A']),
                         last=float(msg['c']),
                         last_qty=float(msg['Q']),
-                        timestamp=msg['E']  # Event time
+                        timestamp=msg['E']
                     )
-                    callback(market_data)
+                    subscription_state['callback'](market_data)
                 except Exception as e:
                     logger.error(f"Error parsing ticker data for {symbol}: {e}")
                     traceback.print_exc()
 
-            # Start the ticker stream
+            # Start the subscription with retry logic
             stream_name = f"{symbol.lower()}@ticker"
-            logger.info(f"Starting ticker socket for {symbol}...")
+            self._attempt_subscription(symbol, stream_name, ticker_callback, subscription_state)
 
-            try:
-                conn_key = self.twm.start_symbol_ticker_socket(
-                    callback=ticker_callback,
-                    symbol=symbol
-                )
-            except Exception as e:
-                logger.error(f"Failed to start ticker socket for {symbol}: {e}")
-                raise
+    def _attempt_subscription(self, symbol: str, stream_name: str, ticker_callback: Callable, subscription_state: dict):
+        """
+        Attempt to subscribe to a symbol with retry logic.
+        Due to python-binance bugs, subscriptions may fail silently. This method retries until successful.
+        """
+        MAX_RETRIES = 5
+        RETRY_WAIT = 3  # seconds
 
-            # Validate the connection key
-            if not conn_key:
-                error_msg = f"Subscription to {symbol} returned no connection key - WebSocket may not be ready"
-                logger.error(error_msg)
-                raise BinanceError(error_msg)
+        logger.info(f"Starting ticker socket for {symbol} (attempt {subscription_state['retry_count'] + 1})...")
 
-            logger.info(f"Ticker socket started for {symbol} with connection key: {conn_key}")
+        try:
+            conn_key = self.twm.start_symbol_ticker_socket(
+                callback=ticker_callback,
+                symbol=symbol
+            )
+        except Exception as e:
+            logger.error(f"Failed to start ticker socket for {symbol}: {e}")
+            raise
 
-            self.subscriptions[symbol] = (stream_name, callback)
-            self.active_streams[stream_name] = conn_key
+        if not conn_key:
+            error_msg = f"Subscription to {symbol} returned no connection key"
+            logger.error(error_msg)
+            raise BinanceError(error_msg)
 
-            logger.info(f"Successfully subscribed to ticker for {symbol}")
+        logger.info(f"Ticker socket started for {symbol} with connection key: {conn_key}")
+
+        # Store subscription info
+        subscription_state['conn_key'] = conn_key
+        self.subscriptions[symbol] = (stream_name, subscription_state['callback'])
+        self.active_streams[stream_name] = conn_key
+
+        # Start a background thread to monitor if data is received
+        @runAsThread
+        def monitor_subscription():
+            time.sleep(RETRY_WAIT)
+
+            # Check if we've received data
+            if not subscription_state['first_message_received']:
+                logger.warning(f"No data received for {symbol} after {RETRY_WAIT}s, retrying...")
+
+                # Unsubscribe the failed attempt
+                with self.lock:
+                    if stream_name in self.active_streams:
+                        try:
+                            self.twm.stop_socket(conn_key)
+                            del self.active_streams[stream_name]
+                        except Exception as e:
+                            logger.debug(f"Error stopping failed subscription: {e}")
+
+                    # Remove from subscriptions temporarily
+                    if symbol in self.subscriptions:
+                        del self.subscriptions[symbol]
+
+                    # Retry if under max retries
+                    subscription_state['retry_count'] += 1
+                    if subscription_state['retry_count'] < MAX_RETRIES:
+                        logger.info(f"Retrying subscription to {symbol}...")
+                        self._attempt_subscription(symbol, stream_name, ticker_callback, subscription_state)
+                    else:
+                        logger.error(f"Failed to subscribe to {symbol} after {MAX_RETRIES} attempts")
+
+        monitor_subscription()
 
     def unsubscribe_ticker(self, symbol: str):
         """
