@@ -464,6 +464,12 @@ class MKTDispatcher:
     @runAsThread
     def _add_clients(self):
         """Listen for incoming client connections."""
+        # CRITICAL: Wait to ensure WebSocket is fully ready before accepting clients
+        # The WebSocket manager needs time to initialize its internal async loop
+        # If clients connect too quickly, their subscriptions will fail
+        time.sleep(1.0)
+        logger.info("Client listener ready to accept connections")
+
         while True:
             self.sock.listen()
             client, addr = self.sock.accept()
