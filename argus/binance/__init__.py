@@ -206,6 +206,35 @@ class BinanceWss:
             # Wait for the internal async loop to initialize
             # Without this delay, the first subscription may fail silently
             time.sleep(0.5)
+
+            # Prime the WebSocket manager with a dummy subscription
+            # The first subscription after start() often fails silently in python-binance
+            # This ensures the internal event loop is fully initialized
+            logger.info("Priming WebSocket with test subscription...")
+
+            def _priming_callback(msg):
+                # This callback will never be used - we unsubscribe immediately
+                pass
+
+            try:
+                # Subscribe to a common symbol to initialize the event loop
+                priming_key = self.twm.start_symbol_ticker_socket(
+                    callback=_priming_callback,
+                    symbol='BTCUSDT'
+                )
+
+                if priming_key:
+                    logger.info(f"Priming subscription created with key: {priming_key}")
+                    # Wait a moment for the subscription to establish
+                    time.sleep(0.3)
+                    # Unsubscribe immediately
+                    self.twm.stop_socket(priming_key)
+                    logger.info("Priming subscription stopped")
+                else:
+                    logger.warning("Priming subscription returned no connection key")
+            except Exception as e:
+                logger.warning(f"Priming subscription failed (may be ok): {e}")
+
             logger.info("BinanceWss ready for subscriptions")
 
     def stop(self):
@@ -230,8 +259,16 @@ class BinanceWss:
                 logger.warning(f"Already subscribed to {symbol}")
                 return
 
+            # Track if we've received data for this subscription (for diagnostics)
+            first_message_received = {'value': False}
+
             # Create a wrapper callback to normalize the data
             def ticker_callback(msg):
+                # Log first message received for diagnostics
+                if not first_message_received['value']:
+                    logger.info(f"First message received for {symbol}")
+                    first_message_received['value'] = True
+
                 if msg['e'] == 'error':
                     logger.error(f"WebSocket error for {symbol}: {msg}")
                     return
@@ -256,15 +293,29 @@ class BinanceWss:
 
             # Start the ticker stream
             stream_name = f"{symbol.lower()}@ticker"
-            conn_key = self.twm.start_symbol_ticker_socket(
-                callback=ticker_callback,
-                symbol=symbol
-            )
+            logger.info(f"Starting ticker socket for {symbol}...")
+
+            try:
+                conn_key = self.twm.start_symbol_ticker_socket(
+                    callback=ticker_callback,
+                    symbol=symbol
+                )
+            except Exception as e:
+                logger.error(f"Failed to start ticker socket for {symbol}: {e}")
+                raise
+
+            # Validate the connection key
+            if not conn_key:
+                error_msg = f"Subscription to {symbol} returned no connection key - WebSocket may not be ready"
+                logger.error(error_msg)
+                raise BinanceError(error_msg)
+
+            logger.info(f"Ticker socket started for {symbol} with connection key: {conn_key}")
 
             self.subscriptions[symbol] = (stream_name, callback)
             self.active_streams[stream_name] = conn_key
 
-            logger.info(f"Subscribed to ticker for {symbol}")
+            logger.info(f"Successfully subscribed to ticker for {symbol}")
 
     def unsubscribe_ticker(self, symbol: str):
         """
