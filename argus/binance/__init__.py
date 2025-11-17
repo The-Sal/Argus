@@ -305,32 +305,46 @@ class BinanceWss:
         # Start a background thread to monitor if data is received
         @runAsThread
         def monitor_subscription():
-            time.sleep(RETRY_WAIT)
+            try:
+                logger.info(f"Monitor thread started for {symbol}, will check in {RETRY_WAIT}s...")
+                time.sleep(RETRY_WAIT)
 
-            # Check if we've received data
-            if not subscription_state['first_message_received']:
-                logger.warning(f"No data received for {symbol} after {RETRY_WAIT}s, retrying...")
+                # Check if we've received data
+                if not subscription_state['first_message_received']:
+                    # Before retrying, check if subscription still exists
+                    # (it might have been unsubscribed by client disconnect)
+                    with self.lock:
+                        if symbol not in self.subscriptions:
+                            logger.info(f"Subscription to {symbol} was cancelled, aborting retry")
+                            return
 
-                # Unsubscribe the failed attempt
-                with self.lock:
-                    if stream_name in self.active_streams:
-                        try:
-                            self.twm.stop_socket(conn_key)
-                            del self.active_streams[stream_name]
-                        except Exception as e:
-                            logger.debug(f"Error stopping failed subscription: {e}")
+                    logger.warning(f"No data received for {symbol} after {RETRY_WAIT}s, retrying...")
 
-                    # Remove from subscriptions temporarily
-                    if symbol in self.subscriptions:
-                        del self.subscriptions[symbol]
+                    # Unsubscribe the failed attempt
+                    with self.lock:
+                        if stream_name in self.active_streams:
+                            try:
+                                self.twm.stop_socket(conn_key)
+                                del self.active_streams[stream_name]
+                            except Exception as e:
+                                logger.debug(f"Error stopping failed subscription: {e}")
 
-                    # Retry if under max retries
-                    subscription_state['retry_count'] += 1
-                    if subscription_state['retry_count'] < MAX_RETRIES:
-                        logger.info(f"Retrying subscription to {symbol}...")
-                        self._attempt_subscription(symbol, stream_name, ticker_callback, subscription_state)
-                    else:
-                        logger.error(f"Failed to subscribe to {symbol} after {MAX_RETRIES} attempts")
+                        # Remove from subscriptions temporarily
+                        if symbol in self.subscriptions:
+                            del self.subscriptions[symbol]
+
+                        # Retry if under max retries
+                        subscription_state['retry_count'] += 1
+                        if subscription_state['retry_count'] < MAX_RETRIES:
+                            logger.info(f"Retrying subscription to {symbol}...")
+                            self._attempt_subscription(symbol, stream_name, ticker_callback, subscription_state)
+                        else:
+                            logger.error(f"Failed to subscribe to {symbol} after {MAX_RETRIES} attempts")
+                else:
+                    logger.info(f"Monitor for {symbol}: data received successfully, exiting")
+            except Exception as e:
+                logger.error(f"Monitor thread error for {symbol}: {e}")
+                traceback.print_exc()
 
         monitor_subscription()
 
