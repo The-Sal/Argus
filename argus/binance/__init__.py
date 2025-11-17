@@ -207,39 +207,59 @@ class BinanceWss:
             # Without this delay, the first subscription may fail silently
             time.sleep(0.5)
 
-            # Prime the WebSocket manager with a dummy subscription
-            # The first subscription after start() often fails silently in python-binance
-            # This ensures the internal event loop is fully initialized
-            logger.info("Priming WebSocket with test subscription...")
+            # Prime the WebSocket manager with a permanent heartbeat subscription
+            # The first few subscriptions after start() often fail silently in python-binance
+            # Keeping a permanent subscription keeps the WebSocket event loop active
+            logger.info("Starting permanent heartbeat subscription...")
 
-            def _priming_callback(msg):
-                # This callback will never be used - we unsubscribe immediately
-                pass
+            # Use BNBUSDT as a permanent heartbeat (common symbol, low overhead)
+            _heartbeat_received = {'value': False}
+
+            def _heartbeat_callback(msg):
+                # Track if we received data to confirm WebSocket is working
+                if not _heartbeat_received['value']:
+                    logger.info("Heartbeat subscription active - WebSocket is ready")
+                    _heartbeat_received['value'] = True
 
             try:
-                # Subscribe to a common symbol to initialize the event loop
-                priming_key = self.twm.start_symbol_ticker_socket(
-                    callback=_priming_callback,
-                    symbol='BTCUSDT'
+                # Start heartbeat subscription and keep it running permanently
+                heartbeat_key = self.twm.start_symbol_ticker_socket(
+                    callback=_heartbeat_callback,
+                    symbol='BNBUSDT'
                 )
 
-                if priming_key:
-                    logger.info(f"Priming subscription created with key: {priming_key}")
-                    # Wait a moment for the subscription to establish
-                    time.sleep(0.3)
-                    # Unsubscribe immediately
-                    self.twm.stop_socket(priming_key)
-                    logger.info("Priming subscription stopped")
+                if heartbeat_key:
+                    logger.info(f"Heartbeat subscription created with key: {heartbeat_key}")
+                    # Store the heartbeat key so we can stop it on shutdown
+                    self._heartbeat_key = heartbeat_key
+
+                    # Wait for first heartbeat data to confirm it's working
+                    time.sleep(2.0)
+
+                    if _heartbeat_received['value']:
+                        logger.info("Heartbeat confirmed - system ready for subscriptions")
+                    else:
+                        logger.warning("Heartbeat subscription created but no data received yet")
                 else:
-                    logger.warning("Priming subscription returned no connection key")
+                    logger.warning("Heartbeat subscription returned no connection key")
+                    self._heartbeat_key = None
             except Exception as e:
-                logger.warning(f"Priming subscription failed (may be ok): {e}")
+                logger.warning(f"Heartbeat subscription failed: {e}")
+                self._heartbeat_key = None
 
             logger.info("BinanceWss ready for subscriptions")
 
     def stop(self):
         """Stop the WebSocket manager and close all streams."""
         if self.running:
+            # Stop heartbeat subscription if it exists
+            if hasattr(self, '_heartbeat_key') and self._heartbeat_key:
+                try:
+                    self.twm.stop_socket(self._heartbeat_key)
+                    logger.info("Heartbeat subscription stopped")
+                except Exception as e:
+                    logger.debug(f"Error stopping heartbeat: {e}")
+
             self.twm.stop()
             self.running = False
             logger.info("BinanceWss stopped")
