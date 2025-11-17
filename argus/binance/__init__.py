@@ -517,29 +517,37 @@ class MKTDispatcher:
         """Add a symbol subscription for a client."""
         self._checkpoint(f"MKTDispatcher.add_symbol({symbol})", "start")
 
+        # Check if we need to subscribe to WebSocket (must check outside of lock to avoid deadlock)
+        needs_subscription = False
         with self.client_lock:
             if symbol not in self.symbol_to_clients:
                 # First client for this symbol - add client FIRST, then subscribe to WebSocket
                 # This prevents race condition where data arrives before client is in the list
                 self.symbol_to_clients[symbol] = [client]
-
-                def callback(market_data: BinanceMarketData):
-                    self._broadcast_market_data(symbol, market_data)
-
-                try:
-                    self.ws.subscribe_ticker(symbol, callback)
-                    logger.info(f"Subscribed to {symbol} for client")
-                except Exception as e:
-                    logger.error(f"Failed to subscribe to {symbol}: {e}")
-                    # Remove client since subscription failed
-                    del self.symbol_to_clients[symbol]
-                    client.sendall(f"ERROR: Failed to subscribe to {symbol}".encode())
-                    return
+                needs_subscription = True
             else:
                 # Already subscribed, just add client to list
                 if client not in self.symbol_to_clients[symbol]:
                     self.symbol_to_clients[symbol].append(client)
                     logger.info(f"Added client to existing {symbol} subscription")
+
+        # Subscribe to WebSocket OUTSIDE of client_lock to avoid deadlock
+        # The callback will be called from Binance's thread and needs to acquire client_lock
+        if needs_subscription:
+            def callback(market_data: BinanceMarketData):
+                self._broadcast_market_data(symbol, market_data)
+
+            try:
+                self.ws.subscribe_ticker(symbol, callback)
+                logger.info(f"Subscribed to {symbol} for client")
+            except Exception as e:
+                logger.error(f"Failed to subscribe to {symbol}: {e}")
+                # Remove client since subscription failed
+                with self.client_lock:
+                    if symbol in self.symbol_to_clients:
+                        del self.symbol_to_clients[symbol]
+                client.sendall(f"ERROR: Failed to subscribe to {symbol}".encode())
+                return
 
         self._checkpoint(f"MKTDispatcher.add_symbol({symbol})", "complete")
 
