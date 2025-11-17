@@ -207,11 +207,45 @@ class BinanceWss:
             # Without this delay, subscriptions may fail silently
             time.sleep(0.5)
 
+            # CRITICAL: python-binance has a bug where the FIRST subscription after start()
+            # never receives data. Keep a permanent "sacrificial" subscription alive to absorb
+            # this bug so real client subscriptions work.
+            logger.info("Creating sacrificial first subscription to work around python-binance bug...")
+
+            def _dummy_callback(msg):
+                # This callback will receive data but we don't care
+                pass
+
+            try:
+                # Use an obscure symbol that clients are unlikely to request
+                # This subscription stays alive forever to keep the WebSocket healthy
+                dummy_key = self.twm.start_symbol_ticker_socket(
+                    callback=_dummy_callback,
+                    symbol='BNBUSDT'  # BNB, less likely to be requested by clients
+                )
+                if dummy_key:
+                    logger.info(f"Sacrificial subscription created with key: {dummy_key}")
+                    self._dummy_subscription_key = dummy_key
+                else:
+                    logger.warning("Sacrificial subscription returned no key")
+                    self._dummy_subscription_key = None
+            except Exception as e:
+                logger.warning(f"Sacrificial subscription failed: {e}")
+                self._dummy_subscription_key = None
+
             logger.info("BinanceWss ready for subscriptions")
 
     def stop(self):
         """Stop the WebSocket manager and close all streams."""
         if self.running:
+            # Stop the sacrificial subscription if it exists
+            if hasattr(self, '_dummy_subscription_key') and self._dummy_subscription_key:
+                try:
+                    self.twm.stop_socket(self._dummy_subscription_key)
+                    logger.info("Sacrificial subscription stopped")
+                except Exception as e:
+                    logger.debug(f"Error stopping sacrificial subscription: {e}")
+
             self.twm.stop()
             self.running = False
             logger.info("BinanceWss stopped")
