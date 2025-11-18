@@ -24,10 +24,18 @@ jobs:
             COMMIT_URL="${{ github.event.inputs.commit_url }}"
           fi
           echo "url=$COMMIT_URL" >> $GITHUB_OUTPUT
+          echo "Using commit URL: $COMMIT_URL"
       
       - name: Trigger CI/CD Pipeline
         run: |
-          curl -X POST https://sals-macbook-pro.tail34e8af.ts.net/webhook \
+          echo "=========================================="
+          echo "Triggering CI/CD pipeline..."
+          echo "Target URL: https://sals-macbook-pro.tail34e8af.ts.net/webhook"
+          echo "Commit URL: ${{ steps.commit.outputs.url }}"
+          echo "=========================================="
+          
+          RESPONSE=$(curl -v -w "\n\nHTTP Status: %{http_code}\nTotal Time: %{time_total}s\n" \
+            -X POST https://sals-macbook-pro.tail34e8af.ts.net/webhook \
             -H "Content-Type: application/json" \
             -d '{
               "head_commit": {
@@ -37,4 +45,18 @@ jobs:
                 "full_name": "${{ github.repository }}"
               },
               "ref": "${{ github.ref }}"
-            }'
+            }' 2>&1)
+          
+          echo "=========================================="
+          echo "Response:"
+          echo "$RESPONSE"
+          echo "=========================================="
+          echo "Exit code: $?"
+          
+          # Check if curl succeeded
+          if [ $? -eq 0 ]; then
+            echo "Webhook triggered successfully!"
+          else
+            echo "Failed to trigger webhook"
+            exit 1
+          fi
