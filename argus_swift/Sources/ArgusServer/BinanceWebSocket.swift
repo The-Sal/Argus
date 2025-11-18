@@ -36,11 +36,15 @@ class BinanceWss {
         self.apiSecret = apiSecret
         self.testnet = testnet
 
-        // Configure URLSession
+        // Configure URLSession with proper settings for WebSocket
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 10
         config.timeoutIntervalForResource = 300
-        self.urlSession = URLSession(configuration: config)
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.urlCache = nil
+
+        // Create URLSession with delegate for better WebSocket handling
+        self.urlSession = URLSession(configuration: config, delegate: nil, delegateQueue: nil)
 
         // Check connectivity to Binance if not testnet
         if !testnet {
@@ -407,7 +411,9 @@ class BinanceWss {
         if testnet {
             return "wss://testnet.binance.vision/ws/\(lowercaseSymbol)@\(stream)"
         } else {
-            return "wss://stream.binance.com:9443/ws/\(lowercaseSymbol)@\(stream)"
+            // Don't specify port - let URLSession use default WSS port (443)
+            // Binance WebSocket also works on standard 443, not just 9443
+            return "wss://stream.binance.com/ws/\(lowercaseSymbol)@\(stream)"
         }
     }
 
