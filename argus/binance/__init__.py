@@ -9,8 +9,7 @@ from websocket import WebSocketApp
 from argus._argus_utils import throw_fuss, Introspective
 from argus.binance._classes import (DepthUpdate, DepthStreamMessage, AggTradeMessage,
                                     AggTradeData, KlineEventData, KlineData, KlineMessage)
-from argus.capital import CapitalComMKTDataLive
-from argus.capital._svr_utils import transmit_mkt_data_with_protocol_2
+from argus.capital import CapitalComMKTDataLive, transmit_mkt_data_with_protocol_2
 
 class BinanceTypes:
     DEPTH_STREAM = 'depth_stream'
