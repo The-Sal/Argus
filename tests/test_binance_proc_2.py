@@ -7,7 +7,12 @@ from argus.capital._svr_utils import Protocol2Parser
 def main():
     s = socket.socket()
     # Binance MKTDispatcher default port per argus.binance.MKTDispatcher
-    s.connect(('localhost', 9974))
+    try:
+        s.connect(('localhost', 9982))
+    except socket.error:
+        print('Trying alternative port 9984...')
+        s = socket.socket()
+        s.connect(('localhost', 9984))
     # Subscribe to BTCUSDT ticker stream
     s.sendall(b'add=BTCUSDT')
     time.sleep(0.1)

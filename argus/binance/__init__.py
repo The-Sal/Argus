@@ -8,14 +8,17 @@ import threading
 from utils3 import runAsThread
 from websocket import WebSocketApp
 from argus._argus_utils import throw_fuss, Introspective
-from argus.capital import  transmit_mkt_data_with_protocol_2
+from argus.capital import transmit_mkt_data_with_protocol_2
 from argus.binance._classes import (DepthUpdate, DepthStreamMessage, AggTradeMessage,
-                                    AggTradeData, KlineEventData, KlineData, KlineMessage, Binance_CapitalComMKTDataLive)
+                                    AggTradeData, KlineEventData, KlineData, KlineMessage,
+                                    Binance_CapitalComMKTDataLive)
+
 
 class BinanceTypes:
     DEPTH_STREAM = 'depth_stream'
     AGG_TRADE = 'agg_trade'
     KLINE = 'kline'
+
 
 class AbstractBinanceType:
     """
@@ -23,14 +26,17 @@ class AbstractBinanceType:
     The only attribute directly accessible is 'idx' to identify the type.
     Everything else is taken from the 'obj' attribute.
     """
+
     def __init__(self, idx: str, obj):
         self.idx = idx
         self.obj = obj
+
 
 class BinanceWssConfig:
     AUTO_DUMP = 'auto_dump'
     TOTAL_MESSAGE_STATISTICS = 'total_message_statistics'
     SHOW_ME_CHARTS = 'show_me_charts'
+
 
 class BinanceWss:
     def __init__(self, configs=None):
@@ -53,7 +59,6 @@ class BinanceWss:
 
         self.semaphore = threading.Semaphore(0)
         self.init_websocket()
-
 
         self.callbacks = {}
         self.msgs = []
@@ -92,17 +97,17 @@ class BinanceWss:
         return self.configs[config_name]
 
     @staticmethod
-    def _craft_msg(symbol: str, auto_dump=True) -> dict | str:
+    def _craft_msg(symbol: str, auto_dump=True, method="SUBSCRIBE", idx=1) -> dict | str:
         symbol = symbol.lower()
         msg = {
-            "method": "SUBSCRIBE",
+            "method": method,
             "params": [
                 "!miniTicker@arr@1000ms",
                 symbol+"@aggTrade",
                 symbol+"@depth@100ms",
                 symbol+"@kline_1s"
             ],
-            "id": 1
+            "id": method
         }
         if auto_dump:
             return json.dumps(msg)
@@ -156,17 +161,18 @@ class BinanceWss:
             # Currently ignoring arr@1000ms messages
             return
         else:
-            print('Unknown message {} received: {}'.format(stream_type, str(msg)[:100]+'...'))
+            print('Unknown message {} received: {}'.format(stream_type, str(msg)[:100] + '...'))
             return
 
-        callback = self.callbacks.get(symbol, None)
-        if callback is None:
+        if symbol in self.callbacks:
+            callback = self.callbacks[symbol]
+            callback(msg)
+        else:
             throw_fuss(
                 msg="No callback registered for symbol: {}".format(symbol),
                 notify=False,
                 boarder="<>"
             )
-        callback(msg)
 
     # noinspection PyUnusedLocal
     def _on_error(self, ws, error):
@@ -190,6 +196,13 @@ class BinanceWss:
         self.ws.send(self._craft_msg(symbol))
         self.callbacks[symbol.lower()] = callback
 
+    def unsubscribe(self, symbol):
+        msg = self._craft_msg(symbol, method="UNSUBSCRIBE", idx=312)
+
+        if symbol.lower() in self.callbacks:
+            del self.callbacks[symbol.lower()]
+        self.ws.send(msg)
+
     @runAsThread
     def run_ws_forever(self):
         self.ws.run_forever()
@@ -205,7 +218,8 @@ class BinanceWss:
                         json.dump(self.msgs, f)
                     print('[AUTO-DUMP] Dumped {} messages to {}'.format(len(self.msgs), fname))
                 except KeyboardInterrupt:
-                    throw_fuss('WAIT A SECOND ATTEMPTING TO WRITE DUMP, AUTO-DUMP WILL STOP WHEN THIS IS COMPLETE', notify=False)
+                    throw_fuss('WAIT A SECOND ATTEMPTING TO WRITE DUMP, AUTO-DUMP WILL STOP WHEN THIS IS COMPLETE',
+                               notify=False)
                     with open(fname, 'w') as f:
                         json.dump(self.msgs, f)
                     throw_fuss('DUMP COMPLETE, AUTO-DUMP STOPPED', notify=False)
@@ -226,9 +240,6 @@ class BinanceWss:
                 ))
                 # Clean up old stamps
                 self.stats_stamps = [stamp for stamp in self.stats_stamps if stamp >= cutoff]
-
-
-
 
 
 class BinanceMKTDispatcher(Introspective):
@@ -298,7 +309,6 @@ class BinanceMKTDispatcher(Introspective):
             if choice.lower() == 'exit':
                 break
 
-
             if choice in self._configs:
                 new_value = input(f"Enter new value for {choice} (current: {self._configs[choice]}): ")
                 if new_value.lower() == 'true':
@@ -327,7 +337,8 @@ class BinanceMKTDispatcher(Introspective):
             if client not in self.symbol_to_clients[symbol]:
                 self.symbol_to_clients[symbol].append(client)
                 if self._configs['Show subscription changes']:
-                    print(f"[CLIENT] Added client to {symbol} subscription (total: {len(self.symbol_to_clients[symbol])})")
+                    print(
+                        f"[CLIENT] Added client to {symbol} subscription (total: {len(self.symbol_to_clients[symbol])})")
 
     # noinspection all
     def _binance_callback(self, symbol: str, msg: AbstractBinanceType):
@@ -461,13 +472,8 @@ class BinanceMKTDispatcher(Introspective):
 
                     # Clean up symbols with no clients
                     for symbol in symbols_to_remove:
-                        
-                        # WARNING: Binance WebSocket does not support unsubscription in this implementation
-                        # THIS SHOULD BE FIXED LATER VERY IMPORTANT
-                        logging.warning(f"THIS VERSION OF BINANCE_WSS DOES NOT SUPPORT UNSUBSCRIPTION FOR {symbol}, YOU ARE JUST BEING REMOVED FROM THE LOCAL DISPATCHER."
-                                        f"THIS SHOULD BE FIXED. DO NOT USE THIS FOR CONCURRENT SUBSCRIPTIONS FOR NEW-OLD-NEW SYMBOLS.")
-                        
                         del self.symbol_to_clients[symbol]
+                        self.ws.unsubscribe(symbol)
                         if self._configs['Show subscription changes']:
                             print(f"[UNSUBSCRIBE] No clients for {symbol}, cleaned up")
 
