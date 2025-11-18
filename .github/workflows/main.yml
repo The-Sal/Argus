@@ -27,7 +27,7 @@ jobs:
       
       - name: Trigger CI/CD Pipeline
         run: |
-          curl -X POST http://sals-macbook-pro.tail34e8af.ts.net/webhook \
+          curl -X POST https://sals-macbook-pro.tail34e8af.ts.net/webhook \
             -H "Content-Type: application/json" \
             -d '{
               "head_commit": {
