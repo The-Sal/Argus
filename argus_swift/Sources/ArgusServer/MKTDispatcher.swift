@@ -133,19 +133,21 @@ class BinanceMKTDispatcher {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            var buffer = [UInt8](repeating: 0, count: 9999)
+            // For now, client command handling is not implemented
+            // Clients can only subscribe via manual mode in interactive menu
+            // Real client connections would need full socket receive implementation
 
-            while true {
-                guard let realSocket = client as? RealSocket else {
-                    break
-                }
+            // This is a placeholder - in the Python version, clients can send
+            // commands like "add=BTCUSDT" but we haven't implemented that yet
+            // For FakeSocket (manual subscriptions), we don't need to receive data
 
-                // This is a hack - we need access to the file descriptor
-                // For now, we'll just break if it's not a real socket
-                // In practice, manual subscriptions use FakeSocket
-                break
+            guard client as? RealSocket != nil else {
+                // FakeSocket doesn't need to receive
+                return
             }
 
+            // TODO: Implement client command receiving
+            // For now, just keep the connection alive
             self.cleanupClient(client)
         }
     }
@@ -182,55 +184,51 @@ class BinanceMKTDispatcher {
 
     /// Callback for Binance market data
     private func binanceCallback(symbol: String, msg: AbstractBinanceType) {
+        // Get or create market data cache for this symbol
+        threadLock.lock()
+        let existingData = symbolDataCache[symbol]
+        threadLock.unlock()
+
+        // Update market data based on message type
+        let marketData: Binance_CapitalComMKTDataLive
+
+        if msg.idx == BinanceTypes.DEPTH_STREAM {
+            // Order book update
+            guard let depthMsg = msg.obj as? DepthStreamMessage else {
+                return
+            }
+            marketData = Binance_CapitalComMKTDataLive.fromBinanceDepth(
+                symbol: symbol,
+                depthUpdate: depthMsg.data,
+                existingData: existingData
+            )
+        } else if msg.idx == BinanceTypes.AGG_TRADE {
+            // Aggregate trade update
+            guard let tradeMsg = msg.obj as? AggTradeMessage else {
+                return
+            }
+            marketData = Binance_CapitalComMKTDataLive.fromBinanceTrade(
+                symbol: symbol,
+                tradeData: tradeMsg.data,
+                existingData: existingData
+            )
+        } else {
+            // Other message types (kline, etc.) - skip for now
+            return
+        }
+
+        // Update cache
+        threadLock.lock()
+        symbolDataCache[symbol] = marketData
+        let clients = symbolToClients[symbol] ?? []
+        threadLock.unlock()
+
+        guard !clients.isEmpty else {
+            return
+        }
+
+        // Transmit to all clients using Protocol 2
         do {
-            // Get or create market data cache for this symbol
-            threadLock.lock()
-            let existingData = symbolDataCache[symbol]
-            threadLock.unlock()
-
-            // Update market data based on message type
-            let marketData: Binance_CapitalComMKTDataLive
-
-            if msg.idx == BinanceTypes.DEPTH_STREAM {
-                // Order book update
-                guard let depthMsg = msg.obj as? DepthStreamMessage else {
-                    return
-                }
-                marketData = Binance_CapitalComMKTDataLive.fromBinanceDepth(
-                    symbol: symbol,
-                    depthUpdate: depthMsg.data
-                )
-                // If we have existing trade data, merge it
-                if let existing = existingData, existing.last > 0 {
-                    marketData.last = existing.last
-                    marketData.lastSize = existing.lastSize
-                }
-            } else if msg.idx == BinanceTypes.AGG_TRADE {
-                // Aggregate trade update
-                guard let tradeMsg = msg.obj as? AggTradeMessage else {
-                    return
-                }
-                marketData = Binance_CapitalComMKTDataLive.fromBinanceTrade(
-                    symbol: symbol,
-                    tradeData: tradeMsg.data,
-                    existingData: existingData
-                )
-            } else {
-                // Other message types (kline, etc.) - skip for now
-                return
-            }
-
-            // Update cache
-            threadLock.lock()
-            symbolDataCache[symbol] = marketData
-            let clients = symbolToClients[symbol] ?? []
-            threadLock.unlock()
-
-            guard !clients.isEmpty else {
-                return
-            }
-
-            // Transmit to all clients using Protocol 2
             let packet = try transmitMarketDataWithProtocol2(marketData)
 
             if configs["Print data packets"] == true {
@@ -247,7 +245,7 @@ class BinanceMKTDispatcher {
                 }
             }
         } catch {
-            print("[ERROR] Error in Binance callback for \(symbol): \(error)")
+            print("[ERROR] Error encoding market data for \(symbol): \(error)")
         }
     }
 

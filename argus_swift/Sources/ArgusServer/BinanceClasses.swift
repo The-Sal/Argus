@@ -153,7 +153,11 @@ class Binance_CapitalComMKTDataLive: CapitalComMKTDataLive {
     /// Conforms with transmit_mkt_data_with_protocol_2 function
 
     /// Create market data from Binance depth update (order book)
-    static func fromBinanceDepth(symbol: String, depthUpdate: DepthUpdate) -> Binance_CapitalComMKTDataLive {
+    static func fromBinanceDepth(
+        symbol: String,
+        depthUpdate: DepthUpdate,
+        existingData: Binance_CapitalComMKTDataLive? = nil
+    ) -> Binance_CapitalComMKTDataLive {
         // Extract top bid and ask from the order book
         var topBid: Double = 0.0
         var topBidSize: Double = 0.0
@@ -170,8 +174,17 @@ class Binance_CapitalComMKTDataLive: CapitalComMKTDataLive {
             topAskSize = Double(depthUpdate.a[0][1]) ?? 0.0
         }
 
-        // Use mid price as last price if no trade data available
-        let lastPrice = (topBid > 0 && topAsk > 0) ? (topBid + topAsk) / 2 : 0.0
+        // If we have existing trade data, use it; otherwise use mid price
+        let lastPrice: Double
+        let lastSize: Double
+
+        if let existing = existingData, existing.last > 0 {
+            lastPrice = existing.last
+            lastSize = existing.lastSize
+        } else {
+            lastPrice = (topBid > 0 && topAsk > 0) ? (topBid + topAsk) / 2 : 0.0
+            lastSize = 0.0
+        }
 
         return Binance_CapitalComMKTDataLive(
             symbol: symbol.uppercased(),
@@ -180,7 +193,7 @@ class Binance_CapitalComMKTDataLive: CapitalComMKTDataLive {
             ask: topAsk,
             askSize: topAskSize,
             last: lastPrice,
-            lastSize: 0.0,
+            lastSize: lastSize,
             timestamp: depthUpdate.E
         )
     }
