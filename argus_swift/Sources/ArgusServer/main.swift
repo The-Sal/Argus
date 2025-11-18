@@ -126,23 +126,24 @@ func main() {
     let host = args.host ?? "localhost"
     let port = args.port ?? 9974
 
-    print("Starting Binance dispatcher (testnet=\(args.testnet))")
+    print("Starting Binance dispatcher")
     print("Host: \(host)")
     print("Port: \(port)")
     print()
 
-    // Create dispatcher
-    let dispatcher = MKTDispatcher(
-        host: host,
-        port: port,
-        apiKey: apiKey,
-        apiSecret: apiSecret,
-        testnet: args.testnet,
-        checkpointURL: nil  // Can be configured via environment variable
-    )
+    // Note: The main branch Binance implementation doesn't use API keys or testnet
+    // It connects to the production combined stream endpoint
+    if args.testnet {
+        print("Warning: Testnet not supported in main branch implementation")
+        print("Using production endpoint: wss://stream.binance.com/stream")
+    }
 
-    // Start dispatcher
-    dispatcher.start()
+    if apiKey != nil || apiSecret != nil {
+        print("Note: API keys not needed for public market data streams")
+    }
+
+    // Create dispatcher
+    let dispatcher = BinanceMKTDispatcher(host: host, port: port)
 
     // Enter interactive mode
     dispatcher.interactiveMode()

@@ -74,57 +74,6 @@ class CapitalComMKTDataLive: MarketDataTransferable {
     }
 }
 
-/// Market data object for Binance
-/// Transcompiled from argus/binance/__init__.py: BinanceMarketData
-class BinanceMarketData {
-    let symbol: String
-    let bid: Double
-    let bidQty: Double
-    let ask: Double
-    let askQty: Double
-    let last: Double
-    let lastQty: Double
-    let timestamp: Int
-
-    init(
-        symbol: String,
-        bid: Double,
-        bidQty: Double,
-        ask: Double,
-        askQty: Double,
-        last: Double,
-        lastQty: Double,
-        timestamp: Int? = nil
-    ) {
-        self.symbol = symbol
-        self.bid = bid
-        self.bidQty = bidQty
-        self.ask = ask
-        self.askQty = askQty
-        self.last = last
-        self.lastQty = lastQty
-        self.timestamp = timestamp ?? Int(Date().timeIntervalSince1970 * 1000)
-    }
-
-    /// Convert to CapitalComMKTDataLive for Protocol 2 transmission
-    func toCapitalComFormat() -> CapitalComMKTDataLive {
-        return CapitalComMKTDataLive(
-            symbol: symbol,
-            bid: bid,
-            bidSize: bidQty,
-            ask: ask,
-            askSize: askQty,
-            last: last,
-            lastSize: lastQty,
-            timestamp: timestamp
-        )
-    }
-
-    var description: String {
-        return "BinanceMarketData(symbol=\(symbol), bid=\(bid), ask=\(ask), last=\(last))"
-    }
-}
-
 /// Binance-specific errors
 enum BinanceError: Error {
     case connectivityFailed(String)
@@ -132,3 +81,6 @@ enum BinanceError: Error {
     case websocketError(String)
     case invalidResponse
 }
+
+// Note: Binance data structures moved to BinanceClasses.swift
+// Binance_CapitalComMKTDataLive is in BinanceClasses.swift
