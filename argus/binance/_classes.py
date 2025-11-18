@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
 @dataclass
@@ -17,12 +17,14 @@ class DepthStreamMessage:
     """Complete WebSocket message wrapper"""
     stream: str
     data: DepthUpdate
+    received_at: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: dict):
         return cls(
             stream=d['stream'],
-            data=DepthUpdate(**d['data'])
+            data=DepthUpdate(**d['data']),
+            received_at=d.get('received_at')
         )
 
 
@@ -46,12 +48,14 @@ class AggTradeMessage:
     """WebSocket aggregate trade message"""
     stream: str
     data: AggTradeData
+    received_at: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: dict):
         return cls(
             stream=d['stream'],
-            data=AggTradeData(**d['data'])
+            data=AggTradeData(**d['data']),
+            received_at=d.get('received_at')
         )
 
 
@@ -82,6 +86,7 @@ class KlineMessage:
     """WebSocket kline stream message"""
     stream: str
     data: 'KlineEventData'
+    received_at: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: dict):
@@ -91,7 +96,7 @@ class KlineMessage:
             s=d['data']['s'],
             k=KlineData(**d['data']['k'])
         )
-        return cls(stream=d['stream'], data=data)
+        return cls(stream=d['stream'], data=data, received_at=d.get('received_at'))
 
 @dataclass
 class KlineEventData:

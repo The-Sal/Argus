@@ -108,6 +108,7 @@ class BinanceWss:
     def _on_message(self, ws, message):
         self.stats_stamps.append(time.time())
         msg = json.loads(message)
+        msg['received_at'] = time.time()
         self.msgs.append(msg)
 
         if len(self.msgs) > self._max_message_count:
