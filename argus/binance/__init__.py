@@ -1,15 +1,16 @@
 import json
 import uuid
 import time
+import socket
+import logging
 import platform
 import threading
-import socket
 from utils3 import runAsThread
 from websocket import WebSocketApp
 from argus._argus_utils import throw_fuss, Introspective
+from argus.capital import  transmit_mkt_data_with_protocol_2
 from argus.binance._classes import (DepthUpdate, DepthStreamMessage, AggTradeMessage,
-                                    AggTradeData, KlineEventData, KlineData, KlineMessage)
-from argus.capital import CapitalComMKTDataLive, transmit_mkt_data_with_protocol_2
+                                    AggTradeData, KlineEventData, KlineData, KlineMessage, Binance_CapitalComMKTDataLive)
 
 class BinanceTypes:
     DEPTH_STREAM = 'depth_stream'
@@ -32,7 +33,15 @@ class BinanceWssConfig:
     SHOW_ME_CHARTS = 'show_me_charts'
 
 class BinanceWss:
-    def __init__(self):
+    def __init__(self, configs=None):
+
+        if configs is None:
+            configs = {
+                BinanceWssConfig.AUTO_DUMP: True,
+                BinanceWssConfig.TOTAL_MESSAGE_STATISTICS: True,
+                BinanceWssConfig.SHOW_ME_CHARTS: True,
+            }
+
         self.endpoint = 'wss://stream.binance.com/stream'
         self.ws = WebSocketApp(
             url=self.endpoint,
@@ -49,11 +58,7 @@ class BinanceWss:
         self.callbacks = {}
         self.msgs = []
         self.stats_stamps = []
-        self.configs = {
-            BinanceWssConfig.AUTO_DUMP: True,
-            BinanceWssConfig.TOTAL_MESSAGE_STATISTICS: True,
-            BinanceWssConfig.SHOW_ME_CHARTS: True,
-        }
+        self.configs = configs
 
         if platform.platform() != 'Darwin':
             print("Show me charts disabled: not running on macOS")
@@ -103,10 +108,12 @@ class BinanceWss:
             return json.dumps(msg)
         return msg
 
+    # noinspection PyUnusedLocal
     def _on_open(self, ws):
         print("WebSocket connection opened.")
         self.semaphore.release()
 
+    # noinspection PyUnusedLocal
     def _on_message(self, ws, message):
         self.stats_stamps.append(time.time())
         msg = json.loads(message)
@@ -160,6 +167,7 @@ class BinanceWss:
             )
         callback(msg)
 
+    # noinspection PyUnusedLocal
     def _on_error(self, ws, error):
         print("WebSocket error:", error)
         throw_fuss(
@@ -168,6 +176,7 @@ class BinanceWss:
         )
         _ = self
 
+    # noinspection PyUnusedLocal
     def _on_close(self, ws, close_status_code, close_msg):
         print("WebSocket connection closed:", close_status_code, close_msg)
         throw_fuss(
@@ -218,82 +227,7 @@ class BinanceWss:
                 self.stats_stamps = [stamp for stamp in self.stats_stamps if stamp >= cutoff]
 
 
-class Binance_CapitalComMKTDataLive(CapitalComMKTDataLive):
-    """
-    Extension of CapitalComMKTDataLive to support Binance market data.
-    This class conforms with the 'transmit_mkt_data_with_protocol_2' function
-    and allows Binance data to be transmitted using Protocol 2 format.
 
-    Since Binance doesn't have shortable shares or unrealized P&L like IBKR,
-    those fields are set to 0 or can be omitted from Protocol 2 transmission.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    @classmethod
-    def from_binance_depth(cls, symbol: str, depth_update: DepthUpdate):
-        """Create market data from Binance depth update (order book)."""
-        # Extract top bid and ask from the order book
-        try:
-            top_bid = float(depth_update.b[0][0]) if depth_update.b else 0.0
-            top_bid_size = float(depth_update.b[0][1]) if depth_update.b else 0.0
-        except (IndexError, ValueError):
-            top_bid = 0.0
-            top_bid_size = 0.0
-
-        try:
-            top_ask = float(depth_update.a[0][0]) if depth_update.a else 0.0
-            top_ask_size = float(depth_update.a[0][1]) if depth_update.a else 0.0
-        except (IndexError, ValueError):
-            top_ask = 0.0
-            top_ask_size = 0.0
-
-        # Use mid price as last price if no trade data available
-        last_price = (top_bid + top_ask) / 2 if (top_bid > 0 and top_ask > 0) else 0.0
-
-        return cls(
-            symbol=symbol.upper(),
-            bid=top_bid,
-            bid_size=top_bid_size,
-            ask=top_ask,
-            ask_size=top_ask_size,
-            last=last_price,
-            last_size=0.0,
-            timestamp=int(depth_update.E)
-        )
-
-    @classmethod
-    def from_binance_trade(cls, symbol: str, trade_data: AggTradeData,
-                          existing_data: 'Binance_CapitalComMKTDataLive' = None):
-        """Create or update market data from Binance aggregate trade."""
-        last_price = float(trade_data.p)
-        last_size = float(trade_data.q)
-
-        # If we have existing depth data, preserve it and just update last trade
-        if existing_data:
-            return cls(
-                symbol=symbol.upper(),
-                bid=existing_data.bid,
-                bid_size=existing_data.bid_size,
-                ask=existing_data.ask,
-                ask_size=existing_data.ask_size,
-                last=last_price,
-                last_size=last_size,
-                timestamp=int(trade_data.T)
-            )
-        else:
-            # No depth data, use trade price for bid/ask approximation
-            return cls(
-                symbol=symbol.upper(),
-                bid=last_price,
-                bid_size=0.0,
-                ask=last_price,
-                ask_size=0.0,
-                last=last_price,
-                last_size=last_size,
-                timestamp=int(trade_data.T)
-            )
 
 
 class BinanceMKTDispatcher(Introspective):
@@ -318,7 +252,12 @@ class BinanceMKTDispatcher(Introspective):
         """
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((host, port))
+        try:
+            self.sock.bind((host, port))
+        except OSError as e:
+            print(f"[ERROR] Failed to bind socket to {host}:{port}: {e}")
+            print("Please check if the port is already in use or if you have the necessary permissions.")
+            raise
         self.clients = []
         self.symbol_to_clients = {}  # Maps symbol -> list of clients
         self.symbol_data_cache = {}  # Maps symbol -> Binance_CapitalComMKTDataLive
@@ -346,6 +285,7 @@ class BinanceMKTDispatcher(Introspective):
         print(f'[BinanceMKTDispatcher] Initialized on {host}:{port}')
         print('[IMPORTANT] MODE = PROTOCOL_2')
 
+    # noinspection DuplicatedCode
     def _modify_configs_interactive(self):
         """Modify the dispatcher configurations interactively."""
         print("Current configurations:")
@@ -356,6 +296,8 @@ class BinanceMKTDispatcher(Introspective):
             choice = input("Configuration: ").strip()
             if choice.lower() == 'exit':
                 break
+
+
             if choice in self._configs:
                 new_value = input(f"Enter new value for {choice} (current: {self._configs[choice]}): ")
                 if new_value.lower() == 'true':
@@ -363,6 +305,7 @@ class BinanceMKTDispatcher(Introspective):
                 elif new_value.lower() == 'false':
                     self._configs[choice] = False
                 else:
+                    # noinspection all
                     self._configs[choice] = new_value
                 print(f"Updated {choice} to {self._configs[choice]}")
             else:
@@ -385,6 +328,7 @@ class BinanceMKTDispatcher(Introspective):
                 if self._configs['Show subscription changes']:
                     print(f"[CLIENT] Added client to {symbol} subscription (total: {len(self.symbol_to_clients[symbol])})")
 
+    # noinspection all
     def _binance_callback(self, symbol: str, msg: AbstractBinanceType):
         """Callback function to handle Binance market data and convert to Protocol 2."""
         try:
@@ -516,6 +460,12 @@ class BinanceMKTDispatcher(Introspective):
 
                     # Clean up symbols with no clients
                     for symbol in symbols_to_remove:
+                        
+                        # WARNING: Binance WebSocket does not support unsubscription in this implementation
+                        # THIS SHOULD BE FIXED LATER VERY IMPORTANT
+                        logging.warning(f"THIS VERSION OF BINANCE_WSS DOES NOT SUPPORT UNSUBSCRIPTION FOR {symbol}, YOU ARE JUST BEING REMOVED FROM THE LOCAL DISPATCHER."
+                                        f"THIS SHOULD BE FIXED. DO NOT USE THIS FOR CONCURRENT SUBSCRIPTIONS FOR NEW-OLD-NEW SYMBOLS.")
+                        
                         del self.symbol_to_clients[symbol]
                         if self._configs['Show subscription changes']:
                             print(f"[UNSUBSCRIBE] No clients for {symbol}, cleaned up")
@@ -551,7 +501,7 @@ class BinanceMKTDispatcher(Introspective):
             try:
                 addr = client.getpeername()
                 print(f"{i}. {addr}")
-            except:
+            except (OSError, socket.error):
                 print(f"{i}. <disconnected>")
         print()
 
