@@ -1,0 +1,40 @@
+name: Manual CI/CD Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_url:
+        description: 'Commit URL to process (leave empty for latest)'
+        required: false
+        type: string
+
+jobs:
+  trigger-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Get commit URL
+        id: commit
+        run: |
+          if [ -z "${{ github.event.inputs.commit_url }}" ]; then
+            COMMIT_URL="https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
+          else
+            COMMIT_URL="${{ github.event.inputs.commit_url }}"
+          fi
+          echo "url=$COMMIT_URL" >> $GITHUB_OUTPUT
+      
+      - name: Trigger CI/CD Pipeline
+        run: |
+          curl -X POST http://sals-macbook-pro.tail34e8af.ts.net/webhook \
+            -H "Content-Type: application/json" \
+            -d '{
+              "head_commit": {
+                "url": "${{ steps.commit.outputs.url }}"
+              },
+              "repository": {
+                "full_name": "${{ github.repository }}"
+              },
+              "ref": "${{ github.ref }}"
+            }'
