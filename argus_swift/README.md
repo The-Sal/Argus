@@ -4,12 +4,13 @@ Pure transcompilation of the Argus Binance module from Python to Swift.
 
 ## Overview
 
-This is a complete Swift transcompilation of `argus/binance` from the original Python codebase. It provides a market data dispatcher for Binance that:
+This is a complete Swift transcompilation of `argus/binance` from the **main branch** of the Python codebase. It provides a market data dispatcher for Binance that:
 
-- Streams real-time market data from Binance WebSockets
+- Streams real-time market data from Binance WebSocket (combined stream)
 - Serves data to clients via TCP using Protocol 2 format
-- Supports both production and testnet endpoints
-- Provides interactive monitoring mode
+- Merges order book depth + trade data for accurate pricing
+- Supports multiple stream types: depth, aggTrade, kline
+- Provides interactive monitoring mode with statistics
 
 ## Architecture
 
@@ -25,24 +26,33 @@ This is a complete Swift transcompilation of `argus/binance` from the original P
    - CSV-based market data serialization
    - Compatible with Python implementation
 
-3. **MarketData.swift** - Market data models
+3. **MarketData.swift** - Base market data models
    - `CapitalComMKTDataLive` - Capital.com compatible format
-   - `BinanceMarketData` - Binance ticker data structure
+   - Protocol 2 transmission support
 
-4. **BinanceWebSocket.swift** - Binance WebSocket manager
+4. **BinanceClasses.swift** - Binance data structures
+   - `DepthUpdate` / `DepthStreamMessage` - Order book data
+   - `AggTradeData` / `AggTradeMessage` - Trade data
+   - `KlineData` / `KlineMessage` - Candlestick data
+   - `Binance_CapitalComMKTDataLive` - Merges depth + trade data
+
+5. **BinanceWebSocket.swift** - Binance WebSocket manager
+   - **Single combined stream**: `wss://stream.binance.com/stream`
+   - Subscribe/unsubscribe via JSON messages
    - Native URLSession WebSocket implementation
-   - Automatic reconnection and retry logic
-   - Sacrificial subscription to work around first-message bug
+   - Automatic reconnection on failure
+   - Message statistics showcase
 
-5. **MKTDispatcher.swift** - TCP market data dispatcher
+6. **MKTDispatcher.swift** - TCP market data dispatcher (`BinanceMKTDispatcher`)
    - Multi-client connection management
    - Thread-safe symbol subscription tracking
+   - Merges depth (order book) + trade data per symbol
+   - Caches market data to combine multiple stream types
    - Protocol 2 packet broadcasting
 
-6. **main.swift** - Entry point (equivalent to runtime.py)
+7. **main.swift** - Entry point (equivalent to runtime.py)
    - Command-line argument parsing
-   - Environment variable configuration
-   - Interactive mode
+   - Interactive mode with manual subscriptions
 
 ## Building
 
@@ -59,25 +69,14 @@ This will produce the executable at:
 ### Basic Usage
 
 ```bash
-# Run with default settings (localhost:9974)
+# Run with default settings (localhost:9982 by default to avoid conflicts)
 ./argus_server binance
-
-# Use Binance testnet
-./argus_server binance --testnet
 
 # Custom host and port
-./argus_server binance --host 0.0.0.0 --port 9974
+./argus_server binance --host 0.0.0.0 --port 9982
 ```
 
-### With API Credentials (Optional)
-
-```bash
-export BINANCE_API_KEY="your_api_key"
-export BINANCE_API_SECRET="your_api_secret"
-./argus_server binance
-```
-
-**Note:** API credentials are only needed for private endpoints. Public market data works without authentication.
+**Note:** The main branch implementation uses the public combined stream endpoint and does not require API credentials or support testnet mode.
 
 ## Interactive Mode
 
@@ -93,14 +92,12 @@ After starting, the server enters interactive mode with these options:
 
 ## Protocol 2 Client Integration
 
-Clients can connect via TCP and send commands:
+Clients can connect via TCP and subscribe to symbols. The server automatically subscribes to:
+- `symbol@depth@100ms` - Order book updates
+- `symbol@aggTrade` - Aggregate trade data
+- `symbol@kline_1s` - 1-second candlestick data
 
-```
-add=BTCUSDT       # Subscribe to BTCUSDT ticker
-remove=BTCUSDT    # Unsubscribe from BTCUSDT
-```
-
-The server will stream market data using Protocol 2 format:
+The dispatcher merges depth (bid/ask from order book) with trade data (last price) and transmits using Protocol 2 format:
 ```
 ~<packet-length><symbol-length>|<symbol><bid>,<bid_size>,<ask>,<ask_size>,<last>,<last_size>,<timestamp>,<python_timestamp>L
 ```
@@ -123,9 +120,11 @@ Following user requirements, all socket operations use the `ArgusSocket` protoco
 
 ### WebSocket Implementation
 
-- **Native URLSession** instead of external dependencies
-- Automatic retry with exponential backoff
-- Sacrificial first subscription to work around Binance API quirk
+- **Single combined stream connection**: `wss://stream.binance.com/stream`
+- Subscribe/unsubscribe via JSON control messages
+- Native URLSession WebSocket
+- Automatic reconnection on failure
+- Message routing based on stream type (depth@100ms, aggTrade, kline_1s)
 
 ### Error Handling
 
@@ -137,21 +136,22 @@ Following user requirements, all socket operations use the `ArgusSocket` protoco
 
 ### Eliminated Dependencies
 
-- **python-binance** → Native URLSession WebSockets
+- **websocket-client** → Native URLSession WebSockets
 - **utils3.runAsThread** → GCD async dispatch
-- **dotenv** → Direct ProcessInfo environment access
+- No external Swift packages needed
 
 ### Platform Support
 
 - **macOS only** (due to URLSession WebSocket requirements)
-- Linux support possible with different WebSocket library
+- Linux support would require alternative WebSocket library
 
-### Improvements
+### Improvements Over Python
 
-- **Type safety** - Strong typing throughout
+- **Type safety** - Strong typing with compile-time checks
 - **Memory safety** - ARC instead of GC
-- **Concurrency** - Modern Swift concurrency patterns
+- **Single connection** - Combined stream approach is more efficient
 - **Performance** - Compiled binary, no interpreter overhead
+- **Data merging** - Properly combines depth + trade data per symbol
 
 ## Testing
 
