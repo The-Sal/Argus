@@ -560,7 +560,6 @@ class BinanceMKTDispatcher(Introspective):
 if __name__ == '__main__':
 
     def highest_bid_ask_price_callback(msg: AbstractBinanceType):
-        from termcolor import colored
         if msg.idx == BinanceTypes.DEPTH_STREAM:
             depth: DepthStreamMessage = msg.obj
             update: DepthUpdate = depth.data
