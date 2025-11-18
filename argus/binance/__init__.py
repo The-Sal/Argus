@@ -219,7 +219,7 @@ class BinanceWss:
 
 
 if __name__ == '__main__':
-
+    # noinspection all
     def highest_bid_ask_price_callback(msg: AbstractBinanceType):
         from termcolor import colored
         if msg.idx == BinanceTypes.DEPTH_STREAM:
