@@ -23,7 +23,7 @@ class AbstractBinanceType:
     The only attribute directly accessible is 'idx' to identify the type.
     Everything else is taken from the 'obj' attribute.
     """
-    def __init__(self, idx: str, obj: object):
+    def __init__(self, idx: str, obj):
         self.idx = idx
         self.obj = obj
 
