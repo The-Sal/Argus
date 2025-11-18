@@ -30,6 +30,7 @@ class BinanceMKTDispatcher {
     private var configs: [String: Bool] = [
         "Print data packets": false,
         "Show subscription changes": true,
+        "Show client messages": true,
         "Auto-unsubscribe disconnected clients": true
     ]
 
@@ -129,26 +130,72 @@ class BinanceMKTDispatcher {
     }
 
     /// Listen to client requests
+    /// Transcompiled from Python: _listen_to_client
     private func listenToClient(_ client: ArgusSocket) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            // For now, client command handling is not implemented
-            // Clients can only subscribe via manual mode in interactive menu
-            // Real client connections would need full socket receive implementation
-
-            // This is a placeholder - in the Python version, clients can send
-            // commands like "add=BTCUSDT" but we haven't implemented that yet
-            // For FakeSocket (manual subscriptions), we don't need to receive data
-
-            guard client as? RealSocket != nil else {
-                // FakeSocket doesn't need to receive
+            // FakeSockets don't need to receive data
+            guard let realSocket = client as? RealSocket else {
                 return
             }
 
-            // TODO: Implement client command receiving
-            // For now, just keep the connection alive
+            while true {
+                do {
+                    guard let data = try realSocket.receive() else {
+                        // Connection closed
+                        break
+                    }
+
+                    guard let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !message.isEmpty else {
+                        continue
+                    }
+
+                    if self.configs["Show client messages"] == true {
+                        print("[CLIENT] Request: \(message)")
+                    }
+
+                    // Parse client commands
+                    if message.hasPrefix("add=") {
+                        let symbol = String(message.dropFirst(4)).uppercased()
+                        self.subscribeToSymbol(symbol: symbol, client: client)
+                    } else if message.hasPrefix("remove=") {
+                        let symbol = String(message.dropFirst(7)).uppercased()
+                        self.unsubscribeSymbol(symbol: symbol, client: client)
+                    }
+
+                } catch {
+                    // Error reading from client, connection likely closed
+                    break
+                }
+            }
+
+            // Client disconnected
             self.cleanupClient(client)
+        }
+    }
+
+    /// Unsubscribe a client from a symbol
+    private func unsubscribeSymbol(symbol: String, client: ArgusSocket) {
+        threadLock.lock()
+        defer { threadLock.unlock() }
+
+        guard var clients = symbolToClients[symbol] else {
+            return
+        }
+
+        clients.removeAll { $0 === client }
+
+        if clients.isEmpty {
+            // No more clients for this symbol, unsubscribe from WebSocket
+            ws.unsubscribe(symbol: symbol)
+            symbolToClients.removeValue(forKey: symbol)
+            if configs["Show subscription changes"] == true {
+                print("[UNSUBSCRIBE] No more clients for \(symbol)")
+            }
+        } else {
+            symbolToClients[symbol] = clients
         }
     }
 

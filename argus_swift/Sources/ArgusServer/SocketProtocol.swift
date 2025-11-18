@@ -23,7 +23,7 @@ protocol ArgusSocket: AnyObject {
 /// Real socket implementation wrapping POSIX socket
 class RealSocket: ArgusSocket {
     var idx: String = "real"
-    private let fileDescriptor: Int32
+    let fileDescriptor: Int32  // Make public for receive operations
     private var isClosed = false
 
     init(fileDescriptor: Int32) {
@@ -61,6 +61,27 @@ class RealSocket: ArgusSocket {
                 sent += bytesWritten
             }
         }
+    }
+
+    /// Receive data from socket
+    func receive(bufferSize: Int = 9999) throws -> Data? {
+        guard !isClosed else {
+            throw SocketError.socketClosed
+        }
+
+        var buffer = [UInt8](repeating: 0, count: bufferSize)
+        let bytesRead = recv(fileDescriptor, &buffer, bufferSize, 0)
+
+        if bytesRead < 0 {
+            throw SocketError.receiveFailed(errno: errno)
+        }
+
+        if bytesRead == 0 {
+            // Connection closed by peer
+            return nil
+        }
+
+        return Data(buffer[0..<bytesRead])
     }
 
     func close() {
