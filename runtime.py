@@ -1,12 +1,12 @@
 """
 Argus runtime entrypoint.
-- Supports selecting dispatcher: ib.forecast | ib.core | polymarket
+- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance
 - Optional --host/--port are accepted and forwarded only to dispatchers that support them.
   Dispatchers have their own defaults; if not provided, nothing is passed.
 - Supports: macOS, Linux, (almost anything UNIX-based or UNIX-like) does NOT support Windows.
 - IB Dispatchers requires macOS due to ShortableShares() class implementation requires Finder
 - Push Notifications requires macOS due to the use of osascript to notify on machine-local notifications
-- Capital.com, Polymarket, TradingView (Chart+Quote), etc... work on all platforms.
+- Capital.com, Polymarket, Binance, TradingView (Chart+Quote), etc... work on all platforms.
 - DO NOT PASS AUTH CREDENTIALS VIA COMMAND LINE ARGS, use environment variables or .env file instead.
 - Automatically loads .env file if present in working directory.
 """
@@ -20,12 +20,13 @@ from argus.polymarket import PolyDispatcher
 from argus.ib.forecast import FXCDispatcher
 from argus.ib import MKTDispatcher, IBKRModes
 from argus.capital import MKTDispatcher as CapitalComDispatcher, Environment
+from argus.binance import BinanceMKTDispatcher
 
 
 if not load_dotenv():
     print("Warning: .env was not loaded")
 
-choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com']
+choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance']
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
@@ -78,6 +79,15 @@ def main(argv=None):
         dispatcher.start_server()
         input('Press enter to exit.')
         dispatcher.api.logout()
+    elif args.target == 'binance':
+        binance_kwargs = {}
+        if args.host:
+            binance_kwargs['host'] = args.host
+        if args.port is not None:
+            binance_kwargs['port'] = args.port
+        dispatcher = BinanceMKTDispatcher(**binance_kwargs)
+        dispatcher.interactive_mode()
+        print("Exiting Binance dispatcher")
     else:
         parser.error('Unknown target')
 
