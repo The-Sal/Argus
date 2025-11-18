@@ -3,11 +3,14 @@ import uuid
 import time
 import platform
 import threading
+import socket
 from utils3 import runAsThread
 from websocket import WebSocketApp
-from argus._argus_utils import throw_fuss
+from argus._argus_utils import throw_fuss, Introspective
 from argus.binance._classes import (DepthUpdate, DepthStreamMessage, AggTradeMessage,
                                     AggTradeData, KlineEventData, KlineData, KlineMessage)
+from argus.capital import CapitalComMKTDataLive
+from argus.capital._svr_utils import transmit_mkt_data_with_protocol_2
 
 class BinanceTypes:
     DEPTH_STREAM = 'depth_stream'
@@ -215,6 +218,343 @@ class BinanceWss:
                 # Clean up old stamps
                 self.stats_stamps = [stamp for stamp in self.stats_stamps if stamp >= cutoff]
 
+
+class Binance_CapitalComMKTDataLive(CapitalComMKTDataLive):
+    """
+    Extension of CapitalComMKTDataLive to support Binance market data.
+    This class conforms with the 'transmit_mkt_data_with_protocol_2' function
+    and allows Binance data to be transmitted using Protocol 2 format.
+
+    Since Binance doesn't have shortable shares or unrealized P&L like IBKR,
+    those fields are set to 0 or can be omitted from Protocol 2 transmission.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    @classmethod
+    def from_binance_depth(cls, symbol: str, depth_update: DepthUpdate):
+        """Create market data from Binance depth update (order book)."""
+        # Extract top bid and ask from the order book
+        try:
+            top_bid = float(depth_update.b[0][0]) if depth_update.b else 0.0
+            top_bid_size = float(depth_update.b[0][1]) if depth_update.b else 0.0
+        except (IndexError, ValueError):
+            top_bid = 0.0
+            top_bid_size = 0.0
+
+        try:
+            top_ask = float(depth_update.a[0][0]) if depth_update.a else 0.0
+            top_ask_size = float(depth_update.a[0][1]) if depth_update.a else 0.0
+        except (IndexError, ValueError):
+            top_ask = 0.0
+            top_ask_size = 0.0
+
+        # Use mid price as last price if no trade data available
+        last_price = (top_bid + top_ask) / 2 if (top_bid > 0 and top_ask > 0) else 0.0
+
+        return cls(
+            symbol=symbol.upper(),
+            bid=top_bid,
+            bid_size=top_bid_size,
+            ask=top_ask,
+            ask_size=top_ask_size,
+            last=last_price,
+            last_size=0.0,
+            timestamp=int(depth_update.E)
+        )
+
+    @classmethod
+    def from_binance_trade(cls, symbol: str, trade_data: AggTradeData,
+                          existing_data: 'Binance_CapitalComMKTDataLive' = None):
+        """Create or update market data from Binance aggregate trade."""
+        last_price = float(trade_data.p)
+        last_size = float(trade_data.q)
+
+        # If we have existing depth data, preserve it and just update last trade
+        if existing_data:
+            return cls(
+                symbol=symbol.upper(),
+                bid=existing_data.bid,
+                bid_size=existing_data.bid_size,
+                ask=existing_data.ask,
+                ask_size=existing_data.ask_size,
+                last=last_price,
+                last_size=last_size,
+                timestamp=int(trade_data.T)
+            )
+        else:
+            # No depth data, use trade price for bid/ask approximation
+            return cls(
+                symbol=symbol.upper(),
+                bid=last_price,
+                bid_size=0.0,
+                ask=last_price,
+                ask_size=0.0,
+                last=last_price,
+                last_size=last_size,
+                timestamp=int(trade_data.T)
+            )
+
+
+class BinanceMKTDispatcher(Introspective):
+    """
+    Market data dispatcher for Binance, following the same pattern as IBKR's MKTDispatcher.
+
+    This dispatcher:
+    - Uses BinanceWss for WebSocket connections to Binance
+    - Manages TCP client connections
+    - Converts Binance market data to Protocol 2 format
+    - Supports interactive mode via Introspective base class
+    - Handles client subscriptions and automatically unsubscribes when clients disconnect
+    """
+
+    def __init__(self, host='localhost', port=9982):
+        """
+        Initialize the BinanceMKTDispatcher.
+
+        Args:
+            host (str): Host to bind TCP server to
+            port (int): Port to bind TCP server to (default 9982 to avoid conflicts)
+        """
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((host, port))
+        self.clients = []
+        self.symbol_to_clients = {}  # Maps symbol -> list of clients
+        self.symbol_data_cache = {}  # Maps symbol -> Binance_CapitalComMKTDataLive
+
+        # Initialize Binance WebSocket
+        self.ws = BinanceWss()
+
+        # Threading lock for client management
+        self._thread_lock = threading.Lock()
+
+        # Configuration options
+        self._configs = {
+            'Print data packets': False,
+            'Show subscription changes': True,
+            'Auto-unsubscribe disconnected clients': True,
+        }
+
+        self.host = host
+        self.port = port
+
+        # Start client listener and health check
+        self._add_clients()
+        self._check_clients_live()
+
+        print(f'[BinanceMKTDispatcher] Initialized on {host}:{port}')
+        print('[IMPORTANT] MODE = PROTOCOL_2')
+
+    def _modify_configs_interactive(self):
+        """Modify the dispatcher configurations interactively."""
+        print("Current configurations:")
+        for key, value in self._configs.items():
+            print(f"{key}: {value}")
+        print("Enter the configuration you want to modify (or 'exit' to quit):")
+        while True:
+            choice = input("Configuration: ").strip()
+            if choice.lower() == 'exit':
+                break
+            if choice in self._configs:
+                new_value = input(f"Enter new value for {choice} (current: {self._configs[choice]}): ")
+                if new_value.lower() == 'true':
+                    self._configs[choice] = True
+                elif new_value.lower() == 'false':
+                    self._configs[choice] = False
+                else:
+                    self._configs[choice] = new_value
+                print(f"Updated {choice} to {self._configs[choice]}")
+            else:
+                print(f"Invalid configuration: {choice}")
+
+    def _subscribe_to_symbol(self, symbol: str, client: socket.socket):
+        """Subscribe to a symbol and add client to the subscription list."""
+        symbol = symbol.upper()
+
+        with self._thread_lock:
+            if symbol not in self.symbol_to_clients:
+                # First client for this symbol, subscribe to Binance WebSocket
+                if self._configs['Show subscription changes']:
+                    print(f"[SUBSCRIBE] New subscription to {symbol}")
+                self.ws.subscribe(symbol, lambda msg: self._binance_callback(symbol, msg))
+                self.symbol_to_clients[symbol] = []
+
+            if client not in self.symbol_to_clients[symbol]:
+                self.symbol_to_clients[symbol].append(client)
+                if self._configs['Show subscription changes']:
+                    print(f"[CLIENT] Added client to {symbol} subscription (total: {len(self.symbol_to_clients[symbol])})")
+
+    def _binance_callback(self, symbol: str, msg: AbstractBinanceType):
+        """Callback function to handle Binance market data and convert to Protocol 2."""
+        try:
+            # Get or create market data cache for this symbol
+            existing_data = self.symbol_data_cache.get(symbol, None)
+
+            # Update market data based on message type
+            if msg.idx == BinanceTypes.DEPTH_STREAM:
+                # Order book update
+                depth_msg: DepthStreamMessage = msg.obj
+                market_data = Binance_CapitalComMKTDataLive.from_binance_depth(
+                    symbol, depth_msg.data
+                )
+                # If we have existing trade data, merge it
+                if existing_data and existing_data.last > 0:
+                    market_data.last = existing_data.last
+                    market_data.last_size = existing_data.last_size
+
+            elif msg.idx == BinanceTypes.AGG_TRADE:
+                # Aggregate trade update
+                trade_msg: AggTradeMessage = msg.obj
+                market_data = Binance_CapitalComMKTDataLive.from_binance_trade(
+                    symbol, trade_msg.data, existing_data
+                )
+            else:
+                # Other message types (kline, etc.) - skip for now
+                return
+
+            # Update cache
+            self.symbol_data_cache[symbol] = market_data
+
+            # Get clients subscribed to this symbol
+            clients = self.symbol_to_clients.get(symbol, [])
+            if not clients:
+                return
+
+            # Transmit to all clients using Protocol 2
+            packet = transmit_mkt_data_with_protocol_2(market_data)
+
+            if self._configs['Print data packets']:
+                print(f"[TX {symbol}] {packet}")
+
+            for client in clients:
+                try:
+                    client.sendall(packet)
+                except (OSError, ConnectionResetError) as e:
+                    # Client disconnected, will be cleaned up by _check_clients_live
+                    if self._configs['Show subscription changes']:
+                        print(f"[CLIENT] Error sending to client: {e}")
+
+        except Exception as e:
+            print(f"[ERROR] Error in Binance callback for {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    @runAsThread
+    def _listen_to_client(self, client: socket.socket):
+        """Listen to client commands for subscribing to symbols."""
+        while True:
+            try:
+                data = client.recv(9999).decode()
+                if not data:
+                    break
+
+                # Parse command: "add=BTCUSDT" or "subscribe=ETHUSDT"
+                if 'add' in data or 'subscribe' in data:
+                    parts = data.split('=')
+                    if len(parts) == 2:
+                        symbol = parts[1].strip().upper()
+                        if self._configs['Show subscription changes']:
+                            print(f"[CLIENT] Subscribing to {symbol}")
+                        self._subscribe_to_symbol(symbol, client)
+                    else:
+                        print(f"[CLIENT] Invalid command format: {data}")
+
+            except Exception as e:
+                print(f"[CLIENT] Error receiving data from client: {e}")
+                break
+
+        # Client disconnected
+        client.close()
+
+    @runAsThread
+    def _add_clients(self):
+        """Accept new client connections."""
+        while True:
+            self.sock.listen()
+            client, addr = self.sock.accept()
+            print(f"[CLIENT] New connection from {addr}")
+            self.clients.append(client)
+            self._listen_to_client(client)
+
+    @runAsThread
+    def _check_clients_live(self):
+        """Periodically check if clients are still connected and clean up disconnected ones."""
+        while True:
+            time.sleep(5)
+            if not self._configs['Auto-unsubscribe disconnected clients']:
+                continue
+
+            try:
+                with self._thread_lock:
+                    # Check each symbol's client list
+                    symbols_to_remove = []
+
+                    for symbol, clients in self.symbol_to_clients.items():
+                        clients_to_remove = []
+
+                        for client in clients:
+                            try:
+                                # Send ping to check if client is alive
+                                client.sendall(b'$')
+                            except (OSError, ConnectionResetError):
+                                # Client disconnected
+                                clients_to_remove.append(client)
+                                if self._configs['Show subscription changes']:
+                                    print(f"[CLIENT] Disconnected client removed from {symbol}")
+
+                        # Remove disconnected clients
+                        for client in clients_to_remove:
+                            try:
+                                clients.remove(client)
+                            except ValueError:
+                                pass
+
+                        # If no clients left, mark symbol for unsubscription
+                        if not clients:
+                            symbols_to_remove.append(symbol)
+
+                    # Clean up symbols with no clients
+                    for symbol in symbols_to_remove:
+                        del self.symbol_to_clients[symbol]
+                        if self._configs['Show subscription changes']:
+                            print(f"[UNSUBSCRIBE] No clients for {symbol}, cleaned up")
+
+            except Exception as e:
+                print(f"[ERROR] Error in _check_clients_live: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def interactive_mode(self):
+        """Start interactive mode for managing the dispatcher."""
+        functions = {
+            'show_subscriptions': ('Show all active symbol subscriptions', self.show_subscriptions),
+            'show_clients': ('Show all connected clients', self.show_clients),
+            'modify_configs': ('Modify dispatcher configurations', self._modify_configs_interactive),
+        }
+        self._interactive_ui(functions)
+
+    def show_subscriptions(self):
+        """Display all active symbol subscriptions."""
+        print("\n=== Active Subscriptions ===")
+        if not self.symbol_to_clients:
+            print("No active subscriptions")
+        else:
+            for symbol, clients in self.symbol_to_clients.items():
+                print(f"{symbol}: {len(clients)} client(s)")
+        print()
+
+    def show_clients(self):
+        """Display all connected clients."""
+        print(f"\n=== Connected Clients ({len(self.clients)}) ===")
+        for i, client in enumerate(self.clients, 1):
+            try:
+                addr = client.getpeername()
+                print(f"{i}. {addr}")
+            except:
+                print(f"{i}. <disconnected>")
+        print()
 
 
 if __name__ == '__main__':
