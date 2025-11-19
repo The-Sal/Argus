@@ -97,8 +97,8 @@ class IBNetworker:
         account_summary = self.session.get(self.urls['account_summary'].format(self._trading_account_id)).json()
         self._ledger_data = self.get_account_ledger()
         self._account_summary = account_summary
-        logging.info(f"Account Ledger:\n{"*" * 50}\n{self._ledger_data}\n{"*" * 50}")
-        logging.info(f"Account Summary:\n{"*" * 50}\n{account_summary}\n{"*" * 50}")
+        logging.info(f"Account Ledger:\n{'*' * 50}\n{self._ledger_data}\n{'*' * 50}")
+        logging.info(f"Account Summary:\n{'*' * 50}\n{account_summary}\n{'*' * 50}")
 
         # set account
 

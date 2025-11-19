@@ -1,0 +1,62 @@
+name: Manual CI/CD Trigger
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_url:
+        description: 'Commit URL to process (leave empty for latest)'
+        required: false
+        type: string
+
+jobs:
+  trigger-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Get commit URL
+        id: commit
+        run: |
+          if [ -z "${{ github.event.inputs.commit_url }}" ]; then
+            COMMIT_URL="https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
+          else
+            COMMIT_URL="${{ github.event.inputs.commit_url }}"
+          fi
+          echo "url=$COMMIT_URL" >> $GITHUB_OUTPUT
+          echo "Using commit URL: $COMMIT_URL"
+      
+      - name: Trigger CI/CD Pipeline
+        run: |
+          echo "=========================================="
+          echo "Triggering CI/CD pipeline..."
+          echo "Target URL: https://sals-macbook-pro.tail34e8af.ts.net/webhook"
+          echo "Commit URL: ${{ steps.commit.outputs.url }}"
+          echo "=========================================="
+          
+          RESPONSE=$(curl -v -w "\n\nHTTP Status: %{http_code}\nTotal Time: %{time_total}s\n" \
+            -X POST https://sals-macbook-pro.tail34e8af.ts.net/webhook \
+            -H "Content-Type: application/json" \
+            -d '{
+              "head_commit": {
+                "url": "${{ steps.commit.outputs.url }}"
+              },
+              "repository": {
+                "full_name": "${{ github.repository }}"
+              },
+              "ref": "${{ github.ref }}"
+            }' 2>&1)
+          
+          echo "=========================================="
+          echo "Response:"
+          echo "$RESPONSE"
+          echo "=========================================="
+          echo "Exit code: $?"
+          
+          # Check if curl succeeded
+          if [ $? -eq 0 ]; then
+            echo "Webhook triggered successfully!"
+          else
+            echo "Failed to trigger webhook"
+            exit 1
+          fi

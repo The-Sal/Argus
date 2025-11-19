@@ -1,771 +1,538 @@
-"""
-Binance Market Data Dispatcher
-
-This module provides a market data dispatcher for Binance, similar to the IB MKTDispatcher.
-It uses python-binance for WebSocket connections and follows Protocol 2 for data transmission.
-
-Features:
-- Real-time WebSocket streaming using python-binance
-- Protocol 2 compatible data transmission
-- TCP server for client connections
-- Interactive mode with manual symbol management
-- Automatic connectivity check for production endpoints
-"""
-import os
 import json
+import uuid
 import time
 import socket
 import logging
+import platform
 import threading
-import traceback
 from utils3 import runAsThread
-from binance.client import Client
-from typing import Dict, List, Callable
-from binance import ThreadedWebsocketManager
-from argus.capital import transmit_mkt_data_with_protocol_2, CapitalComMKTDataLive
-
-# Enable logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from websocket import WebSocketApp
+from argus._argus_utils import throw_fuss, Introspective
+from argus.capital import transmit_mkt_data_with_protocol_2
+from argus.binance._classes import (DepthUpdate, DepthStreamMessage, AggTradeMessage,
+                                    AggTradeData, KlineEventData, KlineData, KlineMessage,
+                                    Binance_CapitalComMKTDataLive)
 
 
-class BinanceError(Exception):
-    """Base exception for Binance-related errors."""
-    pass
+class BinanceTypes:
+    DEPTH_STREAM = 'depth_stream'
+    AGG_TRADE = 'agg_trade'
+    KLINE = 'kline'
 
 
-class BinanceMarketData:
+class AbstractBinanceType:
     """
-    Market data object for Binance.
-    Normalizes Binance ticker data into a standard format.
+    Abstract wrapper for Binance WebSocket message types.
+    The only attribute directly accessible is 'idx' to identify the type.
+    Everything else is taken from the 'obj' attribute.
     """
-    def __init__(self, symbol: str, bid: float, bid_qty: float, ask: float,
-                 ask_qty: float, last: float, last_qty: float, timestamp: int = None):
-        self.symbol = symbol
-        self.bid = bid
-        self.bid_qty = bid_qty
-        self.ask = ask
-        self.ask_qty = ask_qty
-        self.last = last
-        self.last_qty = last_qty
-        self.timestamp = timestamp or int(time.time() * 1000)
 
-    def to_capital_com_format(self) -> CapitalComMKTDataLive:
-        """Convert to CapitalComMKTDataLive for Protocol 2 transmission."""
-        return CapitalComMKTDataLive(
-            symbol=self.symbol,
-            bid=self.bid,
-            bid_size=self.bid_qty,
-            ask=self.ask,
-            ask_size=self.ask_qty,
-            last=self.last,
-            last_size=self.last_qty,
-            timestamp=self.timestamp
-        )
+    def __init__(self, idx: str, obj):
+        self.idx = idx
+        self.obj = obj
 
-    def __repr__(self):
-        return (f"BinanceMarketData(symbol={self.symbol}, bid={self.bid}, "
-                f"ask={self.ask}, last={self.last})")
+
+class BinanceWssConfig:
+    AUTO_DUMP = 'auto_dump'
+    TOTAL_MESSAGE_STATISTICS = 'total_message_statistics'
+    SHOW_ME_CHARTS = 'show_me_charts'
 
 
 class BinanceWss:
-    """
-    WebSocket manager for Binance using python-binance ThreadedWebsocketManager.
-    Handles subscription management and data streaming.
-    """
-    def __init__(self, api_key: str = None, api_secret: str = None, testnet: bool = False):
-        """
-        Initialize Binance WebSocket manager.
+    def __init__(self, configs=None):
 
-        Args:
-            api_key: Binance API key (optional for public data)
-            api_secret: Binance API secret (optional for public data)
-            testnet: Use testnet instead of production
-        """
-        self.api_key = api_key
-        self.api_secret = api_secret
-        self.testnet = testnet
-
-        # Check connectivity to Binance before initializing
-        if not testnet:
-            self._check_binance_connectivity()
-
-        # Initialize client (for symbol validation if needed)
-        if api_key and api_secret:
-            self.client = Client(api_key, api_secret, testnet=testnet)
-        else:
-            self.client = None
-
-        # ThreadedWebsocketManager for handling streams
-        # For public streams (market data), no API credentials are needed
-        # Only pass credentials if they're actually provided
-        if api_key and api_secret:
-            self.twm = ThreadedWebsocketManager(api_key=api_key, api_secret=api_secret, testnet=testnet)
-        else:
-            # Public streams only - no authentication needed
-            if testnet:
-                self.twm = ThreadedWebsocketManager(testnet=testnet)
-            else:
-                self.twm = ThreadedWebsocketManager()
-
-        # Track subscriptions: symbol -> (stream_name, callback)
-        self.subscriptions: Dict[str, tuple] = {}
-
-        # Track active streams
-        self.active_streams: Dict[str, str] = {}  # stream_name -> connection_key
-
-        # Lock for thread-safe operations
-        self.lock = threading.Lock()
-
-        # Running flag
-        self.running = False
-
-        logger.info(f"Initialized BinanceWss (testnet={testnet})")
-
-    def _check_binance_connectivity(self):
-        """
-        Check if we can reach Binance production endpoints.
-        Raises BinanceError if connectivity fails.
-        """
-        import socket as sock
-        import ssl
-
-        host = 'stream.binance.com'
-        port = 9443
-        timeout = 5
-
-        logger.info(f"Checking connectivity to {host}:{port}...")
-
-        # First check basic TCP connectivity
-        try:
-            test_socket = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
-            test_socket.settimeout(timeout)
-            test_socket.connect((host, port))
-            test_socket.close()
-        except sock.timeout:
-            raise BinanceError(
-                f"Connection to {host}:{port} timed out after {timeout}s.\n"
-                f"Binance production endpoint is unreachable from your network.\n\n"
-                f"Possible causes:\n"
-                f"  - Firewall blocking cryptocurrency exchanges\n"
-                f"  - ISP blocking Binance\n"
-                f"  - Regional restrictions\n"
-                f"  - Network connectivity issues\n\n"
-                f"Solutions:\n"
-                f"  1. Use testnet: python runtime.py binance --testnet\n"
-                f"  2. Try a different network (mobile hotspot, VPN)\n"
-                f"  3. Check firewall settings\n"
-                f"  4. Contact your network administrator"
-            )
-        except sock.gaierror as e:
-            raise BinanceError(
-                f"Cannot resolve hostname {host}: {e}\n"
-                f"DNS resolution failed. Check your internet connection."
-            )
-        except ConnectionRefusedError:
-            raise BinanceError(
-                f"Connection to {host}:{port} was refused.\n"
-                f"Binance endpoint is actively blocking your connection."
-            )
-        except Exception as e:
-            raise BinanceError(
-                f"Failed to connect to {host}:{port}: {e}\n\n"
-                f"Cannot reach Binance production endpoint.\n"
-                f"Try using testnet: python runtime.py binance --testnet"
-            )
-
-        # Now check TLS/SSL connection (deeper check)
-        logger.info(f"Checking TLS connectivity to {host}:{port}...")
-        try:
-            context = ssl.create_default_context()
-            with sock.create_connection((host, port), timeout=timeout) as raw_socket:
-                with context.wrap_socket(raw_socket, server_hostname=host) as secure_socket:
-                    # If we get here, TLS handshake succeeded
-                    pass
-            logger.info(f"Successfully connected to {host}:{port} with TLS")
-        except ssl.SSLError as e:
-            logger.warning(
-                f"TLS connection to {host}:{port} failed: {e}\n"
-                f"Your network may be intercepting or blocking encrypted connections to Binance.\n"
-                f"WebSocket connections may fail even though basic TCP works."
-            )
-            # Don't raise here - let it try anyway, but warn the user
-        except Exception as e:
-            logger.warning(
-                f"TLS connectivity check failed: {e}\n"
-                f"Production WebSocket may not work properly."
-            )
-
-    def start(self):
-        """Start the WebSocket manager."""
-        if not self.running:
-            self.twm.start()
-            self.running = True
-            logger.info("BinanceWss started")
-
-            # Wait for the internal async loop to initialize
-            # Without this delay, subscriptions may fail silently
-            time.sleep(0.5)
-
-            # CRITICAL: python-binance has a bug where the FIRST subscription after start()
-            # never receives data. Keep a permanent "sacrificial" subscription alive to absorb
-            # this bug so real client subscriptions work.
-            logger.info("Creating sacrificial first subscription to work around python-binance bug...")
-
-            def _dummy_callback(msg):
-                # This callback will receive data but we don't care
-                pass
-
-            try:
-                # Use an obscure symbol that clients are unlikely to request
-                # This subscription stays alive forever to keep the WebSocket healthy
-                dummy_key = self.twm.start_symbol_ticker_socket(
-                    callback=_dummy_callback,
-                    symbol='BNBUSDT'  # BNB, less likely to be requested by clients
-                )
-                if dummy_key:
-                    logger.info(f"Sacrificial subscription created with key: {dummy_key}")
-                    self._dummy_subscription_key = dummy_key
-                else:
-                    logger.warning("Sacrificial subscription returned no key")
-                    self._dummy_subscription_key = None
-            except Exception as e:
-                logger.warning(f"Sacrificial subscription failed: {e}")
-                self._dummy_subscription_key = None
-
-            logger.info("BinanceWss ready for subscriptions")
-
-    def stop(self):
-        """Stop the WebSocket manager and close all streams."""
-        if self.running:
-            # Stop the sacrificial subscription if it exists
-            if hasattr(self, '_dummy_subscription_key') and self._dummy_subscription_key:
-                try:
-                    self.twm.stop_socket(self._dummy_subscription_key)
-                    logger.info("Sacrificial subscription stopped")
-                except Exception as e:
-                    logger.debug(f"Error stopping sacrificial subscription: {e}")
-
-            self.twm.stop()
-            self.running = False
-            logger.info("BinanceWss stopped")
-
-    def subscribe_ticker(self, symbol: str, callback: Callable):
-        """
-        Subscribe to real-time ticker data for a symbol with automatic retry.
-
-        Args:
-            symbol: Trading pair symbol (e.g., 'BTCUSDT')
-            callback: Function to call when data is received
-        """
-        with self.lock:
-            symbol = symbol.upper()
-
-            if symbol in self.subscriptions:
-                logger.warning(f"Already subscribed to {symbol}")
-                return
-
-            # Track if we've received data for this subscription
-            subscription_state = {
-                'first_message_received': False,
-                'retry_count': 0,
-                'conn_key': None,
-                'callback': callback
+        if configs is None:
+            configs = {
+                BinanceWssConfig.AUTO_DUMP: True,
+                BinanceWssConfig.TOTAL_MESSAGE_STATISTICS: True,
+                BinanceWssConfig.SHOW_ME_CHARTS: True,
             }
 
-            # Create a wrapper callback to normalize the data
-            def ticker_callback(msg):
-                # Log first message received
-                if not subscription_state['first_message_received']:
-                    logger.info(f"First message received for {symbol}")
-                    subscription_state['first_message_received'] = True
+        self.endpoint = 'wss://stream.binance.com/stream'
+        self.ws = WebSocketApp(
+            url=self.endpoint,
+            on_open=self._on_open,
+            on_message=self._on_message,
+            on_error=self._on_error,
+            on_close=self._on_close,
+        )
 
-                if msg['e'] == 'error':
-                    logger.error(f"WebSocket error for {symbol}: {msg}")
-                    return
+        self.semaphore = threading.Semaphore(0)
+        self.init_websocket()
 
-                try:
-                    # Parse Binance ticker data
-                    market_data = BinanceMarketData(
-                        symbol=msg['s'],
-                        bid=float(msg['b']),
-                        bid_qty=float(msg['B']),
-                        ask=float(msg['a']),
-                        ask_qty=float(msg['A']),
-                        last=float(msg['c']),
-                        last_qty=float(msg['Q']),
-                        timestamp=msg['E']
-                    )
-                    subscription_state['callback'](market_data)
-                except Exception as e:
-                    logger.error(f"Error parsing ticker data for {symbol}: {e}")
-                    traceback.print_exc()
+        self.callbacks = {}
+        self.msgs = []
+        self.stats_stamps = []
+        self.configs = configs
 
-            # Start the subscription with retry logic
-            stream_name = f"{symbol.lower()}@ticker"
-            self._attempt_subscription(symbol, stream_name, ticker_callback, subscription_state)
+        if platform.platform() != 'Darwin':
+            print("Show me charts disabled: not running on macOS")
+            self.configs[BinanceWssConfig.SHOW_ME_CHARTS] = False
 
-    def _attempt_subscription(self, symbol: str, stream_name: str, ticker_callback: Callable, subscription_state: dict):
-        """
-        Attempt to subscribe to a symbol with retry logic.
-        Due to python-binance bugs, subscriptions may fail silently. This method retries until successful.
-        """
-        MAX_RETRIES = 5
-        RETRY_WAIT = 3  # seconds
+        self._dump_interval = 30
+        self._statistics_interval = 10
+        self._max_message_count = 5000
 
-        logger.info(f"Starting ticker socket for {symbol} (attempt {subscription_state['retry_count'] + 1})...")
+        self.auto_message_dumper()
+        self.statistic_showcase()
 
-        try:
-            conn_key = self.twm.start_symbol_ticker_socket(
-                callback=ticker_callback,
-                symbol=symbol
-            )
-        except Exception as e:
-            logger.error(f"Failed to start ticker socket for {symbol}: {e}")
-            raise
+        self.uuid = str(uuid.uuid4())
+        self.message_seg_id = 0
 
-        if not conn_key:
-            error_msg = f"Subscription to {symbol} returned no connection key"
-            logger.error(error_msg)
-            raise BinanceError(error_msg)
+        print('[BinanceWss] Initialized with UUID:', self.uuid)
 
-        logger.info(f"Ticker socket started for {symbol} with connection key: {conn_key}")
+    def unique_file_name(self, file_name, file_type):
+        return '{}_{}-{}.{}'.format(file_name, self.uuid, self.message_seg_id, file_type)
 
-        # Store subscription info
-        subscription_state['conn_key'] = conn_key
-        self.subscriptions[symbol] = (stream_name, subscription_state['callback'])
-        self.active_streams[stream_name] = conn_key
+    def rollover_message_segment(self):
+        self.message_seg_id += 1
+        self.msgs = []
 
-        # Start a background thread to monitor if data is received
-        @runAsThread
-        def monitor_subscription():
-            try:
-                logger.info(f"Monitor thread started for {symbol}, will check in {RETRY_WAIT}s...")
-                time.sleep(RETRY_WAIT)
+    def init_websocket(self):
+        self.semaphore = threading.Semaphore(0)
+        self.run_ws_forever()
+        self.semaphore.acquire()
 
-                # Check if we've received data
-                if not subscription_state['first_message_received']:
-                    # Before retrying, check if subscription still exists
-                    # (it might have been unsubscribed by client disconnect)
-                    with self.lock:
-                        if symbol not in self.subscriptions:
-                            logger.info(f"Subscription to {symbol} was cancelled, aborting retry")
-                            return
+    def _config_active(self, config_name: str) -> bool:
+        return self.configs[config_name]
 
-                    logger.warning(f"No data received for {symbol} after {RETRY_WAIT}s, retrying...")
-
-                    # Unsubscribe the failed attempt
-                    with self.lock:
-                        if stream_name in self.active_streams:
-                            try:
-                                self.twm.stop_socket(conn_key)
-                                del self.active_streams[stream_name]
-                            except Exception as e:
-                                logger.debug(f"Error stopping failed subscription: {e}")
-
-                        # Remove from subscriptions temporarily
-                        if symbol in self.subscriptions:
-                            del self.subscriptions[symbol]
-
-                        # Retry if under max retries
-                        subscription_state['retry_count'] += 1
-                        if subscription_state['retry_count'] < MAX_RETRIES:
-                            logger.info(f"Retrying subscription to {symbol}...")
-                            self._attempt_subscription(symbol, stream_name, ticker_callback, subscription_state)
-                        else:
-                            logger.error(f"Failed to subscribe to {symbol} after {MAX_RETRIES} attempts")
-                else:
-                    logger.info(f"Monitor for {symbol}: data received successfully, exiting")
-            except Exception as e:
-                logger.error(f"Monitor thread error for {symbol}: {e}")
-                traceback.print_exc()
-
-        monitor_subscription()
-
-    def unsubscribe_ticker(self, symbol: str):
-        """
-        Unsubscribe from ticker data for a symbol.
-
-        Args:
-            symbol: Trading pair symbol
-        """
-        with self.lock:
-            symbol = symbol.upper()
-
-            if symbol not in self.subscriptions:
-                logger.warning(f"Not subscribed to {symbol}")
-                return
-
-            stream_name, _ = self.subscriptions[symbol]
-
-            if stream_name in self.active_streams:
-                conn_key = self.active_streams[stream_name]
-                self.twm.stop_socket(conn_key)
-                del self.active_streams[stream_name]
-
-            del self.subscriptions[symbol]
-            logger.info(f"Unsubscribed from {symbol}")
-
-    def get_subscribed_symbols(self) -> List[str]:
-        """Get list of currently subscribed symbols."""
-        with self.lock:
-            return list(self.subscriptions.keys())
-
-
-class MKTDispatcher:
-    """
-    Market Data Dispatcher for Binance.
-
-    Manages client connections via TCP and streams Binance market data
-    using Protocol 2 format (compatible with existing clients).
-    """
-    def __init__(self, host: str = 'localhost', port: int = 9974,
-                 api_key: str = None, api_secret: str = None, testnet: bool = False,
-                 checkpoint_url: str = None):
-        """
-        Initialize the Binance MKTDispatcher.
-
-        Args:
-            host: Host to bind TCP server
-            port: Port to bind TCP server
-            api_key: Binance API key (optional for public data)
-            api_secret: Binance API secret (optional for public data)
-            testnet: Use Binance testnet
-            checkpoint_url: Optional URL for progress checkpoints
-        """
-        self.host = host
-        self.port = port
-        self.checkpoint_url = checkpoint_url
-
-        # Initialize WebSocket manager
-        self.ws = BinanceWss(api_key=api_key, api_secret=api_secret, testnet=testnet)
-
-        # TCP server socket
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock.bind((host, port))
-
-        # Client management
-        self.clients: List[socket.socket] = []
-        self.symbol_to_clients: Dict[str, List[socket.socket]] = {}
-
-        # Thread lock for client operations
-        self.client_lock = threading.Lock()
-
-        # Configuration
-        self.configs = {
-            'Print data packets': False,
-            'Show client messages': True,
-            'Show live stream': False,
+    @staticmethod
+    def _craft_msg(symbol: str, auto_dump=True, method="SUBSCRIBE", idx=1) -> dict | str:
+        symbol = symbol.lower()
+        msg = {
+            "method": method,
+            "params": [
+                "!miniTicker@arr@1000ms",
+                symbol+"@aggTrade",
+                symbol+"@depth@100ms",
+                symbol+"@kline_1s"
+            ],
+            "id": method
         }
+        if auto_dump:
+            return json.dumps(msg)
+        return msg
 
-        # Live stream monitoring
-        self.live_stream_symbol = None
+    # noinspection PyUnusedLocal
+    def _on_open(self, ws):
+        print("WebSocket connection opened.")
+        self.semaphore.release()
 
-        logger.info(f"MKTDispatcher initialized on {host}:{port}")
-        self._checkpoint("MKTDispatcher.__init__", "complete")
+    # noinspection PyUnusedLocal
+    def _on_message(self, ws, message):
+        self.stats_stamps.append(time.time())
+        msg = json.loads(message)
+        msg['received_at'] = time.time()
+        self.msgs.append(msg)
 
-    def _checkpoint(self, task_name: str, status: str):
-        """Send checkpoint notification."""
-        if not self.checkpoint_url:
+        if len(self.msgs) > self._max_message_count:
+            self.rollover_message_segment()
+
+        message_type = msg.get('stream', None)
+        if message_type is None:
+            print('Malformed message received:', msg)
             return
+
         try:
-            import requests
-            requests.post(
-                self.checkpoint_url,
-                json={"task_name": task_name, "status": status},
-                timeout=5
+            symbol, stream_type = message_type.split('@', 1)
+        except ValueError:
+            print('Malformed message received:', msg)
+            return
+
+        if stream_type == 'depth@100ms':
+            msg = AbstractBinanceType(
+                idx=BinanceTypes.DEPTH_STREAM,
+                obj=DepthStreamMessage.from_dict(msg)
             )
-        except Exception as e:
-            logger.debug(f"Checkpoint notification failed: {e}")
+        elif stream_type == 'aggTrade':
+            msg = AbstractBinanceType(
+                idx=BinanceTypes.AGG_TRADE,
+                obj=AggTradeMessage.from_dict(msg)
+            )
+        elif stream_type == 'kline_1s':
+            msg = AbstractBinanceType(
+                idx=BinanceTypes.KLINE,
+                obj=KlineMessage.from_dict(msg)
+            )
+        elif '!miniTicker' in stream_type:
+            # Currently ignoring miniTicker messages
+            return
+        elif 'arr@1000ms' in stream_type:
+            # Currently ignoring arr@1000ms messages
+            return
+        else:
+            print('Unknown message {} received: {}'.format(stream_type, str(msg)[:100] + '...'))
+            return
 
-    def start(self):
-        """Start the dispatcher: WebSocket manager and client listener."""
-        self._checkpoint("MKTDispatcher.start", "start")
+        if symbol in self.callbacks:
+            callback = self.callbacks[symbol]
+            callback(msg)
+        else:
+            throw_fuss(
+                msg="No callback registered for symbol: {}".format(symbol),
+                notify=False,
+                boarder="<>"
+            )
 
-        # Start WebSocket manager
-        self.ws.start()
+    # noinspection PyUnusedLocal
+    def _on_error(self, ws, error):
+        print("WebSocket error:", error)
+        throw_fuss(
+            msg="Binance WebSocket error occurred:\n{}".format(error),
+            title="Binance WebSocket Error",
+        )
+        _ = self
 
-        # Start client listener
-        self._add_clients()
+    # noinspection PyUnusedLocal
+    def _on_close(self, ws, close_status_code, close_msg):
+        print("WebSocket connection closed:", close_status_code, close_msg)
+        throw_fuss(
+            msg="Binance WebSocket connection closed:\nCode: {}\nMessage: {}".format(close_status_code, close_msg),
+            title="Binance WebSocket Closed",
+        )
+        _ = self
 
-        # Start client health checker
-        self._check_clients_live()
+    def subscribe(self, symbol: str, callback):
+        self.ws.send(self._craft_msg(symbol))
+        self.callbacks[symbol.lower()] = callback
 
-        logger.info(f"MKTDispatcher running on {self.host}:{self.port}")
-        self._checkpoint("MKTDispatcher.start", "complete")
+    def unsubscribe(self, symbol):
+        msg = self._craft_msg(symbol, method="UNSUBSCRIBE", idx=312)
+
+        if symbol.lower() in self.callbacks:
+            del self.callbacks[symbol.lower()]
+        self.ws.send(msg)
 
     @runAsThread
-    def _add_clients(self):
-        """Listen for incoming client connections."""
-        # CRITICAL: Wait to ensure WebSocket is fully ready before accepting clients
-        # The WebSocket manager needs time to initialize its internal async loop
-        # If clients connect too quickly, their subscriptions will fail
-        time.sleep(1.0)
-        logger.info("Client listener ready to accept connections")
-
-        while True:
-            self.sock.listen()
-            client, addr = self.sock.accept()
-            logger.info(f"Client connected from {addr}")
-
-            with self.client_lock:
-                self.clients.append(client)
-
-            self._listen_to_client(client)
+    def run_ws_forever(self):
+        self.ws.run_forever()
 
     @runAsThread
-    def _listen_to_client(self, client: socket.socket):
-        """
-        Listen to client requests and handle subscriptions.
-
-        Protocol:
-            - "add=BTCUSDT" - Subscribe to BTCUSDT ticker
-            - "remove=BTCUSDT" - Unsubscribe from BTCUSDT ticker
-        """
+    def auto_message_dumper(self):
         while True:
-            try:
-                data = client.recv(4096).decode('utf-8').strip()
-                if not data:
+            time.sleep(self._dump_interval)
+            if self._config_active(BinanceWssConfig.AUTO_DUMP):
+                fname = self.unique_file_name('binance_wss_dump', 'json')
+                try:
+                    with open(fname, 'w') as f:
+                        json.dump(self.msgs, f)
+                    print('[AUTO-DUMP] Dumped {} messages to {}'.format(len(self.msgs), fname))
+                except KeyboardInterrupt:
+                    throw_fuss('WAIT A SECOND ATTEMPTING TO WRITE DUMP, AUTO-DUMP WILL STOP WHEN THIS IS COMPLETE',
+                               notify=False)
+                    with open(fname, 'w') as f:
+                        json.dump(self.msgs, f)
+                    throw_fuss('DUMP COMPLETE, AUTO-DUMP STOPPED', notify=False)
                     break
 
-                if self.configs['Show client messages']:
-                    logger.info(f"Client request: {data}")
+    @runAsThread
+    def statistic_showcase(self):
+        while True:
+            time.sleep(self._statistics_interval)
+            if self._config_active(BinanceWssConfig.TOTAL_MESSAGE_STATISTICS):
+                now = time.time()
+                cutoff = now - self._statistics_interval
+                count = len([stamp for stamp in self.stats_stamps if stamp >= cutoff])
+                print('[STATISTICS] Received {} messages in the last {} seconds (avg: {:.2f} msgs/sec)'.format(
+                    count,
+                    self._statistics_interval,
+                    count / self._statistics_interval
+                ))
+                # Clean up old stamps
+                self.stats_stamps = [stamp for stamp in self.stats_stamps if stamp >= cutoff]
 
-                if data.startswith('add='):
-                    symbol = data.split('=', 1)[1].strip().upper()
-                    self._add_symbol(symbol, client)
 
-                elif data.startswith('remove='):
-                    symbol = data.split('=', 1)[1].strip().upper()
-                    self._remove_symbol(symbol, client)
+class BinanceMKTDispatcher(Introspective):
+    """
+    Market data dispatcher for Binance, following the same pattern as IBKR's MKTDispatcher.
 
-            except Exception as e:
-                logger.error(f"Error handling client request: {e}")
+    This dispatcher:
+    - Uses BinanceWss for WebSocket connections to Binance
+    - Manages TCP client connections
+    - Converts Binance market data to Protocol 2 format
+    - Supports interactive mode via Introspective base class
+    - Handles client subscriptions and automatically unsubscribes when clients disconnect
+    """
+
+    def __init__(self, host='localhost', port=9982):
+        """
+        Initialize the BinanceMKTDispatcher.
+
+        Args:
+            host (str): Host to bind TCP server to
+            port (int): Port to bind TCP server to (default 9982 to avoid conflicts)
+        """
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            self.sock.bind((host, port))
+        except OSError as e:
+            print(f"[ERROR] Failed to bind socket to {host}:{port}: {e}")
+            print("Please check if the port is already in use or if you have the necessary permissions.")
+            raise
+        self.clients = []
+        self.symbol_to_clients = {}  # Maps symbol -> list of clients
+        self.symbol_data_cache = {}  # Maps symbol -> Binance_CapitalComMKTDataLive
+
+        # Initialize Binance WebSocket
+        self.ws = BinanceWss()
+
+        # Threading lock for client management
+        self._thread_lock = threading.Lock()
+
+        # Configuration options
+        self._configs = {
+            'Print data packets': False,
+            'Show subscription changes': True,
+            'Auto-unsubscribe disconnected clients': True,
+        }
+
+        self.host = host
+        self.port = port
+
+        # Start client listener and health check
+        self._add_clients()
+        self._check_clients_live()
+
+        print(f'[BinanceMKTDispatcher] Initialized on {host}:{port}')
+        print('[IMPORTANT] MODE = PROTOCOL_2')
+
+    # noinspection DuplicatedCode
+    def _modify_configs_interactive(self):
+        """Modify the dispatcher configurations interactively."""
+        print("Current configurations:")
+        for key, value in self._configs.items():
+            print(f"{key}: {value}")
+        print("Enter the configuration you want to modify (or 'exit' to quit):")
+        while True:
+            choice = input("Configuration: ").strip()
+            if choice.lower() == 'exit':
                 break
 
-        # Client disconnected
-        self._cleanup_client(client)
-
-    def _add_symbol(self, symbol: str, client: socket.socket):
-        """Add a symbol subscription for a client."""
-        self._checkpoint(f"MKTDispatcher.add_symbol({symbol})", "start")
-
-        # Check if we need to subscribe to WebSocket (must check outside of lock to avoid deadlock)
-        needs_subscription = False
-        with self.client_lock:
-            if symbol not in self.symbol_to_clients:
-                # First client for this symbol - add client FIRST, then subscribe to WebSocket
-                # This prevents race condition where data arrives before client is in the list
-                self.symbol_to_clients[symbol] = [client]
-                needs_subscription = True
+            if choice in self._configs:
+                new_value = input(f"Enter new value for {choice} (current: {self._configs[choice]}): ")
+                if new_value.lower() == 'true':
+                    self._configs[choice] = True
+                elif new_value.lower() == 'false':
+                    self._configs[choice] = False
+                else:
+                    # noinspection all
+                    self._configs[choice] = new_value
+                print(f"Updated {choice} to {self._configs[choice]}")
             else:
-                # Already subscribed, just add client to list
-                if client not in self.symbol_to_clients[symbol]:
-                    self.symbol_to_clients[symbol].append(client)
-                    logger.info(f"Added client to existing {symbol} subscription")
+                print(f"Invalid configuration: {choice}")
 
-        # Subscribe to WebSocket OUTSIDE of client_lock to avoid deadlock
-        # The callback will be called from Binance's thread and needs to acquire client_lock
-        if needs_subscription:
-            def callback(market_data: BinanceMarketData):
-                self._broadcast_market_data(symbol, market_data)
+    def _subscribe_to_symbol(self, symbol: str, client: socket.socket):
+        """Subscribe to a symbol and add client to the subscription list."""
+        symbol = symbol.upper()
 
-            try:
-                self.ws.subscribe_ticker(symbol, callback)
-                logger.info(f"Subscribed to {symbol} for client")
-            except Exception as e:
-                logger.error(f"Failed to subscribe to {symbol}: {e}")
-                # Remove client since subscription failed
-                with self.client_lock:
-                    if symbol in self.symbol_to_clients:
-                        del self.symbol_to_clients[symbol]
-                client.sendall(f"ERROR: Failed to subscribe to {symbol}".encode())
+        with self._thread_lock:
+            if symbol not in self.symbol_to_clients:
+                # First client for this symbol, subscribe to Binance WebSocket
+                if self._configs['Show subscription changes']:
+                    print(f"[SUBSCRIBE] New subscription to {symbol}")
+                self.ws.subscribe(symbol, lambda msg: self._binance_callback(symbol, msg))
+                self.symbol_to_clients[symbol] = []
+
+            if client not in self.symbol_to_clients[symbol]:
+                self.symbol_to_clients[symbol].append(client)
+                if self._configs['Show subscription changes']:
+                    print(
+                        f"[CLIENT] Added client to {symbol} subscription (total: {len(self.symbol_to_clients[symbol])})")
+
+    # noinspection all
+    def _binance_callback(self, symbol: str, msg: AbstractBinanceType):
+        """Callback function to handle Binance market data and convert to Protocol 2."""
+        try:
+            # Get or create market data cache for this symbol
+            existing_data = self.symbol_data_cache.get(symbol, None)
+
+            # Update market data based on message type
+            if msg.idx == BinanceTypes.DEPTH_STREAM:
+                # Order book update
+                depth_msg: DepthStreamMessage = msg.obj
+                market_data = Binance_CapitalComMKTDataLive.from_binance_depth(
+                    symbol, depth_msg.data
+                )
+                # If we have existing trade data, merge it
+                if existing_data and existing_data.last > 0:
+                    market_data.last = existing_data.last
+                    market_data.last_size = existing_data.last_size
+
+            elif msg.idx == BinanceTypes.AGG_TRADE:
+                # Aggregate trade update
+                trade_msg: AggTradeMessage = msg.obj
+                market_data = Binance_CapitalComMKTDataLive.from_binance_trade(
+                    symbol, trade_msg.data, existing_data
+                )
+            else:
+                # Other message types (kline, etc.) - skip for now
                 return
 
-        self._checkpoint(f"MKTDispatcher.add_symbol({symbol})", "complete")
+            # Update cache
+            self.symbol_data_cache[symbol] = market_data
 
-    def _remove_symbol(self, symbol: str, client: socket.socket):
-        """Remove a symbol subscription for a client."""
-        with self.client_lock:
-            if symbol in self.symbol_to_clients:
-                if client in self.symbol_to_clients[symbol]:
-                    self.symbol_to_clients[symbol].remove(client)
-
-                    # If no more clients, unsubscribe from WebSocket
-                    if not self.symbol_to_clients[symbol]:
-                        self.ws.unsubscribe_ticker(symbol)
-                        del self.symbol_to_clients[symbol]
-                        logger.info(f"Unsubscribed from {symbol} (no more clients)")
-
-    def _broadcast_market_data(self, symbol: str, market_data: BinanceMarketData):
-        """Broadcast market data to all subscribed clients using Protocol 2."""
-        with self.client_lock:
+            # Get clients subscribed to this symbol
             clients = self.symbol_to_clients.get(symbol, [])
-
             if not clients:
                 return
 
-            # Convert to Protocol 2 format
-            capital_data = market_data.to_capital_com_format()
-            packet = transmit_mkt_data_with_protocol_2(capital_data)
+            # Transmit to all clients using Protocol 2
+            packet = transmit_mkt_data_with_protocol_2(market_data)
 
-            if self.configs['Print data packets']:
-                logger.info(f"Broadcasting {symbol}: {market_data}")
+            if self._configs['Print data packets']:
+                print(f"[TX {symbol}] {packet}")
 
-            # Live stream display
-            if self.configs['Show live stream'] and symbol == self.live_stream_symbol:
-                print(f"\r[LIVE] {symbol}: Bid={market_data.bid:.8f} Ask={market_data.ask:.8f} Last={market_data.last:.8f}", end='', flush=True)
-
-            # Send to all clients
-            for client in clients[:]:  # Copy list to avoid modification during iteration
+            for client in clients:
                 try:
                     client.sendall(packet)
-                except (BrokenPipeError, ConnectionResetError, OSError) as e:
-                    logger.warning(f"Client disconnected during broadcast: {e}")
-                    self._cleanup_client(client)
+                except (OSError, ConnectionResetError) as e:
+                    # Client disconnected, will be cleaned up by _check_clients_live
+                    if self._configs['Show subscription changes']:
+                        print(f"[CLIENT] Error sending to client: {e}")
 
-    def _cleanup_client(self, client: socket.socket):
-        """Remove a client and clean up its subscriptions."""
-        with self.client_lock:
-            if client in self.clients:
-                self.clients.remove(client)
+        except Exception as e:
+            print(f"[ERROR] Error in Binance callback for {symbol}: {e}")
+            import traceback
+            traceback.print_exc()
 
-            # Remove from all symbol subscriptions
-            for symbol in list(self.symbol_to_clients.keys()):
-                if client in self.symbol_to_clients[symbol]:
-                    self.symbol_to_clients[symbol].remove(client)
+    @runAsThread
+    def _listen_to_client(self, client: socket.socket):
+        """Listen to client commands for subscribing to symbols."""
+        while True:
+            try:
+                data = client.recv(9999).decode()
+                if not data:
+                    break
 
-                    # Unsubscribe if no more clients
-                    if not self.symbol_to_clients[symbol]:
-                        self.ws.unsubscribe_ticker(symbol)
-                        del self.symbol_to_clients[symbol]
+                # Parse command: "add=BTCUSDT" or "subscribe=ETHUSDT"
+                if 'add' in data or 'subscribe' in data:
+                    parts = data.split('=')
+                    if len(parts) == 2:
+                        symbol = parts[1].strip().upper()
+                        if self._configs['Show subscription changes']:
+                            print(f"[CLIENT] Subscribing to {symbol}")
+                        self._subscribe_to_symbol(symbol, client)
+                    else:
+                        print(f"[CLIENT] Invalid command format: {data}")
 
-        try:
-            client.close()
-        except:
-            pass
+            except Exception as e:
+                print(f"[CLIENT] Error receiving data from client: {e}")
+                break
+
+        # Client disconnected
+        client.close()
+
+    @runAsThread
+    def _add_clients(self):
+        """Accept new client connections."""
+        while True:
+            self.sock.listen()
+            client, addr = self.sock.accept()
+            print(f"[CLIENT] New connection from {addr}")
+            self.clients.append(client)
+            self._listen_to_client(client)
 
     @runAsThread
     def _check_clients_live(self):
-        """Periodically check if clients are still connected."""
+        """Periodically check if clients are still connected and clean up disconnected ones."""
         while True:
             time.sleep(5)
+            if not self._configs['Auto-unsubscribe disconnected clients']:
+                continue
 
-            with self.client_lock:
-                for client in self.clients[:]:
-                    try:
-                        client.sendall(b'$')  # Ping
-                    except (BrokenPipeError, ConnectionResetError, OSError):
-                        logger.info("Detected dead client, cleaning up")
-                        self._cleanup_client(client)
+            try:
+                with self._thread_lock:
+                    # Check each symbol's client list
+                    symbols_to_remove = []
+
+                    for symbol, clients in self.symbol_to_clients.items():
+                        clients_to_remove = []
+
+                        for client in clients:
+                            try:
+                                # Send ping to check if client is alive
+                                client.sendall(b'$')
+                            except (OSError, ConnectionResetError):
+                                # Client disconnected
+                                clients_to_remove.append(client)
+                                if self._configs['Show subscription changes']:
+                                    print(f"[CLIENT] Disconnected client removed from {symbol}")
+
+                        # Remove disconnected clients
+                        for client in clients_to_remove:
+                            try:
+                                clients.remove(client)
+                            except ValueError:
+                                pass
+
+                        # If no clients left, mark symbol for unsubscription
+                        if not clients:
+                            symbols_to_remove.append(symbol)
+
+                    # Clean up symbols with no clients
+                    for symbol in symbols_to_remove:
+                        del self.symbol_to_clients[symbol]
+                        self.ws.unsubscribe(symbol)
+                        if self._configs['Show subscription changes']:
+                            print(f"[UNSUBSCRIBE] No clients for {symbol}, cleaned up")
+
+            except Exception as e:
+                print(f"[ERROR] Error in _check_clients_live: {e}")
+                import traceback
+                traceback.print_exc()
 
     def interactive_mode(self):
-        """Interactive mode for debugging and monitoring."""
-        print("\nBinance MKTDispatcher Interactive Mode")
-        print("=" * 50)
+        """Start interactive mode for managing the dispatcher."""
+        functions = {
+            'show_subscriptions': ('Show all active symbol subscriptions', self.show_subscriptions),
+            'show_clients': ('Show all connected clients', self.show_clients),
+            'modify_configs': ('Modify dispatcher configurations', self._modify_configs_interactive),
+        }
+        self._interactive_ui(functions)
 
-        # Create a fake socket for manual subscriptions
-        # The FakeSocket receives Protocol 2 bytes from _broadcast_market_data
-        # We don't need to do anything with it - just keep the subscription alive
-        from argus.ib._ib_utils import FakeSocket
+    def show_subscriptions(self):
+        """Display all active symbol subscriptions."""
+        print("\n=== Active Subscriptions ===")
+        if not self.symbol_to_clients:
+            print("No active subscriptions")
+        else:
+            for symbol, clients in self.symbol_to_clients.items():
+                print(f"{symbol}: {len(clients)} client(s)")
+        print()
 
-        def manual_callback(data):
-            # FakeSocket receives Protocol 2 bytes - just ignore it
-            # The data has already been broadcast by _broadcast_market_data
-            pass
-
-        manual_socket = FakeSocket(callback=manual_callback)
-        manual_socket.idx = 'manual'
-
-        while True:
-            if self.configs['Show live stream']:
-                print()  # New line after live stream display
-
-            print("\nOptions:")
-            print("1. Show subscribed symbols")
-            print("2. Show connected clients")
-            print("3. Toggle packet printing")
-            print("4. Add symbol manually")
-            print("5. Remove symbol manually")
-            print("6. Toggle live stream display")
-            print("0. Exit")
-
-            choice = input("\nSelect option: ").strip()
-
-            if choice == '1':
-                symbols = self.ws.get_subscribed_symbols()
-                print(f"\nSubscribed symbols ({len(symbols)}):")
-                for symbol in symbols:
-                    num_clients = len(self.symbol_to_clients.get(symbol, []))
-                    print(f"  - {symbol} ({num_clients} clients)")
-
-            elif choice == '2':
-                print(f"\nConnected clients: {len(self.clients)}")
-
-            elif choice == '3':
-                self.configs['Print data packets'] = not self.configs['Print data packets']
-                print(f"Packet printing: {self.configs['Print data packets']}")
-
-            elif choice == '4':
-                symbol = input("Enter symbol to add (e.g., BTCUSDT): ").strip().upper()
-                if symbol:
-                    try:
-                        self._add_symbol(symbol, manual_socket)
-                        print(f"Successfully subscribed to {symbol}")
-                    except Exception as e:
-                        print(f"Error subscribing to {symbol}: {e}")
-
-            elif choice == '5':
-                symbol = input("Enter symbol to remove (e.g., BTCUSDT): ").strip().upper()
-                if symbol:
-                    try:
-                        self._remove_symbol(symbol, manual_socket)
-                        print(f"Successfully unsubscribed from {symbol}")
-                    except Exception as e:
-                        print(f"Error unsubscribing from {symbol}: {e}")
-
-            elif choice == '6':
-                if self.configs['Show live stream']:
-                    # Turn off
-                    self.configs['Show live stream'] = False
-                    self.live_stream_symbol = None
-                    print("Live stream display: OFF")
-                else:
-                    # Turn on - ask for symbol
-                    symbol = input("Enter symbol to display (e.g., BTCUSDT): ").strip().upper()
-                    if symbol:
-                        # Subscribe if not already subscribed
-                        if symbol not in self.symbol_to_clients:
-                            try:
-                                self._add_symbol(symbol, manual_socket)
-                            except Exception as e:
-                                print(f"Error subscribing to {symbol}: {e}")
-                                continue
-
-                        self.live_stream_symbol = symbol
-                        self.configs['Show live stream'] = True
-                        print(f"Live stream display: ON for {symbol}")
-                        print("(Press Enter to stop live stream)")
-
-            elif choice == '0':
-                break
+    def show_clients(self):
+        """Display all connected clients."""
+        print(f"\n=== Connected Clients ({len(self.clients)}) ===")
+        for i, client in enumerate(self.clients, 1):
+            try:
+                addr = client.getpeername()
+                print(f"{i}. {addr}")
+            except (OSError, socket.error):
+                print(f"{i}. <disconnected>")
+        print()
 
 
 if __name__ == '__main__':
-    # Example usage
-    from dotenv import load_dotenv
-    load_dotenv()
-    api_key = os.getenv('BINANCE_API_KEY')
-    api_secret = os.getenv('BINANCE_API_SECRET')
+    # noinspection all
+    def highest_bid_ask_price_callback(msg: AbstractBinanceType):
+        if msg.idx == BinanceTypes.DEPTH_STREAM:
+            depth: DepthStreamMessage = msg.obj
+            update: DepthUpdate = depth.data
+            asks = update.a
+            bids = update.b
+            try:
+                top_ask = float(asks[0][0])
+            except IndexError:
+                top_ask = 0
+            try:
+                top_bid = float(bids[0][0])
+            except IndexError:
+                top_bid = 0
+            print('[{}] Top Bid: {:.2f}, Top Ask: {:.2f}'.format(update.s, top_bid, top_ask))
 
-    dispatcher = MKTDispatcher(
-        host='localhost',
-        port=9974,
-        api_key=api_key,
-        api_secret=api_secret,
-        testnet=False
-    )
 
-    dispatcher.start()
-    dispatcher.interactive_mode()
+    binance_wss = BinanceWss()
+    binance_wss.subscribe('BTCUSDT', lambda msg: highest_bid_ask_price_callback(msg))
+    binance_wss.subscribe('ETHUSDT', lambda msg: highest_bid_ask_price_callback(msg))
+    input('Press Enter to exit...\n')
