@@ -16,6 +16,7 @@ requests = "~=2.32.4"
 matplotlib = "~=3.10.3"
 utils3 = {git = "https://github.com/the-sal/utils3"}
 termcolor = "*"
+python-binance = "==1.0.32"
 
 [dev-packages]
 
