@@ -288,7 +288,7 @@ class PolyDispatcher(Introspective):
         return target_market.to_dict()
 
     # noinspection PyMethodMayBeStatic
-    @assertTypes((str,), auto_convert=True, class_method=True)
+    @assertTypes([str], auto_convert=True, class_method=True)
     def _client_transpose_df(self, base64_csv):
         return 'Not implemented yet'
 
