@@ -24,12 +24,12 @@ import requests
 import threading
 from argus import throw_fuss
 from utils3 import runAsThread
+from argus.capital import DomainCache
 from websocket import WebSocketApp
 from py_clob_client.client import ClobClient
-from argus.polymarket import fCache, DomainCache
 from argus.polymarket_direct._types import PolymarketEvent
 
-dCache = DomainCache(domain='polymarket.direct', cache=fCache)
+dCache = DomainCache('polymarket_direct')
 
 #############################################
 # ENHANCED ENDPOINTS
