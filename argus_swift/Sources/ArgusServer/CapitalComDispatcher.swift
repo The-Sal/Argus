@@ -616,9 +616,22 @@ class CapitalComMKTDispatcher {
 
         threadLock.unlock()
 
-        // Transmit to all clients
+        // Convert market data to JSON format
+        let marketDataDict: [String: Any] = [
+            "symbol": marketData.symbol,
+            "bid": marketData.bid,
+            "bid_size": marketData.bidSize,
+            "ask": marketData.ask,
+            "ask_size": marketData.askSize,
+            "last": marketData.last,
+            "last_size": marketData.lastSize,
+            "timestamp": marketData.timestamp
+        ]
+
+        // Send as JSON packet to all clients
         do {
-            let packet = try transmitMarketDataWithProtocol2(marketData)
+            let jsonData = try JSONSerialization.data(withJSONObject: marketDataDict)
+            let packet = try encodePacket(jsonData)
 
             for client in clients {
                 do {
