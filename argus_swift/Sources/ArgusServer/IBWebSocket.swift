@@ -302,4 +302,11 @@ class IBWss {
     var privateContracts: [Int] {
         return Array(protectedAssets)
     }
+
+    /// Send a raw WebSocket message
+    func sendMessage(_ message: String, completion: ((Error?) -> Void)? = nil) {
+        ws?.send(.string(message)) { error in
+            completion?(error)
+        }
+    }
 }

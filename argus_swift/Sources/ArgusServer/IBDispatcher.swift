@@ -368,7 +368,7 @@ class IBMKTDispatcher {
                     print("Protected assets added from AccountProvider")
 
                     // Subscribe to portfolio updates
-                    ws.ws?.send(.string("upl+{}")) { _ in }
+                    ws.sendMessage("upl+{}")
                     Thread.sleep(forTimeInterval: 1)
                 }
             }
