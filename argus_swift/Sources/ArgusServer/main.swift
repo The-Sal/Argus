@@ -1,16 +1,22 @@
 import Foundation
 
 /// Argus Server - Swift Edition
-/// Entry point for the Binance market data dispatcher
+/// Entry point for market data dispatchers
 /// Transcompiled from runtime.py
 ///
 /// Usage:
-///   argus_server binance [--host HOST] [--port PORT] [--testnet]
+///   argus_server <target> [--host HOST] [--port PORT] [OPTIONS]
+///
+/// Targets:
+///   binance        Binance market data dispatcher
+///   ib             Interactive Brokers market data dispatcher
+///   ib-forecast    Interactive Brokers forecast contracts dispatcher
 ///
 /// Examples:
 ///   argus_server binance
 ///   argus_server binance --testnet
-///   argus_server binance --host 0.0.0.0 --port 9974
+///   argus_server ib
+///   argus_server ib-forecast
 
 // MARK: - Command Line Argument Parsing
 
@@ -19,6 +25,8 @@ struct Arguments {
     var host: String?
     var port: Int?
     var testnet: Bool = false
+    var cookie: String?
+    var envFile: String?
     var showHelp: Bool = false
 }
 
@@ -30,8 +38,8 @@ func parseArguments(_ args: [String]) -> Arguments {
         let arg = args[i]
 
         switch arg {
-        case "binance":
-            result.target = "binance"
+        case "binance", "ib", "ib-forecast":
+            result.target = arg
 
         case "--host":
             if i + 1 < args.count {
@@ -42,6 +50,18 @@ func parseArguments(_ args: [String]) -> Arguments {
         case "--port":
             if i + 1 < args.count {
                 result.port = Int(args[i + 1])
+                i += 1
+            }
+
+        case "--cookie":
+            if i + 1 < args.count {
+                result.cookie = args[i + 1]
+                i += 1
+            }
+
+        case "--env-file":
+            if i + 1 < args.count {
+                result.envFile = args[i + 1]
                 i += 1
             }
 
@@ -65,35 +85,55 @@ func parseArguments(_ args: [String]) -> Arguments {
 
 func printHelp() {
     print("""
-    Argus Server - Binance Market Data Dispatcher (Swift Edition)
+    Argus Server - Market Data Dispatchers (Swift Edition)
 
     Usage:
-      argus_server binance [OPTIONS]
+      argus_server <target> [OPTIONS]
+
+    Targets:
+      binance        Binance market data dispatcher
+      ib             Interactive Brokers market data dispatcher
+      ib-forecast    Interactive Brokers forecast contracts dispatcher
 
     Options:
-      --host HOST      Listening host (default: localhost)
-      --port PORT      Listening port (default: 9974)
-      --testnet        Use Binance testnet instead of production
-      --help, -h       Show this help message
+      --host HOST        Listening host (default: localhost)
+      --port PORT        Listening port (default: varies by target)
+      --cookie COOKIE    IB cookie for authentication (for ib/ib-forecast)
+      --env-file PATH    Path to .env file (default: .env)
+      --testnet          Use testnet (binance only)
+      --help, -h         Show this help message
 
     Examples:
       argus_server binance
       argus_server binance --testnet
-      argus_server binance --host 0.0.0.0 --port 9974
+      argus_server ib --cookie "your-ib-cookie"
+      argus_server ib-forecast
 
-    Environment Variables:
+    Environment Variables (.env file or system):
       BINANCE_API_KEY     Binance API key (optional for public data)
       BINANCE_API_SECRET  Binance API secret (optional for public data)
+      IB_COOKIE           Interactive Brokers authentication cookie
+
+    .env File Format:
+      IB_COOKIE=your-cookie-value
+      BINANCE_API_KEY=your-key
+      # Comments are supported
+
+    Default Ports:
+      binance: 9974
+      ib: 9972
+      ib-forecast: 9972
 
     Note:
-      - DO NOT pass API credentials via command line arguments
+      - DO NOT pass sensitive credentials via command line arguments
       - Use environment variables or .env file instead
       - The dispatcher provides an interactive mode for monitoring
     """)
 }
 
-func getEnvironmentVariable(_ name: String) -> String? {
-    return ProcessInfo.processInfo.environment[name]
+func getEnvironmentVariable(_ name: String, envVars: [String: String] = [:]) -> String? {
+    // Priority: .env file vars > system environment
+    return envVars[name] ?? ProcessInfo.processInfo.environment[name]
 }
 
 // MARK: - Main Entry Point
@@ -111,19 +151,39 @@ func main() {
         exit(0)
     }
 
-    guard args.target == "binance" else {
+    // Load .env file if specified or use default
+    let envFilePath = args.envFile ?? ".env"
+    let envVars = EnvLoader.load(path: envFilePath)
+    if !envVars.isEmpty {
+        print("Loaded \(envVars.count) variables from \(envFilePath)")
+    }
+
+    // Set default host
+    let host = args.host ?? "localhost"
+
+    switch args.target {
+    case "binance":
+        runBinanceDispatcher(args: args, host: host, envVars: envVars)
+
+    case "ib":
+        runIBDispatcher(args: args, host: host, envVars: envVars)
+
+    case "ib-forecast":
+        runIBForecastDispatcher(args: args, host: host, envVars: envVars)
+
+    default:
         print("Error: Unknown target '\(args.target)'")
-        print("Currently supported: binance")
+        print("Currently supported: binance, ib, ib-forecast")
         print("Use --help for more information")
         exit(1)
     }
 
-    // Get API credentials from environment
-    let apiKey = getEnvironmentVariable("BINANCE_API_KEY")
-    let apiSecret = getEnvironmentVariable("BINANCE_API_SECRET")
+    print("\nExiting Argus Server")
+}
 
-    // Set default host and port if not provided
-    let host = args.host ?? "localhost"
+func runBinanceDispatcher(args: Arguments, host: String, envVars: [String: String]) {
+    let apiKey = getEnvironmentVariable("BINANCE_API_KEY", envVars: envVars)
+    let apiSecret = getEnvironmentVariable("BINANCE_API_SECRET", envVars: envVars)
     let port = args.port ?? 9974
 
     print("Starting Binance dispatcher")
@@ -131,8 +191,6 @@ func main() {
     print("Port: \(port)")
     print()
 
-    // Note: The main branch Binance implementation doesn't use API keys or testnet
-    // It connects to the production combined stream endpoint
     if args.testnet {
         print("Warning: Testnet not supported in main branch implementation")
         print("Using production endpoint: wss://stream.binance.com/stream")
@@ -142,13 +200,48 @@ func main() {
         print("Note: API keys not needed for public market data streams")
     }
 
-    // Create dispatcher
     let dispatcher = BinanceMKTDispatcher(host: host, port: port)
-
-    // Enter interactive mode
     dispatcher.interactiveMode()
+}
 
-    print("\nExiting Argus Server")
+func runIBDispatcher(args: Arguments, host: String, envVars: [String: String]) {
+    let cookie = args.cookie ?? getEnvironmentVariable("IB_COOKIE", envVars: envVars)
+    guard let ibCookie = cookie else {
+        print("Error: IB_COOKIE environment variable or --cookie argument required")
+        print("Please set your Interactive Brokers authentication cookie")
+        exit(1)
+    }
+
+    let port = Int32(args.port ?? 9972)
+
+    print("Starting Interactive Brokers dispatcher")
+    print("Host: \(host)")
+    print("Port: \(port)")
+    print()
+
+    let dispatcher = IBMKTDispatcher(cookie: ibCookie, host: host, port: port)
+    dispatcher.selectAccountInteractive()
+    dispatcher.interactiveMode()
+}
+
+func runIBForecastDispatcher(args: Arguments, host: String, envVars: [String: String]) {
+    let cookie = args.cookie ?? getEnvironmentVariable("IB_COOKIE", envVars: envVars)
+    guard let ibCookie = cookie else {
+        print("Error: IB_COOKIE environment variable or --cookie argument required")
+        print("Please set your Interactive Brokers authentication cookie")
+        exit(1)
+    }
+
+    let port = Int32(args.port ?? 9972)
+
+    print("Starting Interactive Brokers Forecast dispatcher")
+    print("Host: \(host)")
+    print("Port: \(port)")
+    print()
+
+    let dispatcher = FXCDispatcher(cookie: ibCookie, host: host, port: port)
+    dispatcher.selectAccountInteractive()
+    dispatcher.interactiveMode()
 }
 
 func getSystemInfo() -> String {
