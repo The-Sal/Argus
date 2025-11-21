@@ -323,26 +323,200 @@ class CapitalComMKTDispatcher {
             }
 
             let data = Data(buffer.prefix(bytesRead))
-            guard let message = String(data: data, encoding: .utf8) else {
-                continue
-            }
-
-            handleClientMessage(message, from: client)
+            handleClientData(data, from: client)
         }
     }
 
-    private func handleClientMessage(_ message: String, from client: ArgusSocket) {
-        let lines = message.split(separator: "\n").map(String.init)
+    private func handleClientData(_ data: Data, from client: ArgusSocket) {
+        do {
+            // Decode packets (may be multiple)
+            let packets = try decodeMultiplePackets(data)
 
-        for line in lines {
-            if line.hasPrefix("add=") {
-                let epic = String(line.dropFirst(4)).trimmingCharacters(in: .whitespaces)
-                subscribeToEpic(epic: epic, client: client)
-            } else if line.hasPrefix("remove=") {
-                let epic = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
-                unsubscribeFromEpic(epic: epic, client: client)
+            for packetData in packets {
+                // Parse JSON request
+                guard let json = try? JSONSerialization.jsonObject(with: packetData) as? [String: Any],
+                      let action = json["action"] as? String else {
+                    sendErrorResponse(to: client, message: "Invalid request format")
+                    continue
+                }
+
+                handleClientRequest(action: action, request: json, client: client)
             }
+        } catch {
+            print("Error decoding packet: \(error)")
+            sendErrorResponse(to: client, message: "Invalid packet format")
         }
+    }
+
+    private func handleClientRequest(action: String, request: [String: Any], client: ArgusSocket) {
+        switch action {
+        case "resolve_symbol":
+            guard let symbol = request["symbol"] as? String else {
+                sendErrorResponse(to: client, message: "Missing 'symbol' parameter")
+                return
+            }
+            resolveSymbol(symbol: symbol, client: client)
+
+        case "stream_epic":
+            guard let epic = request["epic"] as? String else {
+                sendErrorResponse(to: client, message: "Missing 'epic' parameter")
+                return
+            }
+            subscribeToEpic(epic: epic, client: client)
+            sendSuccessResponse(to: client, message: "Subscribed to \(epic)")
+
+        case "resolve/stream":
+            guard let symbol = request["symbol"] as? String else {
+                sendErrorResponse(to: client, message: "Missing 'symbol' parameter")
+                return
+            }
+            resolveAndStreamSymbol(symbol: symbol, client: client)
+
+        case "unsubscribe":
+            guard let epic = request["epic"] as? String else {
+                sendErrorResponse(to: client, message: "Missing 'epic' parameter")
+                return
+            }
+            unsubscribeFromEpic(epic: epic, client: client)
+            sendSuccessResponse(to: client, message: "Unsubscribed from \(epic)")
+
+        default:
+            sendErrorResponse(to: client, message: "Unknown action: \(action)")
+        }
+    }
+
+    private func sendResponse(to client: ArgusSocket, response: [String: Any]) {
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: response)
+            let packet = try encodePacket(jsonData)
+            try client.sendall(packet)
+        } catch {
+            print("Failed to send response: \(error)")
+        }
+    }
+
+    private func sendSuccessResponse(to client: ArgusSocket, message: String, data: [String: Any]? = nil) {
+        var response: [String: Any] = [
+            "status": "success",
+            "message": message
+        ]
+        if let data = data {
+            response["data"] = data
+        }
+        sendResponse(to: client, response: response)
+    }
+
+    private func sendErrorResponse(to client: ArgusSocket, message: String) {
+        let response: [String: Any] = [
+            "status": "error",
+            "message": message
+        ]
+        sendResponse(to: client, response: response)
+    }
+
+    // MARK: - Symbol Resolution
+
+    private func resolveSymbol(symbol: String, client: ArgusSocket) {
+        guard let tokens = authTokens else {
+            sendErrorResponse(to: client, message: "Not authenticated")
+            return
+        }
+
+        let searchURL = "\(environment.baseURL)/markets?searchTerm=\(symbol)"
+
+        guard let url = URL(string: searchURL) else {
+            sendErrorResponse(to: client, message: "Invalid URL")
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(tokens.cst, forHTTPHeaderField: "CST")
+        request.setValue(tokens.xSecurityToken, forHTTPHeaderField: "X-SECURITY-TOKEN")
+
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.sendErrorResponse(to: client, message: "Search failed: \(error.localizedDescription)")
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200,
+                  let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let markets = json["markets"] as? [[String: Any]],
+                  let firstMarket = markets.first else {
+                self.sendErrorResponse(to: client, message: "Symbol not found")
+                return
+            }
+
+            // Extract instrument data
+            let instrumentData: [String: Any] = [
+                "epic": firstMarket["epic"] as? String ?? "",
+                "instrumentName": firstMarket["instrumentName"] as? String ?? "",
+                "marketStatus": firstMarket["marketStatus"] as? String ?? ""
+            ]
+
+            self.sendSuccessResponse(to: client, message: "Symbol resolved", data: ["instrument": instrumentData])
+        }
+
+        task.resume()
+    }
+
+    private func resolveAndStreamSymbol(symbol: String, client: ArgusSocket) {
+        guard let tokens = authTokens else {
+            sendErrorResponse(to: client, message: "Not authenticated")
+            return
+        }
+
+        let searchURL = "\(environment.baseURL)/markets?searchTerm=\(symbol)"
+
+        guard let url = URL(string: searchURL) else {
+            sendErrorResponse(to: client, message: "Invalid URL")
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue(tokens.cst, forHTTPHeaderField: "CST")
+        request.setValue(tokens.xSecurityToken, forHTTPHeaderField: "X-SECURITY-TOKEN")
+
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard let self = self else { return }
+
+            if let error = error {
+                self.sendErrorResponse(to: client, message: "Search failed: \(error.localizedDescription)")
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse,
+                  httpResponse.statusCode == 200,
+                  let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let markets = json["markets"] as? [[String: Any]],
+                  let firstMarket = markets.first,
+                  let epic = firstMarket["epic"] as? String else {
+                self.sendErrorResponse(to: client, message: "Symbol not found")
+                return
+            }
+
+            // Extract instrument data
+            let instrumentData: [String: Any] = [
+                "epic": epic,
+                "instrumentName": firstMarket["instrumentName"] as? String ?? "",
+                "marketStatus": firstMarket["marketStatus"] as? String ?? ""
+            ]
+
+            // Subscribe to the epic
+            self.subscribeToEpic(epic: epic, client: client)
+
+            // Send success response with instrument data
+            self.sendSuccessResponse(to: client, message: "Subscribed to \(epic)", data: ["instrument": instrumentData])
+        }
+
+        task.resume()
     }
 
     // MARK: - Subscription Management

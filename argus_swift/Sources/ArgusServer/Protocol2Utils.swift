@@ -80,6 +80,57 @@ func decodePacket(_ packet: Data) throws -> Data {
     return packet[dataStart..<dataEnd]
 }
 
+/// Decode multiple packets from a byte stream
+/// Returns array of decoded packet data
+func decodeMultiplePackets(_ data: Data) throws -> [Data] {
+    var packets: [Data] = []
+    var position = 0
+
+    while position < data.count {
+        guard position + 6 <= data.count else {
+            throw Protocol2Error.packetTooShort
+        }
+
+        let remaining = data[position...]
+
+        // Check start marker
+        guard remaining.first == 0x7E else {  // '~'
+            throw Protocol2Error.missingStartMarker
+        }
+
+        // Parse length
+        let lengthStart = position + 1
+        let lengthEnd = lengthStart + 4
+        let lengthBytes = data[lengthStart..<lengthEnd]
+
+        guard let lengthStr = String(data: lengthBytes, encoding: .ascii),
+              let length = Int(lengthStr) else {
+            throw Protocol2Error.invalidLength
+        }
+
+        // Check pipe
+        guard data[lengthEnd] == 0x7C else {  // '|'
+            throw Protocol2Error.missingPipeSeparator
+        }
+
+        // Extract packet data
+        let dataStart = lengthEnd + 1
+        let dataEnd = dataStart + length
+
+        guard dataEnd <= data.count else {
+            throw Protocol2Error.dataLengthMismatch
+        }
+
+        let packetData = data[dataStart..<dataEnd]
+        packets.append(packetData)
+
+        // Move to next packet
+        position = dataEnd
+    }
+
+    return packets
+}
+
 /// Transmit market data with Protocol 2 format
 /// - Parameter marketData: Market data object conforming to MarketDataTransferable
 /// - Returns: Encoded packet as Data
