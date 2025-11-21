@@ -111,12 +111,13 @@ func printHelp() {
       argus_server ib-forecast
 
     Environment Variables (.env file or system):
-      BINANCE_API_KEY           Binance API key (optional for public data)
-      BINANCE_API_SECRET        Binance API secret (optional for public data)
-      IB_COOKIE                 Interactive Brokers authentication cookie
-      CAPITAL_DOTCOM_API_KEY    Capital.com API key
-      CAPITAL_DOTCOM_IDENTIFIER Capital.com identifier/username
-      CAPITAL_DOT_CUSTOM_PW     Capital.com password
+      BINANCE_API_KEY              Binance API key (optional for public data)
+      BINANCE_API_SECRET           Binance API secret (optional for public data)
+      IB_COOKIE                    Interactive Brokers authentication cookie
+      CAPITAL_DOTCOM_API_KEY       Capital.com API key
+      CAPITAL_DOTCOM_IDENTIFIER    Capital.com identifier/username
+      CAPITAL_DOT_CUSTOM_PW        Capital.com password
+      CAPITAL_DOTCOM_ENVIRONMENT   Capital.com environment (live or demo, default: live)
 
     .env File Format:
       IB_COOKIE=your-cookie-value
@@ -275,6 +276,7 @@ func runCapitalComDispatcher(args: Arguments, host: String, envVars: [String: St
     let apiKey = getEnvironmentVariable("CAPITAL_DOTCOM_API_KEY", envVars: envVars)
     let identifier = getEnvironmentVariable("CAPITAL_DOTCOM_IDENTIFIER", envVars: envVars)
     let password = getEnvironmentVariable("CAPITAL_DOT_CUSTOM_PW", envVars: envVars)
+    let envString = getEnvironmentVariable("CAPITAL_DOTCOM_ENVIRONMENT", envVars: envVars)
 
     guard let capitalApiKey = apiKey,
           let capitalIdentifier = identifier,
@@ -285,8 +287,28 @@ func runCapitalComDispatcher(args: Arguments, host: String, envVars: [String: St
         print("  CAPITAL_DOTCOM_IDENTIFIER")
         print("  CAPITAL_DOT_CUSTOM_PW")
         print()
+        print("Optional environment variables:")
+        print("  CAPITAL_DOTCOM_ENVIRONMENT (default: live, options: live, demo)")
+        print()
         print("Set these in your .env file or system environment")
         exit(1)
+    }
+
+    // Parse environment (default to LIVE to match Python runtime.py behavior)
+    let environment: Environment
+    if let envString = envString {
+        switch envString.lowercased() {
+        case "demo":
+            environment = .demo
+        case "live":
+            environment = .live
+        default:
+            print("Warning: Unknown environment '\(envString)', defaulting to LIVE")
+            environment = .live
+        }
+    } else {
+        // Default to LIVE (matching Python runtime.py)
+        environment = .live
     }
 
     let port = Int32(args.port ?? 9984)
@@ -294,7 +316,7 @@ func runCapitalComDispatcher(args: Arguments, host: String, envVars: [String: St
     print("Starting Capital.com dispatcher")
     print("Host: \(host)")
     print("Port: \(port)")
-    print("Environment: DEMO")
+    print("Environment: \(environment.rawValue.uppercased())")
     print()
 
     let dispatcher = CapitalComMKTDispatcher(
@@ -303,7 +325,7 @@ func runCapitalComDispatcher(args: Arguments, host: String, envVars: [String: St
         apiKey: capitalApiKey,
         identifier: capitalIdentifier,
         password: capitalPassword,
-        environment: .demo
+        environment: environment
     )
 
     dispatcher.interactiveMode()
