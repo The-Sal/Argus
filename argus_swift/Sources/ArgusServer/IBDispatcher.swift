@@ -20,6 +20,7 @@ class IBMKTDispatcher {
     private var configs: [String: Any] = [:]
     private let host: String
     private let port: Int32
+    private var accountProvider: AccountProvider?
 
     init(cookie: String, host: String = "localhost", port: Int32 = 9972) {
         self.host = host
@@ -344,12 +345,32 @@ class IBMKTDispatcher {
                 try ws.networker.setTradingAccountId(selectedAccount.accountId)
                 print("Selected account: \(selectedAccount.accountId)")
 
+                // Initialize AccountProvider (for Protocol 2 mode)
+                print("Initializing AccountProvider...")
+                accountProvider = try AccountProvider(ibWss: ws, ibNetworker: ws.networker)
+
                 // Unblock new market data
                 threadLock.lock()
                 configs["Block New MKT Data"] = false
                 threadLock.unlock()
 
                 print("New market data subscriptions are now unblocked.")
+
+                // Add AccountProvider's required assets as protected subscriptions
+                if let provider = accountProvider {
+                    let requiredAssets = provider.requiredAssets()
+                    print("Adding \(requiredAssets.count) protected assets from AccountProvider...")
+
+                    for conid in requiredAssets {
+                        quickAdd(symbol: nil, conid: conid, client: provider.socket)
+                    }
+
+                    print("Protected assets added from AccountProvider")
+
+                    // Subscribe to portfolio updates
+                    ws.ws?.send(.string("upl+{}")) { _ in }
+                    Thread.sleep(forTimeInterval: 1)
+                }
             }
         } catch {
             print("Failed to select account: \(error)")
