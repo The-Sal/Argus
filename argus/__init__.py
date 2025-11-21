@@ -10,5 +10,6 @@ The following sources are available through Argus:
 from argus.ib import *
 from argus.capital import *
 from argus.nasdaq import NASDAQDataDownloader
+from argus import polymarket_direct
 from argus.tv import ChartSession, QuoteSession, multisymbol, MarketData
 

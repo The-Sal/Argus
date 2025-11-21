@@ -24,12 +24,12 @@ import requests
 import threading
 from argus import throw_fuss
 from utils3 import runAsThread
+from argus.capital import DomainCache
 from websocket import WebSocketApp
-from py_clob_client.client import ClobClient
-from argus.polymarket import fCache, DomainCache
+# from py_clob_client.client import ClobClient
 from argus.polymarket_direct._types import PolymarketEvent
 
-dCache = DomainCache(domain='polymarket.direct', cache=fCache)
+dCache = DomainCache('polymarket_direct')
 
 #############################################
 # ENHANCED ENDPOINTS
@@ -39,11 +39,15 @@ endpoints = {
 }
 
 
-class EnhancedPM(ClobClient):
+class EnhancedPM:
     """
-    An enhanced version of the ClobClient from py_clob_client with additional functionality.
-    This class adds methods to fetch market data, user positions, and other critical information
-    that is not available in the base ClobClient.
+    A direct Polymarket integration that aims to fill the gaps left by the official py_clob_client.
+    Note:
+        - Pre v0.0.7 this class inherited from ClobClient, however, we are yet to actually use any of its functionality,
+        so we have removed the inheritance for clarity. We are also dropping it as a dependency in from 0.0.7 onwards.
+        - The <0.0.7 versions can still use this class as a drop-in replacement because we are not changing the
+        constructor signature or any of the public methods. These parameters are kept for future compatibility
+        but will not have any effect.
     """
 
     def __init__(self, private_key, proxy_funder,
@@ -51,15 +55,18 @@ class EnhancedPM(ClobClient):
                  chain_id=137,
                  order_book_depth=1, dry_mode=False):
 
-        if not dry_mode:
-            super().__init__(
-                host,
-                key=private_key,
-                chain_id=chain_id,
-                signature_type=1,
-                funder=proxy_funder,
-            )
-            self.set_api_creds(self.create_or_derive_api_creds())
+        # IDE Stop complaining about unused variables
+        _ = (private_key, proxy_funder,  host, chain_id, dry_mode)
+
+        # if not dry_mode:
+            # super().__init__(
+            #     host,
+            #     key=private_key,
+            #     chain_id=chain_id,
+            #     signature_type=1,
+            #     funder=proxy_funder,
+            # )
+            # self.set_api_creds(self.create_or_derive_api_creds())
 
         self.bd = order_book_depth
         self.user_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/user')
@@ -68,6 +75,7 @@ class EnhancedPM(ClobClient):
         self.ws_messages = []
         self._write_messages_to_file()
         self.ws_errors = 0
+        # noinspection PyTypeChecker
         self.market_ws: WebSocketApp = None
         self.init_market_ws()
         self._internally_closed = False
