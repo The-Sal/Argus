@@ -13,9 +13,8 @@ numpy = "~=1.26.4"
 pandas = "~=2.2.3"
 websockets = "~=12.0"
 requests = "~=2.32.4"
-matplotlib = "~=3.10.3"
-utils3 = {git = "https://github.com/the-sal/utils3"}
 termcolor = "*"
+utils3 = {git = "https://github.com/the-sal/utils3"}
 
 [dev-packages]
 
