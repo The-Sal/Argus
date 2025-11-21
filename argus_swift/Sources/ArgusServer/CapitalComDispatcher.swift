@@ -5,10 +5,9 @@ import Darwin
 import Glibc
 #endif
 
-/// TCP server dispatcher for Capital.com market data streaming
+/// Unix Domain Socket server dispatcher for Capital.com market data streaming
 class CapitalComMKTDispatcher {
-    private let host: String
-    private let port: Int32
+    private let socketPath: String
     private var serverSocket: Int32 = -1
 
     // WebSocket connection
@@ -32,11 +31,10 @@ class CapitalComMKTDispatcher {
     private let threadLock = NSLock()
     private var isRunning = false
 
-    init(host: String = "localhost", port: Int32 = 9984,
+    init(socketPath: String = "/tmp/argus_capital.sock",
          apiKey: String, identifier: String, password: String,
          environment: Environment = .demo) {
-        self.host = host
-        self.port = port
+        self.socketPath = socketPath
         self.apiKey = apiKey
         self.identifier = identifier
         self.password = password
@@ -51,8 +49,7 @@ class CapitalComMKTDispatcher {
         print("Capital.com Market Data Dispatcher")
         print("===================================")
         print("Environment: \(environment.rawValue)")
-        print("Host: \(host)")
-        print("Port: \(port)")
+        print("Socket: \(socketPath)")
         print()
 
         // Login to Capital.com API
@@ -209,42 +206,52 @@ class CapitalComMKTDispatcher {
     // MARK: - TCP Server
 
     private func startServer() throws {
+        // Remove existing socket file if it exists
+        let fileManager = FileManager.default
+        if fileManager.fileExists(atPath: socketPath) {
+            try? fileManager.removeItem(atPath: socketPath)
+        }
+
+        // Create Unix domain socket
         #if canImport(Darwin)
-        serverSocket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        serverSocket = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         #else
-        serverSocket = Glibc.socket(AF_INET, SOCK_STREAM, 0)
+        serverSocket = Glibc.socket(AF_UNIX, SOCK_STREAM, 0)
         #endif
 
         guard serverSocket >= 0 else {
-            throw CapitalComAPIError.networkError("Failed to create socket")
+            throw CapitalComAPIError.networkError("Failed to create Unix domain socket")
         }
 
-        // Set socket options
-        var reuseAddr: Int32 = 1
-        #if canImport(Darwin)
-        Darwin.setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &reuseAddr, socklen_t(MemoryLayout<Int32>.size))
-        #else
-        Glibc.setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &reuseAddr, socklen_t(MemoryLayout<Int32>.size))
-        #endif
+        // Bind socket to path
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
 
-        // Bind socket
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = UInt16(port).bigEndian
-        addr.sin_addr.s_addr = inet_addr(host)
+        let pathBytes = socketPath.utf8CString
+        guard pathBytes.count <= MemoryLayout.size(ofValue: addr.sun_path) else {
+            throw CapitalComAPIError.networkError("Socket path too long: \(socketPath)")
+        }
+
+        withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: Int8.self, capacity: pathBytes.count) { dest in
+                for (i, byte) in pathBytes.enumerated() {
+                    dest[i] = byte
+                }
+            }
+        }
 
         let bindResult = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                 #if canImport(Darwin)
-                Darwin.bind(serverSocket, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                Darwin.bind(serverSocket, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
                 #else
-                Glibc.bind(serverSocket, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                Glibc.bind(serverSocket, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
                 #endif
             }
         }
 
         guard bindResult == 0 else {
-            throw CapitalComAPIError.networkError("Failed to bind socket to \(host):\(port)")
+            throw CapitalComAPIError.networkError("Failed to bind socket to \(socketPath)")
         }
 
         // Listen
@@ -266,11 +273,11 @@ class CapitalComMKTDispatcher {
     }
 
     private func clientListenerLoop() {
-        print("Client listener started on \(host):\(port)")
+        print("Client listener started on \(socketPath)")
 
         while isRunning {
-            var clientAddr = sockaddr_in()
-            var clientAddrLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+            var clientAddr = sockaddr_un()
+            var clientAddrLen = socklen_t(MemoryLayout<sockaddr_un>.size)
 
             let clientSocket = withUnsafeMutablePointer(to: &clientAddr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {

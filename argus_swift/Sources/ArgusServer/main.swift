@@ -311,17 +311,14 @@ func runCapitalComDispatcher(args: Arguments, host: String, envVars: [String: St
         environment = .live
     }
 
-    let port = Int32(args.port ?? 9984)
-
     print("Starting Capital.com dispatcher")
-    print("Host: \(host)")
-    print("Port: \(port)")
     print("Environment: \(environment.rawValue.uppercased())")
+    print("Note: Capital.com uses Unix domain socket at /tmp/argus_capital.sock")
+    print("      (--host and --port arguments are ignored)")
     print()
 
     let dispatcher = CapitalComMKTDispatcher(
-        host: host,
-        port: port,
+        socketPath: "/tmp/argus_capital.sock",
         apiKey: capitalApiKey,
         identifier: capitalIdentifier,
         password: capitalPassword,
