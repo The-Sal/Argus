@@ -264,7 +264,7 @@ class IBNetworker {
     /// Fetch account positions
     func fetchAccountPositions() throws -> [STKPosition] {
         guard let accountId = tradingAccountId else {
-            throw IBError.invalidResponse
+            throw IBError.authenticationError("Trading account ID not set")
         }
 
         let positionsUrl = urls["account_positions"]!.replacingOccurrences(of: "{}", with: accountId)
@@ -278,6 +278,22 @@ class IBNetworker {
         return try jsonArray
             .filter { ($0["assetClass"] as? String) == "STK" }
             .map { try STKPosition.fromDict($0) }
+    }
+
+    /// Get account ledger
+    func getAccountLedger() throws -> [String: Any] {
+        guard let accountId = tradingAccountId else {
+            throw IBError.authenticationError("Trading account ID not set")
+        }
+
+        let ledgerUrl = urls["account_ledger"]!.replacingOccurrences(of: "{}", with: accountId)
+        let (data, _) = try session.get(url: ledgerUrl)
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw IBError.invalidResponse
+        }
+
+        return json
     }
 
     var isAuthenticated: Bool {

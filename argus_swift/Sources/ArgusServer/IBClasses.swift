@@ -4,8 +4,10 @@ import Foundation
 enum IBError: Error {
     case invalidResponse
     case authenticationTimeout
+    case authenticationError(String)
     case marketDataRefused
     case protectedAssetViolation
+    case parseError(String)
 }
 
 /// Helper function to enforce currency conversion
