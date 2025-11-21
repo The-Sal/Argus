@@ -1,18 +1,24 @@
+import sys
 import time
 import socket
 import traceback
 from argus.capital._svr_utils import Protocol2Parser
 
 
+HOST = 'localhost'
+if len(sys.argv) > 1:
+    print('Using host from command line argument:', sys.argv[1])
+    HOST = sys.argv[1]
+
 def main():
     s = socket.socket()
     # Binance MKTDispatcher default port per argus.binance.MKTDispatcher
     try:
-        s.connect(('localhost', 9982))
+        s.connect((HOST, 9982))
     except socket.error:
         print('Trying alternative port 9984...')
         s = socket.socket()
-        s.connect(('localhost', 9984))
+        s.connect((HOST, 9984))
     # Subscribe to BTCUSDT ticker stream
     s.sendall(b'add=BTCUSDT')
     time.sleep(0.1)
