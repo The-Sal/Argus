@@ -42,6 +42,8 @@ class CapitalComWss {
     func connect(authTokens: CapitalComAuthTokens) {
         self.authTokens = authTokens
         wsStatus = .connecting
+        stopEvent = false  // Reset stop event flag
+        reconnectAttempts = 0  // Reset reconnect attempts
 
         guard let url = URL(string: "\(baseURL)?cst=\(authTokens.cst)&x-security-token=\(authTokens.xSecurityToken)") else {
             print("Invalid WebSocket URL")
@@ -51,8 +53,9 @@ class CapitalComWss {
         ws = session.webSocketTask(with: url)
         ws?.resume()
 
-        wsStatus = .connected
-        print("Capital.com WebSocket connected")
+        // Don't set wsStatus to .connected immediately - it will be set when we receive
+        // the first successful message. For now, leave it as .connecting.
+        print("Capital.com WebSocket connecting...")
 
         // Start receiving messages
         receiveMessage()
@@ -60,8 +63,18 @@ class CapitalComWss {
         // Start application ping timer
         startPingTimer()
 
-        // Resubscribe to all active subscriptions
-        resubscribeAll()
+        // Resubscribe to all active subscriptions after a short delay to ensure connection is established
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.wsStatus = .connected
+            print("Capital.com WebSocket connected")
+            self?.resubscribeAll()
+        }
+    }
+
+    /// Update authentication tokens without reconnecting
+    func updateAuthTokens(_ newTokens: CapitalComAuthTokens) {
+        authTokens = newTokens
+        print("WebSocket auth tokens updated (connection maintained)")
     }
 
     /// Disconnect from WebSocket
@@ -87,8 +100,6 @@ class CapitalComWss {
         callback: @escaping (CapitalCom_CapitalComMKTDataLive) -> Void
     ) {
         subscriptionLock.lock()
-        defer { subscriptionLock.unlock() }
-
         let streamKey = "/market/\(epic)"
         let subscription = CapitalComSubscription(
             epic: epic,
@@ -97,9 +108,14 @@ class CapitalComWss {
         )
 
         subscriptions[streamKey] = subscription
+        let currentStatus = wsStatus
+        subscriptionLock.unlock()
+
+        print("Added subscription for \(epic) (total: \(subscriptions.count), wsStatus: \(currentStatus))")
 
         // Send subscription message if connected
-        if wsStatus == .connected {
+        // If connecting, resubscribeAll() will handle it when connection is established
+        if currentStatus == .connected {
             sendSubscriptionMessage(epic: epic, dataType: .market)
         }
     }

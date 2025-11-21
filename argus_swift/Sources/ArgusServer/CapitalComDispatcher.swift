@@ -95,6 +95,9 @@ class CapitalComMKTDispatcher {
 
     private func startTokenRefreshTimer() {
         // Refresh tokens every 8 minutes (session typically expires after 10 min)
+        // Note: We DON'T disconnect/reconnect the WebSocket! The application pings
+        // (every 9 min) keep the connection alive, and we just update the tokens
+        // that will be used in future subscription/ping messages.
         DispatchQueue.global(qos: .background).async { [weak self] in
             while self?.isRunning == true {
                 Thread.sleep(forTimeInterval: 8 * 60) // 8 minutes
@@ -104,12 +107,9 @@ class CapitalComMKTDispatcher {
                 print("Refreshing authentication tokens...")
                 if self.login() {
                     print("Tokens refreshed successfully")
-
-                    // Reconnect WebSocket with fresh tokens
+                    // Update the WebSocket's auth tokens without disconnecting
                     if let tokens = self.authTokens {
-                        self.ws.disconnect()
-                        Thread.sleep(forTimeInterval: 1)
-                        self.ws.connect(authTokens: tokens)
+                        self.ws.updateAuthTokens(tokens)
                     }
                 } else {
                     print("Token refresh failed")
