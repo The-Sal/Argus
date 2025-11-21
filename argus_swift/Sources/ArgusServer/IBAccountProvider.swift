@@ -44,7 +44,7 @@ class AccountProvider {
     private var lastSend = Date()
 
     init(ibWss: IBWss, ibNetworker: IBNetworker) throws {
-        guard ibNetworker.tradingAccountId != nil else {
+        guard ibNetworker.accountId != nil else {
             throw IBError.authenticationError("Trading account ID is not set in IBNetworker")
         }
 
@@ -74,7 +74,7 @@ class AccountProvider {
     }
 
     private func setupDebugSocket() {
-        debugSocket = socket(AF_INET, SOCK_STREAM, 0)
+        debugSocket = Darwin.socket(AF_INET, SOCK_STREAM, 0)
         guard debugSocket >= 0 else {
             print("Failed to create debug socket")
             return
@@ -211,9 +211,9 @@ class AccountProvider {
             return
         }
 
-        guard let symbol = marketData.symbol,
-              let contractId = shortableSharesData.translateSymbolToConid(symbol) else {
-            print("Could not translate symbol \(marketData.symbol ?? "nil") to contract ID")
+        let symbol = marketData.symbol
+        guard let contractId = shortableSharesData.translateSymbolToConid(symbol) else {
+            print("Could not translate symbol \(symbol) to contract ID")
             return
         }
 
