@@ -23,6 +23,7 @@ class IBMKTDispatcher {
     private var accountProvider: AccountProvider?
 
     init(cookie: String, host: String = "localhost", port: Int32 = 9972) {
+        print("[IB Dispatcher] Initializing...")
         self.host = host
         self.port = port
         self.ws = IBWss(cookie: cookie)
@@ -32,8 +33,13 @@ class IBMKTDispatcher {
         configs["Block New MKT Data"] = true  // Wait until account is set
         configs["Show blocked MKT Data Warning"] = false
 
+        print("[IB Dispatcher] Setting up server socket on \(host):\(port)")
         setupServerSocket()
+
+        print("[IB Dispatcher] Starting WebSocket connection...")
         startWebSocket()
+
+        print("[IB Dispatcher] Initialization complete")
     }
 
     private func setupServerSocket() {
@@ -81,7 +87,9 @@ class IBMKTDispatcher {
         if ws.networker.isAuthenticated {
             print("Authenticated successfully")
         } else {
-            print("Authentication timeout")
+            print("ERROR: Authentication timeout after 60 seconds")
+            print("Please check your IB_COOKIE is valid and IBKR Client Portal is running")
+            exit(1)
         }
 
         startClientListener()
@@ -328,8 +336,9 @@ class IBMKTDispatcher {
     }
 
     /// Select trading account interactively
-    func selectAccountInteractive() {
+    func selectAccountInteractive() throws {
         do {
+            print("[Account Selection] Fetching available accounts...")
             let accounts = try ws.networker.getAllTradingAccountIds()
 
             print("Available accounts:")
@@ -373,7 +382,8 @@ class IBMKTDispatcher {
                 }
             }
         } catch {
-            print("Failed to select account: \(error)")
+            print("FATAL: Failed to select account: \(error)")
+            throw error
         }
     }
 
@@ -381,18 +391,35 @@ class IBMKTDispatcher {
     func interactiveMode() {
         print("\nIBKR Dispatcher Interactive Mode")
         print("Enter commands (or 'exit' to quit):")
+        print("Server is running. Press Ctrl+C to stop.")
 
+        var eofDetected = false
         while true {
-            print("> ", terminator: "")
+            if !eofDetected {
+                print("> ", terminator: "")
+                fflush(stdout)
+            }
+
             guard let input = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+                // EOF detected (stdin closed)
+                if !eofDetected {
+                    print("\nEOF detected. Server will continue running in background.")
+                    print("Press Ctrl+C to stop.")
+                    eofDetected = true
+                }
+                // Sleep to avoid tight loop
+                Thread.sleep(forTimeInterval: 1.0)
                 continue
             }
 
             if input.lowercased() == "exit" {
+                print("Shutting down...")
                 break
             }
 
-            print("Unknown command: \(input)")
+            if !input.isEmpty {
+                print("Unknown command: \(input)")
+            }
         }
     }
 }

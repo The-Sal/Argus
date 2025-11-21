@@ -142,7 +142,19 @@ func main() {
     print("Argus Server (Swift Edition)")
     print("Platform: \(getSystemInfo())")
     print("Arguments: \(CommandLine.arguments)")
+    print("Process ID: \(ProcessInfo.processInfo.processIdentifier)")
     print()
+
+    // Setup signal handlers for graceful shutdown
+    signal(SIGINT) { _ in
+        print("\n\nReceived SIGINT (Ctrl+C). Shutting down gracefully...")
+        exit(0)
+    }
+
+    signal(SIGTERM) { _ in
+        print("\n\nReceived SIGTERM. Shutting down gracefully...")
+        exit(0)
+    }
 
     let args = parseArguments(CommandLine.arguments)
 
@@ -219,9 +231,16 @@ func runIBDispatcher(args: Arguments, host: String, envVars: [String: String]) {
     print("Port: \(port)")
     print()
 
-    let dispatcher = IBMKTDispatcher(cookie: ibCookie, host: host, port: port)
-    dispatcher.selectAccountInteractive()
-    dispatcher.interactiveMode()
+    do {
+        let dispatcher = IBMKTDispatcher(cookie: ibCookie, host: host, port: port)
+        try dispatcher.selectAccountInteractive()
+        dispatcher.interactiveMode()
+        print("Dispatcher exited normally")
+    } catch {
+        print("FATAL ERROR: Dispatcher crashed with error: \(error)")
+        print("Stack trace: \(Thread.callStackSymbols.joined(separator: "\n"))")
+        exit(1)
+    }
 }
 
 func runIBForecastDispatcher(args: Arguments, host: String, envVars: [String: String]) {

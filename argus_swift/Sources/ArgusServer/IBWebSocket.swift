@@ -56,7 +56,11 @@ class IBWss {
 
             case .failure(let error):
                 print("WebSocket error: \(error)")
+                print("ERROR: WebSocket connection failed. This is unrecoverable.")
+                print("Please restart the dispatcher.")
                 self.onClose()
+                // Exit the program since we can't recover from WebSocket failure
+                exit(1)
             }
         }
     }
