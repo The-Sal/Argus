@@ -31,7 +31,7 @@ This is an ongoing effort to transcompile the Argus Python codebase to Swift. Th
 - ✅ **argus/binance** - Complete Binance market data dispatcher
 - ✅ **argus/ib** - Complete Interactive Brokers market data dispatcher with AccountProvider
 - ✅ **argus/ib/forecast** - Complete Interactive Brokers forecast contracts dispatcher
-- ⬜ **argus/capitalcom** - Capital.com integration (pending)
+- ✅ **argus/capital** - Complete Capital.com market data dispatcher with REST API authentication
 - ⬜ **argus/oanda** - OANDA integration (pending)
 - ⬜ **argus/core** - Core utilities and helpers (pending)
 
@@ -861,26 +861,109 @@ func activateMarket(conid: Int) throws {
 
 ---
 
+### Completed: argus/capital (Capital.com)
+
+| Python File | Swift File | Status | Notes |
+|-------------|-----------|--------|-------|
+| `__init__.py` (MKTDispatcher) | `CapitalComDispatcher.swift` | ✅ Complete | Main Capital.com dispatcher with REST auth |
+| `_lib.py` (CapitalComAPI) | `CapitalComWebSocket.swift` | ✅ Complete | WebSocket manager with JSON protocol |
+| `_lib.py` (Enums & Classes) | `CapitalComClasses.swift` | ✅ Complete | Data structures, enums, and market data classes |
+
+**Capital.com-specific features**:
+- REST API authentication with session tokens (CST, X-SECURITY-TOKEN)
+- JSON-based WebSocket protocol with correlation IDs
+- Application-level ping (every 9 minutes) to maintain session
+- Market data and OHLC subscriptions
+- Epic-based symbol identification
+- Environment support (DEMO/LIVE)
+
+**Default port**: 9984
+
+**Authentication flow**:
+1. POST to `/api/v1/session` with credentials
+2. Extract CST and X-SECURITY-TOKEN from response headers
+3. Connect WebSocket with tokens in URL query parameters
+4. Send subscription messages with tokens in JSON payload
+5. Maintain session with periodic application-level pings
+
+**WebSocket message format**:
+```swift
+// Subscription message
+{
+    "destination": "marketData.subscribe",
+    "correlationId": "sub-BTCUSD-1234567890",
+    "cst": "auth-token",
+    "securityToken": "security-token",
+    "payload": {
+        "epics": ["BTCUSD"]
+    }
+}
+
+// Market data message (received)
+{
+    "destination": "quote",
+    "payload": {
+        "epic": "BTCUSD",
+        "bid": 50000.0,
+        "bidQty": 1.0,
+        "ofr": 50001.0,
+        "ofrQty": 1.0,
+        "timestamp": 1234567890
+    }
+}
+```
+
+**Key differences from Binance/IB**:
+- Uses REST API for authentication (not embedded credentials)
+- WebSocket requires auth tokens in both URL and message payloads
+- Subscription confirmations include correlation IDs
+- Application-level pings separate from WebSocket pings
+- Epic-based symbols instead of direct symbols
+
+**Usage example**:
+```bash
+# Set credentials in .env file
+echo "CAPITAL_DOTCOM_API_KEY=your-api-key" > .env
+echo "CAPITAL_DOTCOM_IDENTIFIER=your-username" >> .env
+echo "CAPITAL_DOT_CUSTOM_PW=your-password" >> .env
+
+# Run dispatcher
+argus_server capitalcom
+
+# In dispatcher interactive mode:
+> add BTCUSD
+> list
+> remove BTCUSD
+```
+
+**Protocol 2 Integration**:
+Capital.com uses the same Protocol 2 format as Binance and IB for client communication:
+- `CapitalCom_CapitalComMKTDataLive` extends `CapitalComMKTDataLive`
+- Factory method `fromWebSocketPayload()` converts Capital.com JSON to market data
+- Standard Protocol 2 packet format: `~<length><symbol-length>|<symbol><data>L`
+
+---
+
 ## Adding New Modules
 
-### Example: Transcompiling argus/capitalcom
+### Example: Transcompiling argus/oanda
 
 **Step 1**: Understand the Python structure
 ```
-argus/capitalcom/
+argus/oanda/
 ├── __init__.py          # Main dispatcher
-├── _classes.py          # Capital.com data structures
-├── _websocket.py        # Capital.com WebSocket
+├── _classes.py          # OANDA data structures
+├── _websocket.py        # OANDA WebSocket
 └── runtime.py           # Entry point
 ```
 
 **Step 2**: Create Swift files in `Sources/ArgusServer/`
 ```
 Sources/ArgusServer/
-├── CapitalComClasses.swift      # Data structures
-├── CapitalComWebSocket.swift    # WebSocket manager
-├── CapitalComDispatcher.swift   # Dispatcher
-└── main.swift                   # Update to support "argus_server capitalcom"
+├── OandaClasses.swift      # Data structures
+├── OandaWebSocket.swift    # WebSocket manager
+├── OandaDispatcher.swift   # Dispatcher
+└── main.swift              # Update to support "argus_server oanda"
 ```
 
 **Step 3**: Define message structures
@@ -1146,11 +1229,11 @@ func receiveMessage() {
 **Questions?** Check git history for detailed commit messages explaining design decisions.
 
 **Next priorities**:
-1. Transcompile argus/capitalcom
+1. Transcompile argus/oanda
 2. Add unit tests for Protocol 2
 3. Add Linux compatibility (replace URLSession WebSocket)
 4. Implement connection pooling for high-throughput scenarios
-5. Add reconnection logic for WebSocket disconnections
+5. Add enhanced error handling and retry logic
 
 ---
 
@@ -1167,6 +1250,11 @@ func receiveMessage() {
 - `BinanceClasses.swift` - Binance message structures
 - `BinanceWebSocket.swift` - Binance WebSocket manager
 - `MKTDispatcher.swift` - Binance dispatcher
+
+### Capital.com Module
+- `CapitalComClasses.swift` - Capital.com data structures, enums, and market data classes
+- `CapitalComWebSocket.swift` - Capital.com WebSocket manager with JSON protocol
+- `CapitalComDispatcher.swift` - Capital.com dispatcher with REST authentication
 
 ### IB Module (Interactive Brokers)
 - `IBFields.swift` - 100+ IBKR field code constants
@@ -1186,6 +1274,18 @@ func receiveMessage() {
 **Run Binance dispatcher**:
 ```bash
 argus_server binance --port 9974
+```
+
+**Run Capital.com dispatcher with .env**:
+```bash
+# Create .env file
+echo "CAPITAL_DOTCOM_API_KEY=your-api-key" > .env
+echo "CAPITAL_DOTCOM_IDENTIFIER=your-username" >> .env
+echo "CAPITAL_DOT_CUSTOM_PW=your-password" >> .env
+
+# Run dispatcher
+argus_server capitalcom
+# Interactive commands: add, remove, list, quit
 ```
 
 **Run IB dispatcher with .env**:
