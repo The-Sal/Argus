@@ -98,7 +98,7 @@ class IBLockedSession {
 /// IBKR REST API client
 class IBNetworker {
     private let cookie: String
-    private let session: IBLockedSession
+    let session: IBLockedSession  // Internal access for FXC dispatcher
     private var authenticated = false
     private var tradingAccountId: String?
 

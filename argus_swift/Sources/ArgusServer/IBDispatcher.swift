@@ -106,7 +106,7 @@ class IBMKTDispatcher {
                     continue
                 }
 
-                let realSocket = RealSocket(socket: clientSocket)
+                let realSocket = RealSocket(fileDescriptor: clientSocket)
                 self.threadLock.lock()
                 self.clients.append(realSocket)
                 self.threadLock.unlock()
@@ -123,14 +123,15 @@ class IBMKTDispatcher {
             while true {
                 guard let realSocket = client as? RealSocket else { break }
 
-                var buffer = [UInt8](repeating: 0, count: 9999)
-                let bytesRead = recv(realSocket.socket, &buffer, buffer.count, 0)
-
-                guard bytesRead > 0 else {
-                    break
+                let data: Data
+                do {
+                    guard let receivedData = try realSocket.receive(bufferSize: 9999) else {
+                        break  // Connection closed
+                    }
+                    data = receivedData
+                } catch {
+                    break  // Error receiving
                 }
-
-                let data = Data(bytes: buffer, count: bytesRead)
                 guard let message = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) else {
                     continue
                 }
@@ -229,14 +230,6 @@ class IBMKTDispatcher {
 
         for client in clients {
             do {
-                // Check if it's a FakeSocket (for internal use)
-                if client.idx == "fake" {
-                    if let fakeSocket = client as? FakeSocket {
-                        fakeSocket.callback(ibkrData)
-                    }
-                    continue
-                }
-
                 // Send Protocol 2 packet
                 let packet = try transmitMarketDataWithProtocol2(ibkrData)
 

@@ -78,7 +78,7 @@ class IBMarketData {
             a2 = nil
         }
 
-        var finalValue = a1 ?? a2 ?? defaultValue
+        let finalValue = a1 ?? a2 ?? defaultValue
 
         guard var value = finalValue else {
             return defaultValue

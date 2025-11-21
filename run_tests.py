@@ -126,8 +126,8 @@ def check_and_build_swift():
 
 if __name__ == '__main__':
     checks = [
-        ('Python Module Import Tests', discover_modules_and_test_imports, False),  # Optional
-        ('Swift Build Tests', check_and_build_swift, False)  # Optional - not all CI environments have Swift
+        ('Python Module Import Tests', discover_modules_and_test_imports, True),  # Required
+        ('Swift Build Tests', check_and_build_swift, True)  # Required
     ]
 
     failed_checks = []
