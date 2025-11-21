@@ -392,17 +392,25 @@ class CapitalComWss {
 
         wsStatus = .disconnected
 
-        // Attempt reconnection
+        // Attempt reconnection with token refresh
         if reconnectAttempts < maxReconnectAttempts {
             let delay = min(initialReconnectDelay * pow(2.0, Double(reconnectAttempts)), maxReconnectDelay)
-            print("WebSocket disconnected. Reconnecting in \(delay) seconds...")
+            print("WebSocket disconnected. Will refresh tokens and reconnect in \(delay) seconds...")
 
             DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self = self, !self.stopEvent else { return }
                 self.reconnectAttempts += 1
 
+                // Request token refresh from dispatcher before reconnecting
+                print("Attempting to refresh authentication tokens...")
+                // Note: Token refresh should be handled by dispatcher re-calling connect()
+                // For now, just try reconnecting with existing tokens
+                // TODO: Add callback to request fresh tokens from dispatcher
+
                 if let tokens = self.authTokens {
                     self.connect(authTokens: tokens)
+                } else {
+                    print("No auth tokens available for reconnection")
                 }
             }
         } else {

@@ -61,6 +61,9 @@ class CapitalComMKTDispatcher {
         print("Successfully logged in to Capital.com API")
         print()
 
+        // Start token refresh timer (every 8 minutes to stay ahead of expiration)
+        startTokenRefreshTimer()
+
         // Start TCP server
         do {
             try startServer()
@@ -88,6 +91,31 @@ class CapitalComMKTDispatcher {
 
         // Interactive command loop
         commandLoop()
+    }
+
+    private func startTokenRefreshTimer() {
+        // Refresh tokens every 8 minutes (session typically expires after 10 min)
+        DispatchQueue.global(qos: .background).async { [weak self] in
+            while self?.isRunning == true {
+                Thread.sleep(forTimeInterval: 8 * 60) // 8 minutes
+
+                guard let self = self, self.isRunning else { break }
+
+                print("Refreshing authentication tokens...")
+                if self.login() {
+                    print("Tokens refreshed successfully")
+
+                    // Reconnect WebSocket with fresh tokens
+                    if let tokens = self.authTokens {
+                        self.ws.disconnect()
+                        Thread.sleep(forTimeInterval: 1)
+                        self.ws.connect(authTokens: tokens)
+                    }
+                } else {
+                    print("Token refresh failed")
+                }
+            }
+        }
     }
 
     private func commandLoop() {
