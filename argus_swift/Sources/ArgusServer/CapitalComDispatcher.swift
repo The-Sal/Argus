@@ -121,11 +121,22 @@ class CapitalComMKTDispatcher {
     private func commandLoop() {
         while isRunning {
             print("> ", terminator: "")
-            guard let input = readLine()?.trimmingCharacters(in: .whitespaces) else {
+            fflush(stdout)
+
+            guard let input = readLine() else {
+                // readLine() returned nil - stdin closed or EOF
+                print("\nStdin closed, shutting down...")
+                isRunning = false
+                cleanup()
+                return
+            }
+
+            let trimmedInput = input.trimmingCharacters(in: .whitespaces)
+            guard !trimmedInput.isEmpty else {
                 continue
             }
 
-            let parts = input.split(separator: " ", maxSplits: 1).map(String.init)
+            let parts = trimmedInput.split(separator: " ", maxSplits: 1).map(String.init)
             guard let command = parts.first else { continue }
 
             switch command.lowercased() {
@@ -158,6 +169,10 @@ class CapitalComMKTDispatcher {
                 print("Unknown command: \(command)")
             }
         }
+
+        // If we exit the loop for any reason, cleanup
+        print("Command loop exited unexpectedly")
+        cleanup()
     }
 
     // MARK: - Authentication
@@ -318,6 +333,14 @@ class CapitalComMKTDispatcher {
             }
 
             guard clientSocket >= 0 else {
+                if isRunning {
+                    let error = errno
+                    print("Accept failed with errno: \(error)")
+                    if error == EBADF || error == EINVAL {
+                        print("Server socket invalid, stopping client listener")
+                        break
+                    }
+                }
                 continue
             }
 
@@ -335,6 +358,8 @@ class CapitalComMKTDispatcher {
                 self?.handleClient(client)
             }
         }
+
+        print("Client listener loop exited")
     }
 
     private func handleClient(_ client: ArgusSocket) {
