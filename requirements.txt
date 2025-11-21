@@ -9,3 +9,4 @@ requests~=2.32.4
 setuptools~=80.9.0
 utils3 @ git+https://github.com/the-sal/utils3
 termcolor
+python-binance==1.0.32
