@@ -6,10 +6,11 @@ The following sources are available through Argus:
 - TradingView (TV): Real-time and historical data for stocks, forex, and cryptocurrencies.
 - Nasdaq: Historical data for stocks and ETFs.
 - Capital.com (Capital): Real-Time data
+- Polymarket-Direct: Real-time market data from Polymarket prediction markets.
 """
 from argus.ib import *
 from argus.capital import *
-from argus.nasdaq import NASDAQDataDownloader
 from argus import polymarket_direct
+from argus.nasdaq import NASDAQDataDownloader
 from argus.tv import ChartSession, QuoteSession, multisymbol, MarketData
 
