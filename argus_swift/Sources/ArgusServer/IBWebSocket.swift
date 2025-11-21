@@ -103,7 +103,48 @@ class IBWss {
             }
 
         case .data(let data):
-            print("Received binary data: \(data.count) bytes")
+            // Try to decode binary data as UTF-8 string
+            if let text = String(data: data, encoding: .utf8) {
+                recv += 1
+
+                // Ignore heartbeat
+                if text == "ech+hb" {
+                    return
+                }
+
+                guard let jsonData = text.data(using: .utf8),
+                      let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+                    print("Received non-JSON binary message: \(text)")
+                    return
+                }
+
+                if !opened {
+                    opened = true
+                }
+
+                if recv == 2 {
+                    boot()
+                }
+
+                // Route message based on topic
+                if let topic = json["topic"] as? String {
+                    if topic.contains("smd") {
+                        handleMarketData(json)
+                    } else if topic.contains("spl") {
+                        handleAccountPnL(json)
+                    } else if topic == "system" {
+                        if let hb = json["hb"] as? Bool, hb {
+                            return  // Heartbeat
+                        }
+                        if let success = json["success"] {
+                            print("[IMPORTANT] Successfully connected to IBKR WebSocket as \(success)")
+                            recv = 1
+                        }
+                    }
+                }
+            } else {
+                print("Received binary data that cannot be decoded as UTF-8: \(data.count) bytes")
+            }
         @unknown default:
             break
         }

@@ -26,6 +26,7 @@ struct Arguments {
     var port: Int?
     var testnet: Bool = false
     var cookie: String?
+    var envFile: String?
     var showHelp: Bool = false
 }
 
@@ -55,6 +56,12 @@ func parseArguments(_ args: [String]) -> Arguments {
         case "--cookie":
             if i + 1 < args.count {
                 result.cookie = args[i + 1]
+                i += 1
+            }
+
+        case "--env-file":
+            if i + 1 < args.count {
+                result.envFile = args[i + 1]
                 i += 1
             }
 
@@ -89,11 +96,12 @@ func printHelp() {
       ib-forecast    Interactive Brokers forecast contracts dispatcher
 
     Options:
-      --host HOST      Listening host (default: localhost)
-      --port PORT      Listening port (default: varies by target)
-      --cookie COOKIE  IB cookie for authentication (for ib/ib-forecast)
-      --testnet        Use testnet (binance only)
-      --help, -h       Show this help message
+      --host HOST        Listening host (default: localhost)
+      --port PORT        Listening port (default: varies by target)
+      --cookie COOKIE    IB cookie for authentication (for ib/ib-forecast)
+      --env-file PATH    Path to .env file (default: .env)
+      --testnet          Use testnet (binance only)
+      --help, -h         Show this help message
 
     Examples:
       argus_server binance
@@ -101,10 +109,15 @@ func printHelp() {
       argus_server ib --cookie "your-ib-cookie"
       argus_server ib-forecast
 
-    Environment Variables:
+    Environment Variables (.env file or system):
       BINANCE_API_KEY     Binance API key (optional for public data)
       BINANCE_API_SECRET  Binance API secret (optional for public data)
       IB_COOKIE           Interactive Brokers authentication cookie
+
+    .env File Format:
+      IB_COOKIE=your-cookie-value
+      BINANCE_API_KEY=your-key
+      # Comments are supported
 
     Default Ports:
       binance: 9974
@@ -118,8 +131,9 @@ func printHelp() {
     """)
 }
 
-func getEnvironmentVariable(_ name: String) -> String? {
-    return ProcessInfo.processInfo.environment[name]
+func getEnvironmentVariable(_ name: String, envVars: [String: String] = [:]) -> String? {
+    // Priority: .env file vars > system environment
+    return envVars[name] ?? ProcessInfo.processInfo.environment[name]
 }
 
 // MARK: - Main Entry Point
@@ -137,18 +151,25 @@ func main() {
         exit(0)
     }
 
+    // Load .env file if specified or use default
+    let envFilePath = args.envFile ?? ".env"
+    let envVars = EnvLoader.load(path: envFilePath)
+    if !envVars.isEmpty {
+        print("Loaded \(envVars.count) variables from \(envFilePath)")
+    }
+
     // Set default host
     let host = args.host ?? "localhost"
 
     switch args.target {
     case "binance":
-        runBinanceDispatcher(args: args, host: host)
+        runBinanceDispatcher(args: args, host: host, envVars: envVars)
 
     case "ib":
-        runIBDispatcher(args: args, host: host)
+        runIBDispatcher(args: args, host: host, envVars: envVars)
 
     case "ib-forecast":
-        runIBForecastDispatcher(args: args, host: host)
+        runIBForecastDispatcher(args: args, host: host, envVars: envVars)
 
     default:
         print("Error: Unknown target '\(args.target)'")
@@ -160,9 +181,9 @@ func main() {
     print("\nExiting Argus Server")
 }
 
-func runBinanceDispatcher(args: Arguments, host: String) {
-    let apiKey = getEnvironmentVariable("BINANCE_API_KEY")
-    let apiSecret = getEnvironmentVariable("BINANCE_API_SECRET")
+func runBinanceDispatcher(args: Arguments, host: String, envVars: [String: String]) {
+    let apiKey = getEnvironmentVariable("BINANCE_API_KEY", envVars: envVars)
+    let apiSecret = getEnvironmentVariable("BINANCE_API_SECRET", envVars: envVars)
     let port = args.port ?? 9974
 
     print("Starting Binance dispatcher")
@@ -183,8 +204,8 @@ func runBinanceDispatcher(args: Arguments, host: String) {
     dispatcher.interactiveMode()
 }
 
-func runIBDispatcher(args: Arguments, host: String) {
-    let cookie = args.cookie ?? getEnvironmentVariable("IB_COOKIE")
+func runIBDispatcher(args: Arguments, host: String, envVars: [String: String]) {
+    let cookie = args.cookie ?? getEnvironmentVariable("IB_COOKIE", envVars: envVars)
     guard let ibCookie = cookie else {
         print("Error: IB_COOKIE environment variable or --cookie argument required")
         print("Please set your Interactive Brokers authentication cookie")
@@ -203,8 +224,8 @@ func runIBDispatcher(args: Arguments, host: String) {
     dispatcher.interactiveMode()
 }
 
-func runIBForecastDispatcher(args: Arguments, host: String) {
-    let cookie = args.cookie ?? getEnvironmentVariable("IB_COOKIE")
+func runIBForecastDispatcher(args: Arguments, host: String, envVars: [String: String]) {
+    let cookie = args.cookie ?? getEnvironmentVariable("IB_COOKIE", envVars: envVars)
     guard let ibCookie = cookie else {
         print("Error: IB_COOKIE environment variable or --cookie argument required")
         print("Please set your Interactive Brokers authentication cookie")
