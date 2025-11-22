@@ -215,7 +215,7 @@ class EnhancedPM:
     def unsubscribe_from_market_data(self, asset_id):
         """
         Unsubscribe from real-time market data for the given market IDs.
-        Due to how polymarket's ws works, there is no actual unsubscribing, instead
+        Due to how polymarket's ws works, there is no actual unsubscribing; instead
         we set the callback to a no-op lambda function.
 
         :param asset_id: The asset IDs to unsubscribe from.
