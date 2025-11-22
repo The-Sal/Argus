@@ -38,7 +38,7 @@ func parseArguments(_ args: [String]) -> Arguments {
         let arg = args[i]
 
         switch arg {
-        case "binance", "ib", "ib-forecast":
+        case "binance", "ib", "ib-forecast", "capitalcom":
             result.target = arg
 
         case "--host":
@@ -94,6 +94,7 @@ func printHelp() {
       binance        Binance market data dispatcher
       ib             Interactive Brokers market data dispatcher
       ib-forecast    Interactive Brokers forecast contracts dispatcher
+      capitalcom     Capital.com market data dispatcher
 
     Options:
       --host HOST        Listening host (default: localhost)
@@ -110,9 +111,13 @@ func printHelp() {
       argus_server ib-forecast
 
     Environment Variables (.env file or system):
-      BINANCE_API_KEY     Binance API key (optional for public data)
-      BINANCE_API_SECRET  Binance API secret (optional for public data)
-      IB_COOKIE           Interactive Brokers authentication cookie
+      BINANCE_API_KEY              Binance API key (optional for public data)
+      BINANCE_API_SECRET           Binance API secret (optional for public data)
+      IB_COOKIE                    Interactive Brokers authentication cookie
+      CAPITAL_DOTCOM_API_KEY       Capital.com API key
+      CAPITAL_DOTCOM_IDENTIFIER    Capital.com identifier/username
+      CAPITAL_DOT_CUSTOM_PW        Capital.com password
+      CAPITAL_DOTCOM_ENVIRONMENT   Capital.com environment (live or demo, default: live)
 
     .env File Format:
       IB_COOKIE=your-cookie-value
@@ -123,6 +128,7 @@ func printHelp() {
       binance: 9974
       ib: 9972
       ib-forecast: 9972
+      capitalcom: 9984
 
     Note:
       - DO NOT pass sensitive credentials via command line arguments
@@ -183,9 +189,12 @@ func main() {
     case "ib-forecast":
         runIBForecastDispatcher(args: args, host: host, envVars: envVars)
 
+    case "capitalcom":
+        runCapitalComDispatcher(args: args, host: host, envVars: envVars)
+
     default:
         print("Error: Unknown target '\(args.target)'")
-        print("Currently supported: binance, ib, ib-forecast")
+        print("Currently supported: binance, ib, ib-forecast, capitalcom")
         print("Use --help for more information")
         exit(1)
     }
@@ -260,6 +269,62 @@ func runIBForecastDispatcher(args: Arguments, host: String, envVars: [String: St
 
     let dispatcher = FXCDispatcher(cookie: ibCookie, host: host, port: port)
     dispatcher.selectAccountInteractive()
+    dispatcher.interactiveMode()
+}
+
+func runCapitalComDispatcher(args: Arguments, host: String, envVars: [String: String]) {
+    let apiKey = getEnvironmentVariable("CAPITAL_DOTCOM_API_KEY", envVars: envVars)
+    let identifier = getEnvironmentVariable("CAPITAL_DOTCOM_IDENTIFIER", envVars: envVars)
+    let password = getEnvironmentVariable("CAPITAL_DOT_CUSTOM_PW", envVars: envVars)
+    let envString = getEnvironmentVariable("CAPITAL_DOTCOM_ENVIRONMENT", envVars: envVars)
+
+    guard let capitalApiKey = apiKey,
+          let capitalIdentifier = identifier,
+          let capitalPassword = password else {
+        print("Error: Capital.com credentials missing")
+        print("Required environment variables:")
+        print("  CAPITAL_DOTCOM_API_KEY")
+        print("  CAPITAL_DOTCOM_IDENTIFIER")
+        print("  CAPITAL_DOT_CUSTOM_PW")
+        print()
+        print("Optional environment variables:")
+        print("  CAPITAL_DOTCOM_ENVIRONMENT (default: live, options: live, demo)")
+        print()
+        print("Set these in your .env file or system environment")
+        exit(1)
+    }
+
+    // Parse environment (default to LIVE to match Python runtime.py behavior)
+    let environment: Environment
+    if let envString = envString {
+        switch envString.lowercased() {
+        case "demo":
+            environment = .demo
+        case "live":
+            environment = .live
+        default:
+            print("Warning: Unknown environment '\(envString)', defaulting to LIVE")
+            environment = .live
+        }
+    } else {
+        // Default to LIVE (matching Python runtime.py)
+        environment = .live
+    }
+
+    print("Starting Capital.com dispatcher")
+    print("Environment: \(environment.rawValue.uppercased())")
+    print("Note: Capital.com uses Unix domain socket at /tmp/argus_capital.sock")
+    print("      (--host and --port arguments are ignored)")
+    print()
+
+    let dispatcher = CapitalComMKTDispatcher(
+        socketPath: "/tmp/argus_capital.sock",
+        apiKey: capitalApiKey,
+        identifier: capitalIdentifier,
+        password: capitalPassword,
+        environment: environment
+    )
+
     dispatcher.interactiveMode()
 }
 
