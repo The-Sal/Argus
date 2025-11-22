@@ -32,6 +32,7 @@ This is an ongoing effort to transcompile the Argus Python codebase to Swift. Th
 - ✅ **argus/ib** - Complete Interactive Brokers market data dispatcher with AccountProvider
 - ✅ **argus/ib/forecast** - Complete Interactive Brokers forecast contracts dispatcher
 - ✅ **argus/capital** - Complete Capital.com market data dispatcher with REST API authentication
+- ✅ **argus/polymarket_direct** - Polymarket direct integration (example mode, no dispatcher)
 - ⬜ **argus/oanda** - OANDA integration (pending)
 - ⬜ **argus/core** - Core utilities and helpers (pending)
 
@@ -944,6 +945,83 @@ Capital.com uses the same Protocol 2 format as Binance and IB for client communi
 
 ---
 
+### Completed: argus/polymarket_direct (Polymarket Direct)
+
+| Python File | Swift File | Status | Notes |
+|-------------|-----------|--------|-------|
+| `_types.py` | `PolymarketClasses.swift` | ✅ Complete | Data structures for events, markets, tags, series |
+| `__init__.py` (EnhancedPM) | `PolymarketWebSocket.swift` | ✅ Complete | WebSocket manager and REST API for fetching events |
+| `_example.py` | `PolymarketExample.swift` | ✅ Complete | Example usage (simplified) |
+
+**Polymarket-specific features**:
+- REST API for fetching prediction market events (Gamma API)
+- WebSocket subscriptions for real-time market data
+- No credentials required for public market data
+- Event/Market/Outcome data model hierarchy
+- Asset ID-based market data subscriptions
+- Example mode for demonstration (no full dispatcher)
+
+**Important notes**:
+- This is NOT a full dispatcher like Binance/IB/Capital.com
+- Polymarket uses a different architecture - no dispatcher needed for basic API usage
+- The example demonstrates fetching bitcoin hourly markets and subscribing to live data
+- Future work could add a full dispatcher if needed for multi-client subscriptions
+
+**Usage**:
+```bash
+# Run the example
+argus_server polymarket.example
+
+# The example will:
+# 1. Fetch bitcoin hourly markets from Polymarket
+# 2. Display upcoming and live markets
+# 3. Subscribe to a live market and print real-time data
+```
+
+**Data model hierarchy**:
+```
+PolymarketEvent (top-level event)
+    ├── markets: [Market]      (individual prediction markets)
+    ├── series: [Series]       (recurring market series)
+    └── tags: [Tag]            (categorization tags)
+
+Market (individual market within event)
+    ├── outcomes: [String]         (e.g., ["Up", "Down"])
+    ├── clobTokenIds: [String]     (token IDs for order book subscriptions)
+    └── eventStartTime, endDate    (market timing)
+```
+
+**WebSocket message format**:
+```swift
+// Subscription message
+{
+    "assets_ids": ["token-id-1", "token-id-2"],
+    "type": "market"
+}
+
+// Market data update (received)
+{
+    "price_changes": [
+        {
+            "asset_id": "token-id-1",
+            "best_ask": 0.52,
+            "best_bid": 0.51,
+            "price": 0.515,
+            "size": 100.0,
+            "timestamp": 1234567890
+        }
+    ]
+}
+```
+
+**Key differences from other modules**:
+- No dispatcher class - direct API usage only
+- No Protocol 2 encoding - raw market data callbacks
+- Example-based architecture rather than server architecture
+- Simplified streaming (no client management, no TCP server)
+
+---
+
 ## Adding New Modules
 
 ### Example: Transcompiling argus/oanda
@@ -1256,6 +1334,11 @@ func receiveMessage() {
 - `CapitalComWebSocket.swift` - Capital.com WebSocket manager with JSON protocol
 - `CapitalComDispatcher.swift` - Capital.com dispatcher with REST authentication
 
+### Polymarket Module
+- `PolymarketClasses.swift` - Polymarket data structures (PolymarketEvent, Market, Series, Tag)
+- `PolymarketWebSocket.swift` - EnhancedPM class for WebSocket and REST API
+- `PolymarketExample.swift` - Example usage demonstrating API functionality
+
 ### IB Module (Interactive Brokers)
 - `IBFields.swift` - 100+ IBKR field code constants
 - `IBClasses.swift` - IBKR data structures (IBMarketData, AccountBalances, STKPosition)
@@ -1309,4 +1392,11 @@ argus_server ib-forecast --env-file /path/to/.env
 python tests/debug_socket.py
 # Connects to localhost:9973
 # Shows real-time position and PnL updates
+```
+
+**Run Polymarket example**:
+```bash
+argus_server polymarket.example
+# Demonstrates fetching events and subscribing to market data
+# No credentials needed for public data
 ```

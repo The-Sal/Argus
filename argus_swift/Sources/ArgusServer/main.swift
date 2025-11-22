@@ -38,7 +38,7 @@ func parseArguments(_ args: [String]) -> Arguments {
         let arg = args[i]
 
         switch arg {
-        case "binance", "ib", "ib-forecast", "capitalcom":
+        case "binance", "ib", "ib-forecast", "capitalcom", "polymarket.example":
             result.target = arg
 
         case "--host":
@@ -91,10 +91,11 @@ func printHelp() {
       argus_server <target> [OPTIONS]
 
     Targets:
-      binance        Binance market data dispatcher
-      ib             Interactive Brokers market data dispatcher
-      ib-forecast    Interactive Brokers forecast contracts dispatcher
-      capitalcom     Capital.com market data dispatcher
+      binance              Binance market data dispatcher
+      ib                   Interactive Brokers market data dispatcher
+      ib-forecast          Interactive Brokers forecast contracts dispatcher
+      capitalcom           Capital.com market data dispatcher
+      polymarket.example   Polymarket direct integration example
 
     Options:
       --host HOST        Listening host (default: localhost)
@@ -192,9 +193,12 @@ func main() {
     case "capitalcom":
         runCapitalComDispatcher(args: args, host: host, envVars: envVars)
 
+    case "polymarket.example":
+        runPolymarketExample(args: args, host: host, envVars: envVars)
+
     default:
         print("Error: Unknown target '\(args.target)'")
-        print("Currently supported: binance, ib, ib-forecast, capitalcom")
+        print("Currently supported: binance, ib, ib-forecast, capitalcom, polymarket.example")
         print("Use --help for more information")
         exit(1)
     }
@@ -326,6 +330,15 @@ func runCapitalComDispatcher(args: Arguments, host: String, envVars: [String: St
     )
 
     dispatcher.interactiveMode()
+}
+
+func runPolymarketExample(args: Arguments, host: String, envVars: [String: String]) {
+    print("Starting Polymarket Direct Example")
+    print("This demonstrates basic usage of the Polymarket API")
+    print("No credentials needed for public market data")
+    print()
+
+    polymarketExampleUsage()
 }
 
 func getSystemInfo() -> String {
