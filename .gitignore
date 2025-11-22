@@ -10,5 +10,4 @@ examples/ADX_data
 *.pyc
 *.DS_Store
 *.pkl*
-docs
 
