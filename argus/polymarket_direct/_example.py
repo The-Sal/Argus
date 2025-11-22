@@ -1,10 +1,11 @@
 import os
+import sys
 import time
 import json
 import pickle
+import signal
 import datetime
 import threading
-
 import websocket
 from termcolor import colored
 from dotenv import load_dotenv
@@ -14,69 +15,132 @@ from argus.polymarket_direct import EnhancedPM, PolymarketEvent
 class StreamRecorder:
     """
     Thread-safe recorder that accumulates market updates in-memory and persists them to disk via pickle
-    at a fixed interval. It can also load an existing pickle to continue appending where it left off.
+    at a fixed interval using hourly rotation. On exit, merges all hourly files into one mega file.
     """
-    def __init__(self, pickle_path: str = 'polymarket_stream.pkl', save_interval_sec: int = 60):
-        self.pickle_path = pickle_path
+    def __init__(self, pickle_dir: str = '.', file_prefix: str = 'polymarket_stream', save_interval_sec: int = 60):
+        self.pickle_dir = pickle_dir
+        self.file_prefix = file_prefix
         self.save_interval_sec = int(save_interval_sec)
         self.records: list[dict] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self.current_hour_key: str | None = None  # Format: YYYY-MM-DD_HH
+
+        # Ensure directory exists
+        os.makedirs(self.pickle_dir, exist_ok=True)
+
+    def _get_hour_key(self, dt: datetime.datetime) -> str:
+        """Get hour key for a datetime (YYYY-MM-DD_HH format)"""
+        return dt.strftime('%Y-%m-%d_%H')
+
+    def _get_hourly_filename(self, hour_key: str) -> str:
+        """Get filename for a given hour key"""
+        return os.path.join(self.pickle_dir, f"{self.file_prefix}_{hour_key}.pkl")
+
+    def _get_current_hour_key(self) -> str:
+        """Get the current hour key based on UTC time"""
+        return self._get_hour_key(datetime.datetime.now(datetime.UTC))
 
     def load_if_exists(self):
+        """Load existing hourly pickle files if any exist (for continuity after restart)"""
         try:
-            if os.path.exists(self.pickle_path):
-                with open(self.pickle_path, 'rb') as f:
-                    data = pickle.load(f)
-                    if isinstance(data, list):
-                        with self._lock:
-                            self.records = data
-                        print(f"Loaded {len(self.records)} prior records from {self.pickle_path}")
-                    else:
-                        print(f"Existing pickle at {self.pickle_path} was not a list; starting fresh")
+            # Find all existing hourly files for this prefix
+            pattern = f"{self.file_prefix}_*.pkl"
+            import glob
+            matching_files = glob.glob(os.path.join(self.pickle_dir, pattern))
+
+            if matching_files:
+                print(f"Found {len(matching_files)} existing hourly pickle files")
+                # Note: We don't load them into memory as that would defeat the purpose
+                # They'll be merged on exit
+            else:
+                print("No existing hourly pickle files found; starting fresh")
         except Exception as e:
-            print(f"Failed to load existing pickle {self.pickle_path}: {e}")
+            print(f"Failed to check for existing pickles: {e}")
 
     def append(self, rec: dict):
+        """Append a record to the in-memory buffer"""
         with self._lock:
             self.records.append(rec)
 
     def _atomic_save(self):
-        tmp_path = self.pickle_path + '.tmp'
+        """Save current records to hourly file and clear buffer. Thread-safe."""
         try:
             with self._lock:
+                if not self.records:
+                    return True, 0
+
+                # Determine current hour
+                current_hour = self._get_current_hour_key()
+
+                # Check if we've rotated to a new hour
+                if self.current_hour_key is None:
+                    self.current_hour_key = current_hour
+                elif current_hour != self.current_hour_key:
+                    # Hour changed - finalize the old file first
+                    print(f"[Recorder] Hour rotation: {self.current_hour_key} -> {current_hour}")
+                    self.current_hour_key = current_hour
+
+                # Get filename for current hour
+                hour_file = self._get_hourly_filename(self.current_hour_key)
+                tmp_path = hour_file + '.tmp'
+
+                # Load existing records from this hour file if it exists
+                existing_records = []
+                if os.path.exists(hour_file):
+                    try:
+                        with open(hour_file, 'rb') as f:
+                            data = pickle.load(f)
+                            if isinstance(data, list):
+                                existing_records = data
+                    except Exception as e:
+                        print(f"Warning: Could not load existing {hour_file}: {e}")
+
+                # Combine existing with new records
                 snapshot = list(self.records)
+                combined_records = existing_records + snapshot
+                record_count = len(snapshot)
+
+                # Clear the buffer NOW (before writing to avoid holding lock during I/O)
+                self.records.clear()
+
+            # Write atomically (outside lock to avoid holding during I/O)
             with open(tmp_path, 'wb') as f:
-                pickle.dump(snapshot, f, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp_path, self.pickle_path)
-            return True, len(snapshot)
+                pickle.dump(combined_records, f, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp_path, hour_file)
+
+            return True, record_count
+
         except Exception as e:
             try:
-                if os.path.exists(tmp_path):
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
                     os.remove(tmp_path)
             except Exception:
                 pass
-            print(f"Failed to save pickle {self.pickle_path}: {e}")
+            print(f"Failed to save hourly pickle: {e}")
             return False, 0
 
     def _loop(self):
+        """Background thread that periodically saves records"""
         next_time = time.time() + self.save_interval_sec
         while not self._stop.is_set():
             now = time.time()
             if now >= next_time:
                 ok, n = self._atomic_save()
-                if ok:
-                    print(f"[Recorder] Saved {n} records to {self.pickle_path}")
+                if ok and n > 0:
+                    print(f"[Recorder] Saved {n} new records to {self.current_hour_key}.pkl")
                 next_time = now + self.save_interval_sec
-            # sleep a bit but wake quickly on stop
+            # Sleep but wake quickly on stop
             self._stop.wait(0.5)
-        # final flush
+
+        # Final flush on stop
         ok, n = self._atomic_save()
-        if ok:
-            print(f"[Recorder] Final save of {n} records to {self.pickle_path}")
+        if ok and n > 0:
+            print(f"[Recorder] Final save of {n} records")
 
     def start(self):
+        """Start the background saving thread"""
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
@@ -84,11 +148,105 @@ class StreamRecorder:
         self._thread.start()
 
     def stop(self):
+        """Stop the background saving thread"""
         self._stop.set()
         t = self._thread
         if t:
             t.join(timeout=5)
             self._thread = None
+
+    def merge_hourly_files(self) -> str | None:
+        """
+        Merge all hourly pickle files into one mega file with start-end time in filename.
+        Returns the path to the merged file, or None if no files to merge.
+        """
+        try:
+            import glob
+
+            # Find all hourly files for this prefix (excluding already-merged files)
+            pattern = f"{self.file_prefix}_????-??-??_??.pkl"
+            hourly_files = sorted(glob.glob(os.path.join(self.pickle_dir, pattern)))
+
+            if not hourly_files:
+                print("[Recorder] No hourly files to merge")
+                return None
+
+            print(f"[Recorder] Merging {len(hourly_files)} hourly files...")
+
+            # Load all records from all hourly files
+            all_records = []
+            for hourly_file in hourly_files:
+                try:
+                    with open(hourly_file, 'rb') as f:
+                        data = pickle.load(f)
+                        if isinstance(data, list):
+                            all_records.extend(data)
+                            print(f"  Loaded {len(data)} records from {os.path.basename(hourly_file)}")
+                except Exception as e:
+                    print(f"  Warning: Could not load {hourly_file}: {e}")
+
+            if not all_records:
+                print("[Recorder] No records found in hourly files")
+                return None
+
+            print(f"[Recorder] Total records loaded: {len(all_records)}")
+
+            # Sort by timestamp for consistency
+            try:
+                all_records.sort(key=lambda r: r.get('timestamp', 0))
+            except Exception as e:
+                print(f"Warning: Could not sort records: {e}")
+
+            # Determine start and end times from the data
+            start_time = None
+            end_time = None
+
+            for rec in all_records:
+                ts_utc = rec.get('ts_utc')
+                if ts_utc:
+                    try:
+                        if isinstance(ts_utc, str):
+                            dt = datetime.datetime.fromisoformat(ts_utc.replace('Z', '+00:00'))
+                        else:
+                            dt = ts_utc
+
+                        if start_time is None or dt < start_time:
+                            start_time = dt
+                        if end_time is None or dt > end_time:
+                            end_time = dt
+                    except Exception:
+                        pass
+
+            # Format timestamps for filename
+            if start_time and end_time:
+                start_str = start_time.strftime('%Y%m%d_%H%M%S')
+                end_str = end_time.strftime('%Y%m%d_%H%M%S')
+                merged_filename = f"{self.file_prefix}_MERGED_{start_str}_{end_str}.pkl"
+            else:
+                # Fallback if we couldn't parse timestamps
+                timestamp_str = datetime.datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')
+                merged_filename = f"{self.file_prefix}_MERGED_{timestamp_str}.pkl"
+
+            merged_path = os.path.join(self.pickle_dir, merged_filename)
+
+            # Save merged file
+            with open(merged_path, 'wb') as f:
+                pickle.dump(all_records, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+            print(f"[Recorder] Merged file created: {merged_filename}")
+            print(f"[Recorder] Total records in merged file: {len(all_records)}")
+
+            if start_time and end_time:
+                duration = (end_time - start_time).total_seconds()
+                print(f"[Recorder] Time range: {start_time.isoformat()} to {end_time.isoformat()} ({duration/3600:.2f} hours)")
+
+            return merged_path
+
+        except Exception as e:
+            print(f"[Recorder] Error during merge: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
 
 def example_usage():
@@ -99,12 +257,31 @@ def example_usage():
     )
     enhanced_pm.start_market_ws()
 
-    # Recorder setup: load previous pickle (if any) and start background saver
-    pickle_path = os.environ.get('POLYMARKET_STREAM_PICKLE', 'polymarket_stream.pkl')
+    # Recorder setup with hourly rotation
+    pickle_dir = os.environ.get('POLYMARKET_STREAM_DIR', './polymarket_data')
+    file_prefix = os.environ.get('POLYMARKET_STREAM_PREFIX', 'polymarket_stream')
     save_interval = int(os.environ.get('POLYMARKET_STREAM_SAVE_INTERVAL', '60'))
-    recorder = StreamRecorder(pickle_path=pickle_path, save_interval_sec=save_interval)
+
+    recorder = StreamRecorder(pickle_dir=pickle_dir, file_prefix=file_prefix, save_interval_sec=save_interval)
     recorder.load_if_exists()
     recorder.start()
+
+    # Signal handler for graceful shutdown on Ctrl+C
+    def signal_handler(sig, frame):
+        print("\n[SIGNAL] Ctrl+C detected, shutting down gracefully...")
+        try:
+            recorder.stop()
+            print("[SIGNAL] Merging hourly files...")
+            merged_path = recorder.merge_hourly_files()
+            if merged_path:
+                print(f"[SIGNAL] Successfully created merged file: {merged_path}")
+            else:
+                print("[SIGNAL] No merge performed (no hourly files found)")
+        except Exception as e:
+            print(f"[SIGNAL] Error during shutdown: {e}")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, signal_handler)
 
     current_time = datetime.datetime.now(datetime.UTC)
 
@@ -308,6 +485,7 @@ def example_usage():
     if idx == -1:
         print("All events are in the past. Nothing to subscribe to.")
         recorder.stop()
+        recorder.merge_hourly_files()
         return
 
     current_tokens = []
@@ -341,11 +519,16 @@ def example_usage():
 
         print("Reached the end of scheduled events. Exiting continuous stream loop.")
     finally:
-        # Ensure we stop recorder and perform final save
+        # Ensure we stop recorder and perform final merge
         try:
+            print("[CLEANUP] Stopping recorder...")
             recorder.stop()
+            print("[CLEANUP] Merging hourly files...")
+            merged_path = recorder.merge_hourly_files()
+            if merged_path:
+                print(f"[CLEANUP] Successfully created merged file: {merged_path}")
         except Exception as e:
-            print("Error stopping recorder:", e)
+            print(f"[CLEANUP] Error during cleanup: {e}")
 
 if __name__ == '__main__':
     websocket.enableTrace(True)
