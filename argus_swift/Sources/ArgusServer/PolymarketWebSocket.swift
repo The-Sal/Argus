@@ -14,11 +14,11 @@ class EnhancedPM {
 
     private var ws: URLSessionWebSocketTask?
     private var session: URLSession
-    private var idxToCallback: [String: (([String: Any]) -> Void)] = []
+    private var idxToCallback: [String: (([String: Any]) -> Void)] = [:]
     private var wsMessages: [[String: Any]] = []
     private let threadLock = NSLock()
     private var wsErrors = 0
-    private var internallylosed = false
+    private var internallyClosed = false
     private var marketOpenSemaphore = DispatchSemaphore(value: 0)
 
     // Constructor parameters (kept for compatibility)
@@ -135,7 +135,7 @@ class EnhancedPM {
     }
 
     private func onWsClose() {
-        if internallylosed {
+        if internallyClosed {
             return
         }
 
@@ -212,14 +212,14 @@ class EnhancedPM {
     /// Restart WebSocket connections
     func restartWsConnections() {
         print("[EnhancedPM] Re-initializing market ws for subscription...")
-        internallylosed = true
+        internallyClosed = true
         ws?.cancel()
         initMarketWs()
         startMarketWs()
 
         // Wait for connection to open
         _ = marketOpenSemaphore.wait(timeout: .now() + 5)
-        internallylosed = false
+        internallyClosed = false
     }
 
     /// Subscribe to real-time market data via a callback function

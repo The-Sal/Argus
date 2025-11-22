@@ -60,7 +60,7 @@ func polymarketExampleUsage() {
     }
 
     // Sort markets by event start time
-    var sortedMarkets = allBitcoinHourly.sorted { event1, event2 in
+    let sortedMarkets = allBitcoinHourly.sorted { event1, event2 in
         guard let market1 = event1.markets.first,
               let market2 = event2.markets.first,
               let time1 = market1.eventStartTime,
@@ -76,7 +76,6 @@ func polymarketExampleUsage() {
     print(String(repeating: "*", count: 100))
 
     let currentTime = Date()
-    let dateFormatter = ISO8601DateFormatter()
 
     for event in sortedMarkets.prefix(10) {
         guard let market = event.markets.first,
