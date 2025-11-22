@@ -108,19 +108,13 @@ class EnhancedPM {
     private func onWsMessage(text: String) {
         guard let data = text.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            print("[EnhancedPM] Failed to parse WebSocket message: \(text)")
+            print("[EnhancedPM] Failed to parse WebSocket message")
             return
         }
 
         threadLock.lock()
         wsMessages.append(json)
         threadLock.unlock()
-
-        // Debug: print the raw message structure
-        if let jsonData = try? JSONSerialization.data(withJSONObject: json, options: .prettyPrinted),
-           let jsonString = String(data: jsonData, encoding: .utf8) {
-            print("[EnhancedPM DEBUG] Received message:\n\(jsonString)")
-        }
 
         // Route to callbacks based on price_changes
         if let changes = json["price_changes"] as? [[String: Any]] {
@@ -133,8 +127,6 @@ class EnhancedPM {
                     callback?(change)
                 }
             }
-        } else {
-            print("[EnhancedPM DEBUG] No price_changes found in message. Keys: \(json.keys)")
         }
     }
 

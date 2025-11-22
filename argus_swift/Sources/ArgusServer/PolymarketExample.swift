@@ -147,10 +147,12 @@ func polymarketExampleUsage() {
         // Subscribe to market data
         enhancedPM.subscribeToMarketData(assetIds: tokenIds) { orderBookData in
             let outcome = orderBookData["asset_id"] as? String ?? "Unknown"
-            let bestAsk = orderBookData["best_ask"] as? Double ?? 0.0
-            let bestBid = orderBookData["best_bid"] as? Double ?? 0.0
-            let size = orderBookData["size"] as? Double ?? 0.0
-            let price = orderBookData["price"] as? Double ?? 0.0
+
+            // Parse string values to Double (Polymarket sends numbers as strings)
+            let bestAsk = Double(orderBookData["best_ask"] as? String ?? "0") ?? 0.0
+            let bestBid = Double(orderBookData["best_bid"] as? String ?? "0") ?? 0.0
+            let size = Double(orderBookData["size"] as? String ?? "0") ?? 0.0
+            let price = Double(orderBookData["price"] as? String ?? "0") ?? 0.0
 
             // Determine color based on outcome
             let outcomeIndex = tokenIds.firstIndex(of: outcome) ?? 0
