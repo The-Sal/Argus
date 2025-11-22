@@ -276,10 +276,10 @@ Argus consists of several specialized modules, each providing access to differen
 ### Infrastructure
 
 - **[Cache System](docs/CACHE.md)** - Thread-safe caching for API calls
-  - Domain-based caching with automatic backups
-  - CLI for inspection, restoration, and manipulation
-  - Transparent cache generation (human-readable export)
-  - Separate caches for main and Polymarket modules
+  - All modules share a single cache file (`~/.argus/capital_cache.pkl`) via `DomainCache`
+  - Each module has its own domain within the cache (e.g., `IBNetworker.search_contract`, `capital_com.api.resolve_symbol`)
+  - Polymarket has a separate cache file (`~/.argus/polymarket_cache.pkl`) to prevent bloat
+  - Automatic backups, CLI for inspection/manipulation, transparent cache generation
   - Environment variable to disable: `ARGUS_CACHES_DISABLED=1`
 
 ## Getting Started
@@ -432,8 +432,13 @@ with NASDAQDataDownloader(headless=True) as downloader:
 
 - **Python**: 3.8+
 - **Operating Systems**:
-  - Full support: macOS, Linux
-  - Partial support: Windows (no IB forecasting, no notifications)
+  - **macOS**: Full support (all modules)
+  - **Linux**: Partial support
+    - IB modules currently not supported (ShortableShares requires macOS Finder)
+    - No desktop notifications (powered by AppleScript)
+    - All other modules work fully
+    - IB module Linux support is in the pipeline
+  - **Windows**: Not tested, not a target platform
 - **Dependencies**: See `requirements.txt`
 - **Optional**: Firefox + geckodriver (for NASDAQ module)
 
@@ -483,12 +488,9 @@ Argus/
 
 ## Contributing
 
-Argus is under active development. Current priorities:
-- Polymarket dispatcher implementation
-- WebSocket client libraries for C++ and Rust
-- Performance benchmarking suite
-- Comprehensive unit tests
-- Protocol 2 version 3 (enhanced metadata)
+Argus is under active development. Current efforts:
+
+**Swift Transcompilation**: There is an ongoing transcompilation effort from Python to Swift in the `argus-swift` branch. Python remains the primary source code - all patches and updates are applied to Python first, with Swift playing catchup through manual transcompilation. Python is not going anywhere.
 
 ## License
 

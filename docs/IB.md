@@ -67,7 +67,8 @@ class IBNetworker:
 
 **Caching:**
 - `search_contract()` results are cached to reduce API load
-- Cache location: `~/.argus/ib_cache.pkl`
+- Cache location: `~/.argus/capital_cache.pkl` (shared with all modules via `DomainCache`)
+- Cache domain: `IBNetworker.search_contract`
 
 ### 2. IBWss
 
@@ -135,7 +136,8 @@ The main dispatcher for Interactive Brokers market data.
 |---------|-------------|
 | `add=SYMBOL` | Subscribe to a ticker |
 | `remove=SYMBOL` | Unsubscribe from a ticker |
-| `ping` | Check connection status |
+
+**Note:** The dispatcher sends `$` (ping byte) to clients as a health check, but clients cannot send ping commands.
 
 **Protocol 2 Format:**
 
@@ -148,6 +150,10 @@ Fields: bid, bid_size, ask, ask_size, last, last_size, shortable_shares, timesta
 ### 4. AccountProvider
 
 **Critical Component** for live portfolio tracking.
+
+**Requirements:**
+- **Only works in Protocol 2 mode**
+- Using `runtime.py` defaults to Protocol 2 mode
 
 **Features:**
 - Streams account positions to debug socket (port 9973)
