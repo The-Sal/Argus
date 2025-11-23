@@ -187,6 +187,41 @@ class Binance_CapitalComMKTDataLive(CapitalComMKTDataLive):
                 timestamp=int(trade_data.T)
             )
 
+    @classmethod
+    def from_binance_book_ticker(cls, symbol: str, book_ticker: 'BookTicker',
+                                  existing_data: 'Binance_CapitalComMKTDataLive' = None):
+        """Create or update market data from Binance BookTicker."""
+        bid_price = float(book_ticker.b)
+        bid_size = float(book_ticker.B)
+        ask_price = float(book_ticker.a)
+        ask_size = float(book_ticker.A)
+
+        # If we have existing trade data, preserve it
+        if existing_data and existing_data.last > 0:
+            return cls(
+                symbol=symbol.upper(),
+                bid=bid_price,
+                bid_size=bid_size,
+                ask=ask_price,
+                ask_size=ask_size,
+                last=existing_data.last,
+                last_size=existing_data.last_size,
+                timestamp=existing_data.timestamp
+            )
+        else:
+            # No trade data, use mid price as approximation
+            mid_price = (bid_price + ask_price) / 2 if (bid_price > 0 and ask_price > 0) else 0.0
+            return cls(
+                symbol=symbol.upper(),
+                bid=bid_price,
+                bid_size=bid_size,
+                ask=ask_price,
+                ask_size=ask_size,
+                last=mid_price,
+                last_size=0.0,
+                timestamp=0
+            )
+
 
 
 
