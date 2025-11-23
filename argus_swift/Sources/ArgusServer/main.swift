@@ -182,6 +182,8 @@ func main() {
 
     switch args.target {
     case "binance":
+        print("WARNING: THIS MODULE SHOULD NOT BE USED AND HAS A KNOWN BUG FROM IT'S <0.0.8 PYTHON COUNTERPART.")
+        sleep(10)
         runBinanceDispatcher(args: args, host: host, envVars: envVars)
 
     case "ib":
