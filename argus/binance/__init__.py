@@ -376,6 +376,12 @@ class BinanceMKTDispatcher(Introspective):
                 market_data = Binance_CapitalComMKTDataLive.from_binance_trade(
                     symbol, trade_msg.data, existing_data
                 )
+            elif msg.idx == BinanceTypes.BOOK_TICKER:
+                # Book ticker update (best bid/ask)
+                book_ticker: BookTicker = msg.obj
+                market_data = Binance_CapitalComMKTDataLive.from_binance_book_ticker(
+                    symbol, book_ticker, existing_data
+                )
             else:
                 # Other message types (kline, etc.) - skip for now
                 return
