@@ -4,7 +4,7 @@
 
 **Argus** is a high-performance financial market data aggregation system built around a server-client architecture. It provides unified access to multiple financial data sources through a custom Protocol 2 (P2) binary protocol for efficient, standardized data transmission.
 
-Version: **0.0.7**
+Version: **0.0.8**
 
 ## Overview
 
