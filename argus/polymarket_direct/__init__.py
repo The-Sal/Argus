@@ -115,7 +115,8 @@ class EnhancedPM:
         if self._internally_closed:
             return
         throw_fuss(
-            msg=f"Market WebSocket Closed, attempting to reconnect... and resubscribe to markets. attempts: {self.ws_errors}",
+            msg=f"Market WebSocket Closed, attempting to reconnect... "
+                f"and resubscribe to markets. attempts: {self.ws_errors}/{self.max_socket_retries}",
             title="Polymarket WebSocket Closed"
         )
         self.ws_errors += 1
