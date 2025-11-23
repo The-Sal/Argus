@@ -14,17 +14,9 @@ Version: **0.0.8**
 > Docs are only updated every so often so always refer to this section before using any version of Argus.
 
 ### Version <0.0.8
-Binance – The docs were not clear that the depthStream does not provide full order book data,
-now the docs withint those classes have been updated to reflect that. Moreover, we have added the
-`bookTicker` stream to provide the best bid/aks prices in real-time. Moreover the dispatcher will now
-ONLY SEND the best bid/ask prices to clients, the prior version was mixing data-types such as orderbook
-and others all with the same P2 format without a clear distinction. In future we will bring back support for
-these other data-types but for now only best bid/ask prices are supported. Moreover we are working on
-a full order book dispatcher on a separate branch. IT IS HIGHLY RECOMMENDED to upgrade to version 0.0.8 or later when using the Binance module.
-We have also yanked the Binance modules docs from the docs/ directory until they are fully updated. Moreover because
-we now use BookTicker stream the P2 protocol server timestamp will be 0 because it is not 
-provided by Binance in that stream. You can use the transmission_time field instead for latency measurements.
-THIS ALSO AFFECTS THE SWIFT TRANSCOMPILATION BRANCH.
+
+The Binance documentation has been updated to clarify that the `depthStream` does not provide a full order‑book snapshot. In line with this, we have added a new `bookTicker` stream that delivers real‑time best bid and ask prices. Consequently, the dispatcher now sends only these best bid/ask prices to clients; earlier versions mixed different data types—such as order‑book updates and other events—under the same P2 format without clear distinction. While we intend to re‑introduce support for those other data types in the future, the current release supports only best bid/ask prices. A separate branch is being worked on to provide a full order‑book dispatcher, but for now the best bid/ask stream is recommended.
+It is highly advisable to upgrade to version 0.0.8 or later when using the Binance module. The Binance‑specific documentation has been temporarily removed from the `docs/` directory until it is fully updated. Because we now use the `bookTicker` stream, the P2 protocol server timestamp will be 0—Binance does not supply this value in that stream. Instead, you should use the `transmission_time` field for latency measurements; this also impacts the Swift TransCompilation branch. Importantly, the dispatcher’s contracts and responses remain unchanged, so no client‑side code modifications are required to accommodate these changes.
 
 ----
 
