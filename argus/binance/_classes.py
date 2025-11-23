@@ -1,10 +1,12 @@
-from typing import List, Tuple, Optional
+from decimal import Decimal
 from dataclasses import dataclass
+from typing import List, Tuple, Optional
 from argus.capital import CapitalComMKTDataLive
 
 @dataclass
 class DepthUpdate:
     """Represents order book depth update data"""
+    #  THIS IS NOT THE SAME AS A FULL ORDER BOOK SNAPSHOT
     e: str  # Event type
     E: int  # Event time (milliseconds)
     s: str  # Symbol
@@ -184,3 +186,33 @@ class Binance_CapitalComMKTDataLive(CapitalComMKTDataLive):
                 last_size=last_size,
                 timestamp=int(trade_data.T)
             )
+
+
+
+
+@dataclass
+class BookTicker:
+    u: int                    # order book updateId
+    s: str                    # symbol
+    b: Decimal                # best bid price
+    B: Decimal                # best bid qty
+    a: Decimal                # best ask price
+    A: Decimal                # best ask qty
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        try:
+            data = data['data']
+            return cls(
+                u=int(data['u']),
+                s=data['s'],
+                b=Decimal(data['b']),
+                B=Decimal(data['B']),
+                a=Decimal(data['a']),
+                A=Decimal(data['A'])
+            )
+
+        except (KeyError, ValueError) as e:
+            print("FAILED TO PARSE BookTicker:", e)
+            print("INPUT:", data)
+            raise
