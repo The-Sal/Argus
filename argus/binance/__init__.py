@@ -359,24 +359,24 @@ class BinanceMKTDispatcher(Introspective):
             existing_data = self.symbol_data_cache.get(symbol, None)
 
             # Update market data based on message type
-            if msg.idx == BinanceTypes.DEPTH_STREAM:
-                # Order book update
-                depth_msg: DepthStreamMessage = msg.obj
-                market_data = Binance_CapitalComMKTDataLive.from_binance_depth(
-                    symbol, depth_msg.data
-                )
-                # If we have existing trade data, merge it
-                if existing_data and existing_data.last > 0:
-                    market_data.last = existing_data.last
-                    market_data.last_size = existing_data.last_size
-
-            elif msg.idx == BinanceTypes.AGG_TRADE:
-                # Aggregate trade update
-                trade_msg: AggTradeMessage = msg.obj
-                market_data = Binance_CapitalComMKTDataLive.from_binance_trade(
-                    symbol, trade_msg.data, existing_data
-                )
-            elif msg.idx == BinanceTypes.BOOK_TICKER:
+            # if msg.idx == BinanceTypes.DEPTH_STREAM:
+            #     # Order book update
+            #     depth_msg: DepthStreamMessage = msg.obj
+            #     market_data = Binance_CapitalComMKTDataLive.from_binance_depth(
+            #         symbol, depth_msg.data
+            #     )
+            #     # If we have existing trade data, merge it
+            #     if existing_data and existing_data.last > 0:
+            #         market_data.last = existing_data.last
+            #         market_data.last_size = existing_data.last_size
+            #
+            # elif msg.idx == BinanceTypes.AGG_TRADE:
+            #     # Aggregate trade update
+            #     trade_msg: AggTradeMessage = msg.obj
+            #     market_data = Binance_CapitalComMKTDataLive.from_binance_trade(
+            #         symbol, trade_msg.data, existing_data
+            #     )
+            if msg.idx == BinanceTypes.BOOK_TICKER:
                 # Book ticker update (best bid/ask)
                 book_ticker: BookTicker = msg.obj
                 market_data = Binance_CapitalComMKTDataLive.from_binance_book_ticker(

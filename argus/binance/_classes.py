@@ -61,8 +61,6 @@ class AggTradeMessage:
             received_at=d.get('received_at')
         )
 
-
-
 @dataclass
 class KlineData:
     """Individual kline/candlestick data"""
@@ -109,6 +107,32 @@ class KlineEventData:
     s: str          # Symbol
     k: KlineData    # Kline data
 
+@dataclass
+class BookTicker:
+    u: int                    # order book updateId
+    s: str                    # symbol
+    b: Decimal                # best bid price
+    B: Decimal                # best bid qty
+    a: Decimal                # best ask price
+    A: Decimal                # best ask qty
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        try:
+            data = data['data']
+            return cls(
+                u=int(data['u']),
+                s=data['s'],
+                b=Decimal(data['b']),
+                B=Decimal(data['B']),
+                a=Decimal(data['a']),
+                A=Decimal(data['A'])
+            )
+
+        except (KeyError, ValueError) as e:
+            print("FAILED TO PARSE BookTicker:", e)
+            print("INPUT:", data)
+            raise
 
 class Binance_CapitalComMKTDataLive(CapitalComMKTDataLive):
     """
@@ -123,69 +147,69 @@ class Binance_CapitalComMKTDataLive(CapitalComMKTDataLive):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-    @classmethod
-    def from_binance_depth(cls, symbol: str, depth_update: DepthUpdate):
-        """Create market data from Binance depth update (order book)."""
-        # Extract top bid and ask from the order book
-        try:
-            top_bid = float(depth_update.b[0][0]) if depth_update.b else 0.0
-            top_bid_size = float(depth_update.b[0][1]) if depth_update.b else 0.0
-        except (IndexError, ValueError):
-            top_bid = 0.0
-            top_bid_size = 0.0
+    # @classmethod
+    # def from_binance_depth(cls, symbol: str, depth_update: DepthUpdate):
+    #     """Create market data from Binance depth update (order book)."""
+    #     # Extract top bid and ask from the order book
+    #     try:
+    #         top_bid = float(depth_update.b[0][0]) if depth_update.b else 0.0
+    #         top_bid_size = float(depth_update.b[0][1]) if depth_update.b else 0.0
+    #     except (IndexError, ValueError):
+    #         top_bid = 0.0
+    #         top_bid_size = 0.0
+    #
+    #     try:
+    #         top_ask = float(depth_update.a[0][0]) if depth_update.a else 0.0
+    #         top_ask_size = float(depth_update.a[0][1]) if depth_update.a else 0.0
+    #     except (IndexError, ValueError):
+    #         top_ask = 0.0
+    #         top_ask_size = 0.0
+    #
+    #     # Use mid price as last price if no trade data available
+    #     last_price = (top_bid + top_ask) / 2 if (top_bid > 0 and top_ask > 0) else 0.0
+    #
+    #     return cls(
+    #         symbol=symbol.upper(),
+    #         bid=top_bid,
+    #         bid_size=top_bid_size,
+    #         ask=top_ask,
+    #         ask_size=top_ask_size,
+    #         last=last_price,
+    #         last_size=0.0,
+    #         timestamp=int(depth_update.E)
+    #     )
 
-        try:
-            top_ask = float(depth_update.a[0][0]) if depth_update.a else 0.0
-            top_ask_size = float(depth_update.a[0][1]) if depth_update.a else 0.0
-        except (IndexError, ValueError):
-            top_ask = 0.0
-            top_ask_size = 0.0
-
-        # Use mid price as last price if no trade data available
-        last_price = (top_bid + top_ask) / 2 if (top_bid > 0 and top_ask > 0) else 0.0
-
-        return cls(
-            symbol=symbol.upper(),
-            bid=top_bid,
-            bid_size=top_bid_size,
-            ask=top_ask,
-            ask_size=top_ask_size,
-            last=last_price,
-            last_size=0.0,
-            timestamp=int(depth_update.E)
-        )
-
-    @classmethod
-    def from_binance_trade(cls, symbol: str, trade_data: AggTradeData,
-                           existing_data: 'Binance_CapitalComMKTDataLive' = None):
-        """Create or update market data from Binance aggregate trade."""
-        last_price = float(trade_data.p)
-        last_size = float(trade_data.q)
-
-        # If we have existing depth data, preserve it and just update the last trade
-        if existing_data:
-            return cls(
-                symbol=symbol.upper(),
-                bid=existing_data.bid,
-                bid_size=existing_data.bid_size,
-                ask=existing_data.ask,
-                ask_size=existing_data.ask_size,
-                last=last_price,
-                last_size=last_size,
-                timestamp=int(trade_data.T)
-            )
-        else:
-            # No depth data, use trade price for bid/ask approximation
-            return cls(
-                symbol=symbol.upper(),
-                bid=last_price,
-                bid_size=0.0,
-                ask=last_price,
-                ask_size=0.0,
-                last=last_price,
-                last_size=last_size,
-                timestamp=int(trade_data.T)
-            )
+    # @classmethod
+    # def from_binance_trade(cls, symbol: str, trade_data: AggTradeData,
+    #                        existing_data: 'Binance_CapitalComMKTDataLive' = None):
+    #     """Create or update market data from Binance aggregate trade."""
+    #     last_price = float(trade_data.p)
+    #     last_size = float(trade_data.q)
+    #
+    #     # If we have existing depth data, preserve it and just update the last trade
+    #     if existing_data:
+    #         return cls(
+    #             symbol=symbol.upper(),
+    #             bid=existing_data.bid,
+    #             bid_size=existing_data.bid_size,
+    #             ask=existing_data.ask,
+    #             ask_size=existing_data.ask_size,
+    #             last=last_price,
+    #             last_size=last_size,
+    #             timestamp=int(trade_data.T)
+    #         )
+    #     else:
+    #         # No depth data, use trade price for bid/ask approximation
+    #         return cls(
+    #             symbol=symbol.upper(),
+    #             bid=last_price,
+    #             bid_size=0.0,
+    #             ask=last_price,
+    #             ask_size=0.0,
+    #             last=last_price,
+    #             last_size=last_size,
+    #             timestamp=int(trade_data.T)
+    #         )
 
     @classmethod
     def from_binance_book_ticker(cls, symbol: str, book_ticker: 'BookTicker',
@@ -221,33 +245,3 @@ class Binance_CapitalComMKTDataLive(CapitalComMKTDataLive):
                 last_size=0.0,
                 timestamp=0
             )
-
-
-
-
-@dataclass
-class BookTicker:
-    u: int                    # order book updateId
-    s: str                    # symbol
-    b: Decimal                # best bid price
-    B: Decimal                # best bid qty
-    a: Decimal                # best ask price
-    A: Decimal                # best ask qty
-
-    @classmethod
-    def from_dict(cls, data: dict):
-        try:
-            data = data['data']
-            return cls(
-                u=int(data['u']),
-                s=data['s'],
-                b=Decimal(data['b']),
-                B=Decimal(data['B']),
-                a=Decimal(data['a']),
-                A=Decimal(data['A'])
-            )
-
-        except (KeyError, ValueError) as e:
-            print("FAILED TO PARSE BookTicker:", e)
-            print("INPUT:", data)
-            raise

@@ -2,9 +2,30 @@
 
 ![CI/CD Status](https://github.com/The-Sal/Argus/workflows/Manual%20CI%2FCD%20Trigger/badge.svg)
 
-**Argus** is a high-performance financial market data aggregation system built around a server-client architecture. It provides unified access to multiple financial data sources through a custom Protocol 2 (P2) binary protocol for efficient, standardized data transmission.
+**Argus** aims to be a high-performance financial market data aggregation system built around a server-client architecture. It provides unified access to multiple financial data sources through a custom Protocol 2 (P2) binary protocol for efficient, standardized data transmission.
 
 Version: **0.0.8**
+
+---
+
+## WARNINGS:
+> The following sections are of any warnings to users about different Argus versions.
+> This is updated as needed when bugs are found both in the current and past versions. 
+> Docs are only updated every so often so always refer to this section before using any version of Argus.
+
+### Version <0.0.8
+Binance – The docs were not clear that the depthStream does not provide full order book data,
+now the docs withint those classes have been updated to reflect that. Moreover, we have added the
+`bookTicker` stream to provide the best bid/aks prices in real-time. Moreover the dispatcher will now
+ONLY SEND the best bid/ask prices to clients, the prior version was mixing data-types such as orderbook
+and others all with the same P2 format without a clear distinction. In future we will bring back support for
+these other data-types but for now only best bid/ask prices are supported. Moreover we are working on
+a full order book dispatcher on a separate branch. IT IS HIGHLY RECOMMENDED to upgrade to version 0.0.8 or later when using the Binance module.
+We have also yanked the Binance modules docs from the docs/ directory until they are fully updated. Moreover because
+we now use BookTicker stream the P2 protocol server timestamp will be 0 because it is not 
+provided by Binance in that stream. You can use the transmission_time field instead for latency measurements.
+
+----
 
 ## Overview
 
