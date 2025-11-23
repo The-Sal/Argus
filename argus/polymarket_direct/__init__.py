@@ -17,7 +17,6 @@ to provide results. This module also supports a 'dry' mode where you do NOT need
 supports real-time market data subscriptions via WebSocket. The keys are usually only for order placement.
 
 """
-import copy
 import json
 import time
 import requests
@@ -102,16 +101,20 @@ class EnhancedPM:
     # WSS METHODS
     ############################################
     def _on_ws_open(self, ws):
+        _ = ws
         print("Market WebSocket Opened")
         self.market_open_semaphore.release()
 
-    def on_error(self, ws, error):
+    @staticmethod
+    def on_error(ws, error):
+        _ = ws, error
         throw_fuss(
             msg=f"WebSocket Error: {error}",
             title="Polymarket WebSocket Error"
         )
 
     def _on_ws_close(self, ws, close_status_code, close_msg):
+        _ = ws, close_status_code, close_msg
         if self._internally_closed:
             return
         throw_fuss(
@@ -136,6 +139,7 @@ class EnhancedPM:
             }))
 
     def _on_ws_message(self, ws, message):
+        _ = ws
         try:
             data = json.loads(message)
             self.ws_messages.append(data)
