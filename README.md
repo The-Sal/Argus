@@ -250,7 +250,7 @@ Argus consists of several specialized modules, each providing access to differen
 
 - **[Binance](docs/BINANCE.md)** - Cryptocurrency market data
   - `BinanceMKTDispatcher` - WebSocket-based crypto data with Protocol 2
-  - Order book depth (@100ms), aggregate trades, k-line data
+  - Order book depth (@100ms), aggregate trades, k-line data, BookTrade, etc...
   - Auto-dump to JSON files for historical analysis
   - Statistics tracking (messages per second)
 
