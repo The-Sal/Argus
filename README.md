@@ -24,6 +24,7 @@ a full order book dispatcher on a separate branch. IT IS HIGHLY RECOMMENDED to u
 We have also yanked the Binance modules docs from the docs/ directory until they are fully updated. Moreover because
 we now use BookTicker stream the P2 protocol server timestamp will be 0 because it is not 
 provided by Binance in that stream. You can use the transmission_time field instead for latency measurements.
+THIS ALSO AFFECTS THE SWIFT TRANSCOMPILATION BRANCH.
 
 ----
 
