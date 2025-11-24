@@ -18,6 +18,7 @@ supports real-time market data subscriptions via WebSocket. The keys are usually
 
 """
 import json
+import os
 import time
 import requests
 import threading
@@ -66,8 +67,7 @@ class EnhancedPM:
             #     funder=proxy_funder,
             # )
             # self.set_api_creds(self.create_or_derive_api_creds())
-        self.max_socket_retries = max_socket_retries
-
+        self.max_socket_retries = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', max_socket_retries))
         self.bd = order_book_depth
         self.user_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/user')
         self.session = requests.Session()
