@@ -225,6 +225,37 @@ class Protocol2Parser:
         """
         self.decoding_order = decoding_order
 
+    def multi_parse(self, mixed_packets: bytes) -> List[Dict[str, Union[str, float]]]:
+        """
+        Parse multiple Protocol 2 packets from a byte stream.
+        Wraps the O(n) P2 parser in a loop to handle multiple packets.
+        Each packet is read twice (boundary detection + parsing), but
+        the overall complexity remains O(n).
+
+        Args:
+            mixed_packets: Byte stream containing multiple Protocol 2 packets
+        Returns:
+            List of parsed packet dictionaries
+        """
+        # count how many packets are in the mixed_packets
+        packets = []
+        position = 0
+        while position < len(mixed_packets):
+            if mixed_packets[position] != ord('~'):
+                raise ValueError(f"Invalid packet start at position {position}")
+
+            # Extract packet length
+            try:
+                packet_length = int(mixed_packets[position + 1:position + 5].decode('ascii'))
+            except (ValueError, UnicodeDecodeError):
+                raise ValueError(f"Invalid packet length format at position {position}")
+
+            total_packet_length = 5 + packet_length  # 5 bytes for header
+            packet_bytes = mixed_packets[position:position + total_packet_length]
+            packets.append(self.parse(packet_bytes))
+            position += total_packet_length
+        return packets
+
     def parse(self, packet_bytes: bytes) -> Dict[str, Union[str, float]]:
         """
         Parse Protocol 2 packet in O(n) time complexity.

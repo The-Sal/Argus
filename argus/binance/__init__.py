@@ -1,4 +1,5 @@
 import json
+import pprint
 import uuid
 import time
 import socket
@@ -201,7 +202,15 @@ class BinanceWss:
             msg="Binance WebSocket connection closed:\nCode: {}\nMessage: {}".format(close_status_code, close_msg),
             title="Binance WebSocket Closed",
         )
-        _ = self
+
+        print('Reinitializing WebSocket connection...')
+        self.init_websocket()
+        cb_copy = self.callbacks.copy()
+        print('Current subscriptions to re-establish:')
+        print(cb_copy)
+        for symbol, callback in cb_copy.items():
+            print('Re-establishing', symbol)
+            self.subscribe(symbol, callback)
 
     def subscribe(self, symbol: str, callback):
         self.ws.send(self._craft_msg(symbol))
@@ -357,25 +366,6 @@ class BinanceMKTDispatcher(Introspective):
         try:
             # Get or create market data cache for this symbol
             existing_data = self.symbol_data_cache.get(symbol, None)
-
-            # Update market data based on message type
-            # if msg.idx == BinanceTypes.DEPTH_STREAM:
-            #     # Order book update
-            #     depth_msg: DepthStreamMessage = msg.obj
-            #     market_data = Binance_CapitalComMKTDataLive.from_binance_depth(
-            #         symbol, depth_msg.data
-            #     )
-            #     # If we have existing trade data, merge it
-            #     if existing_data and existing_data.last > 0:
-            #         market_data.last = existing_data.last
-            #         market_data.last_size = existing_data.last_size
-            #
-            # elif msg.idx == BinanceTypes.AGG_TRADE:
-            #     # Aggregate trade update
-            #     trade_msg: AggTradeMessage = msg.obj
-            #     market_data = Binance_CapitalComMKTDataLive.from_binance_trade(
-            #         symbol, trade_msg.data, existing_data
-            #     )
             if msg.idx == BinanceTypes.BOOK_TICKER:
                 # Book ticker update (best bid/ask)
                 book_ticker: BookTicker = msg.obj
