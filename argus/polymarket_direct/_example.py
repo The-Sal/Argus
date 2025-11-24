@@ -521,6 +521,11 @@ def example_usage():
     finally:
         # Ensure we stop recorder and perform final merge
         try:
+            try:
+                _unsubscribe_tokens(current_tokens)
+            except Exception as e:
+                print(f"[CLEANUP] Error during cleanup: {e}, continuing...")
+
             print("[CLEANUP] Stopping recorder...")
             recorder.stop()
             print("[CLEANUP] Merging hourly files...")
