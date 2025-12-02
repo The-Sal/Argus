@@ -17,8 +17,8 @@ to provide results. This module also supports a 'dry' mode where you do NOT need
 supports real-time market data subscriptions via WebSocket. The keys are usually only for order placement.
 
 """
-import copy
 import json
+import os
 import time
 import requests
 import threading
@@ -53,7 +53,7 @@ class EnhancedPM:
     def __init__(self, private_key, proxy_funder,
                  host='https://clob.polymarket.com',
                  chain_id=137,
-                 order_book_depth=1, dry_mode=False):
+                 order_book_depth=1, dry_mode=False, max_socket_retries=100):
 
         # IDE Stop complaining about unused variables
         _ = (private_key, proxy_funder,  host, chain_id, dry_mode)
@@ -67,7 +67,7 @@ class EnhancedPM:
             #     funder=proxy_funder,
             # )
             # self.set_api_creds(self.create_or_derive_api_creds())
-
+        self.max_socket_retries = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', max_socket_retries))
         self.bd = order_book_depth
         self.user_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/user')
         self.session = requests.Session()
@@ -101,24 +101,29 @@ class EnhancedPM:
     # WSS METHODS
     ############################################
     def _on_ws_open(self, ws):
+        _ = ws
         print("Market WebSocket Opened")
         self.market_open_semaphore.release()
 
-    def on_error(self, ws, error):
+    @staticmethod
+    def on_error(ws, error):
+        _ = ws, error
         throw_fuss(
             msg=f"WebSocket Error: {error}",
             title="Polymarket WebSocket Error"
         )
 
     def _on_ws_close(self, ws, close_status_code, close_msg):
+        _ = ws, close_status_code, close_msg
         if self._internally_closed:
             return
         throw_fuss(
-            msg=f"Market WebSocket Closed, attempting to reconnect... and resubscribe to markets. attempts: {self.ws_errors}",
+            msg=f"Market WebSocket Closed, attempting to reconnect... "
+                f"and resubscribe to markets. attempts: {self.ws_errors}/{self.max_socket_retries}",
             title="Polymarket WebSocket Closed"
         )
         self.ws_errors += 1
-        if self.ws_errors > 5:
+        if self.ws_errors > self.max_socket_retries:
             throw_fuss(
                 msg=f"Market WebSocket Failed to reconnect after {self.ws_errors} attempts, giving up.",
                 title="Polymarket WebSocket Failed"
@@ -134,6 +139,7 @@ class EnhancedPM:
             }))
 
     def _on_ws_message(self, ws, message):
+        _ = ws
         try:
             data = json.loads(message)
             self.ws_messages.append(data)

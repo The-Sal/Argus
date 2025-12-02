@@ -43,12 +43,13 @@ def main():
                 break
 
             try:
-                result = parser.parse(data)
-                result_time = result.get('transmission_time', None)
-                server_time = result.get('timestamp', None)
-                print(result)
-                print('Since Timestamp:', time.time() - result_time if result_time else 'N/A')
-                print('Since Server Time:', time.time() - server_time if server_time else 'N/A')
+                results = parser.multi_parse(data)
+                for result in results:
+                    result_time = result.get('transmission_time', None)
+                    server_time = result.get('timestamp', None)
+                    print(result)
+                    print('Since Timestamp:', time.time() - result_time if result_time else 'N/A')
+                    print('Since Server Time:', time.time() - server_time if server_time else 'N/A')
             except Exception as e:
                 print(f"Error parsing data: {e}")
                 traceback.print_exc()

@@ -1,23 +1,25 @@
 import json
+import pprint
 import uuid
 import time
 import socket
-import logging
 import platform
 import threading
+import traceback
 from utils3 import runAsThread
 from websocket import WebSocketApp
 from argus._argus_utils import throw_fuss, Introspective
 from argus.capital import transmit_mkt_data_with_protocol_2
 from argus.binance._classes import (DepthUpdate, DepthStreamMessage, AggTradeMessage,
                                     AggTradeData, KlineEventData, KlineData, KlineMessage,
-                                    Binance_CapitalComMKTDataLive)
+                                    Binance_CapitalComMKTDataLive, BookTicker)
 
 
 class BinanceTypes:
-    DEPTH_STREAM = 'depth_stream'
+    DEPTH_STREAM = 'depth_stream'  # THIS IS DIFFERENT FROM THE FULL DEPTH STREAM
     AGG_TRADE = 'agg_trade'
     KLINE = 'kline'
+    BOOK_TICKER = 'book_ticker'
 
 
 class AbstractBinanceType:
@@ -102,10 +104,10 @@ class BinanceWss:
         msg = {
             "method": method,
             "params": [
-                "!miniTicker@arr@1000ms",
                 symbol+"@aggTrade",
                 symbol+"@depth@100ms",
-                symbol+"@kline_1s"
+                symbol+"@kline_1s",
+                symbol+"@bookTicker"
             ],
             "id": method
         }
@@ -120,59 +122,69 @@ class BinanceWss:
 
     # noinspection PyUnusedLocal
     def _on_message(self, ws, message):
-        self.stats_stamps.append(time.time())
-        msg = json.loads(message)
-        msg['received_at'] = time.time()
-        self.msgs.append(msg)
-
-        if len(self.msgs) > self._max_message_count:
-            self.rollover_message_segment()
-
-        message_type = msg.get('stream', None)
-        if message_type is None:
-            print('Malformed message received:', msg)
-            return
-
         try:
-            symbol, stream_type = message_type.split('@', 1)
-        except ValueError:
-            print('Malformed message received:', msg)
-            return
+            self.stats_stamps.append(time.time())
+            msg = json.loads(message)
+            msg['received_at'] = time.time()
+            self.msgs.append(msg)
 
-        if stream_type == 'depth@100ms':
-            msg = AbstractBinanceType(
-                idx=BinanceTypes.DEPTH_STREAM,
-                obj=DepthStreamMessage.from_dict(msg)
-            )
-        elif stream_type == 'aggTrade':
-            msg = AbstractBinanceType(
-                idx=BinanceTypes.AGG_TRADE,
-                obj=AggTradeMessage.from_dict(msg)
-            )
-        elif stream_type == 'kline_1s':
-            msg = AbstractBinanceType(
-                idx=BinanceTypes.KLINE,
-                obj=KlineMessage.from_dict(msg)
-            )
-        elif '!miniTicker' in stream_type:
-            # Currently ignoring miniTicker messages
-            return
-        elif 'arr@1000ms' in stream_type:
-            # Currently ignoring arr@1000ms messages
-            return
-        else:
-            print('Unknown message {} received: {}'.format(stream_type, str(msg)[:100] + '...'))
-            return
+            if len(self.msgs) > self._max_message_count:
+                self.rollover_message_segment()
 
-        if symbol in self.callbacks:
-            callback = self.callbacks[symbol]
-            callback(msg)
-        else:
-            throw_fuss(
-                msg="No callback registered for symbol: {}".format(symbol),
-                notify=False,
-                boarder="<>"
-            )
+            message_type = msg.get('stream', None)
+            if message_type is None:
+                print('Malformed message received:', msg)
+                return
+
+            try:
+                symbol, stream_type = message_type.split('@', 1)
+            except ValueError:
+                print('Malformed message received:', msg)
+                return
+
+            if stream_type == 'depth@100ms':
+                msg = AbstractBinanceType(
+                    idx=BinanceTypes.DEPTH_STREAM,
+                    obj=DepthStreamMessage.from_dict(msg)
+                )
+            elif stream_type == 'aggTrade':
+                msg = AbstractBinanceType(
+                    idx=BinanceTypes.AGG_TRADE,
+                    obj=AggTradeMessage.from_dict(msg)
+                )
+            elif stream_type == 'kline_1s':
+                msg = AbstractBinanceType(
+                    idx=BinanceTypes.KLINE,
+                    obj=KlineMessage.from_dict(msg)
+                )
+            elif stream_type == 'bookTicker':
+                msg = AbstractBinanceType(
+                    idx=BinanceTypes.BOOK_TICKER,
+                    obj=BookTicker.from_dict(msg)
+                )
+            elif '!miniTicker' in stream_type:
+                # Currently ignoring miniTicker messages
+                return
+            elif 'arr@1000ms' in stream_type:
+                # Currently ignoring arr@1000ms messages
+                return
+            else:
+                print('Unknown message {} received: {}'.format(stream_type, str(msg)[:100] + '...'))
+                return
+
+            if symbol in self.callbacks:
+                callback = self.callbacks[symbol]
+                callback(msg)
+            else:
+                throw_fuss(
+                    msg="No callback registered for symbol: {}".format(symbol),
+                    notify=False,
+                    boarder="<>"
+                )
+        except Exception as e:
+            print("Error processing WebSocket message:", e)
+            traceback.print_exc()
+
 
     # noinspection PyUnusedLocal
     def _on_error(self, ws, error):
@@ -190,7 +202,15 @@ class BinanceWss:
             msg="Binance WebSocket connection closed:\nCode: {}\nMessage: {}".format(close_status_code, close_msg),
             title="Binance WebSocket Closed",
         )
-        _ = self
+
+        print('Reinitializing WebSocket connection...')
+        self.init_websocket()
+        cb_copy = self.callbacks.copy()
+        print('Current subscriptions to re-establish:')
+        print(cb_copy)
+        for symbol, callback in cb_copy.items():
+            print('Re-establishing', symbol)
+            self.subscribe(symbol, callback)
 
     def subscribe(self, symbol: str, callback):
         self.ws.send(self._craft_msg(symbol))
@@ -346,24 +366,11 @@ class BinanceMKTDispatcher(Introspective):
         try:
             # Get or create market data cache for this symbol
             existing_data = self.symbol_data_cache.get(symbol, None)
-
-            # Update market data based on message type
-            if msg.idx == BinanceTypes.DEPTH_STREAM:
-                # Order book update
-                depth_msg: DepthStreamMessage = msg.obj
-                market_data = Binance_CapitalComMKTDataLive.from_binance_depth(
-                    symbol, depth_msg.data
-                )
-                # If we have existing trade data, merge it
-                if existing_data and existing_data.last > 0:
-                    market_data.last = existing_data.last
-                    market_data.last_size = existing_data.last_size
-
-            elif msg.idx == BinanceTypes.AGG_TRADE:
-                # Aggregate trade update
-                trade_msg: AggTradeMessage = msg.obj
-                market_data = Binance_CapitalComMKTDataLive.from_binance_trade(
-                    symbol, trade_msg.data, existing_data
+            if msg.idx == BinanceTypes.BOOK_TICKER:
+                # Book ticker update (best bid/ask)
+                book_ticker: BookTicker = msg.obj
+                market_data = Binance_CapitalComMKTDataLive.from_binance_book_ticker(
+                    symbol, book_ticker, existing_data
                 )
             else:
                 # Other message types (kline, etc.) - skip for now
@@ -516,20 +523,11 @@ class BinanceMKTDispatcher(Introspective):
 if __name__ == '__main__':
     # noinspection all
     def highest_bid_ask_price_callback(msg: AbstractBinanceType):
-        if msg.idx == BinanceTypes.DEPTH_STREAM:
-            depth: DepthStreamMessage = msg.obj
-            update: DepthUpdate = depth.data
-            asks = update.a
-            bids = update.b
-            try:
-                top_ask = float(asks[0][0])
-            except IndexError:
-                top_ask = 0
-            try:
-                top_bid = float(bids[0][0])
-            except IndexError:
-                top_bid = 0
-            print('[{}] Top Bid: {:.2f}, Top Ask: {:.2f}'.format(update.s, top_bid, top_ask))
+        if msg.idx == BinanceTypes.BOOK_TICKER:
+            ticker: BookTicker = msg.obj
+            top_ask = ticker.a
+            top_bid = ticker.b
+            print('[{}] Top Bid: {:.2f}, Top Ask: {:.2f}'.format(ticker.s, top_bid, top_ask))
 
 
     binance_wss = BinanceWss()

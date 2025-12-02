@@ -19,8 +19,8 @@ from dotenv import load_dotenv
 from argus.polymarket import PolyDispatcher
 from argus.ib.forecast import FXCDispatcher
 from argus.ib import MKTDispatcher, IBKRModes
-from argus.capital import MKTDispatcher as CapitalComDispatcher, Environment
 from argus.binance import BinanceMKTDispatcher
+from argus.capital import MKTDispatcher as CapitalComDispatcher, Environment
 
 
 if not load_dotenv():

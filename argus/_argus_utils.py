@@ -13,7 +13,7 @@ if platform.system() == "Darwin":
         subprocess.run(['osascript', '-e', f'display notification "{message}" with title "{title}"'])
 
 
-    @assertTypes((str, str, str), auto_convert=True)
+    @assertTypes([str, str, str], auto_convert=True)
     def iMessage_notification(title: str, message: str, number: str) -> None:
         """Send an iMessage notification on macOS."""
         # Usage: imessage-cli --message "Your message" recipient1 [recipient2 ...]
@@ -23,7 +23,7 @@ if platform.system() == "Darwin":
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # Alternative implementation with more sound options:
-    @assertTypes((str, str, str), auto_convert=True)
+    @assertTypes([str, str, str], auto_convert=True)
     def macos_notification_with_custom_sound(title: str, message: str, sound_name: str = "default") -> None:
         """Send a macOS notification with custom sound.
 
@@ -38,6 +38,17 @@ if platform.system() == "Darwin":
             f'display notification "{message}" with title "{title}" sound name "{sound_name}"'
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 else:
+
+    def system_notification(title: str, message: str) -> None:
+        print('WARNING: SYSTEM NOTIFICATIONS ARE ONLY SUPPORTED ON macOS SYSTEMS.')
+        print('Notification:', title, '-', message)
+
+
+    @assertTypes([str, str, str], auto_convert=True)
+    def iMessage_notification(title: str, message: str, number: str) -> None:
+        print('WARNING: IMESSAGE NOTIFICATIONS ARE ONLY SUPPORTED ON macOS SYSTEMS.')
+        print('iMessage Notification to', number, ':', title, '-', message)
+
     def macos_notification_with_custom_sound(title: str, message: str, sound_name: str = "default") -> None:
         """Placeholder for non-macOS systems."""
         print(f"macOS notification with sound not supported on this platform: {title} - {message}")
