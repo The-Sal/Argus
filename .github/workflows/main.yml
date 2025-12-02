@@ -11,10 +11,11 @@ on:
 jobs:
   trigger-pipeline:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        
+
       - name: Get commit URL
         id: commit
         run: |
@@ -25,38 +26,74 @@ jobs:
           fi
           echo "url=$COMMIT_URL" >> $GITHUB_OUTPUT
           echo "Using commit URL: $COMMIT_URL"
-      
-      - name: Trigger CI/CD Pipeline
+
+      - name: Trigger CI/CD Pipeline (Long Webhook)
         run: |
           echo "=========================================="
-          echo "Triggering CI/CD pipeline..."
-          echo "Target URL: https://sals-macbook-pro.tail34e8af.ts.net/webhook"
+          echo "🚀 Triggering CI/CD pipeline via long-webhook..."
+          echo "=========================================="
+          echo "Endpoint: https://sals-macbook-pro.tail34e8af.ts.net/long-webhook"
           echo "Commit URL: ${{ steps.commit.outputs.url }}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Ref: ${{ github.ref }}"
           echo "=========================================="
-          
-          RESPONSE=$(curl -v -w "\n\nHTTP Status: %{http_code}\nTotal Time: %{time_total}s\n" \
-            -X POST https://sals-macbook-pro.tail34e8af.ts.net/webhook \
+          echo ""
+
+          COMMIT_URL="${{ steps.commit.outputs.url }}"
+          ENDPOINT="https://sals-macbook-pro.tail34e8af.ts.net/long-webhook"
+
+          echo "[$(date +'%Y-%m-%d %H:%M:%S')] 📤 Sending request to long-webhook endpoint..."
+
+          # Use --max-time 0 to disable timeout (will use job timeout-minutes instead)
+          RESPONSE=$(curl \
+            --max-time 0 \
+            -X POST "$ENDPOINT" \
             -H "Content-Type: application/json" \
-            -d '{
-              "head_commit": {
-                "url": "${{ steps.commit.outputs.url }}"
+            -w "\n\n=== CURL METADATA ===\nHTTP Status: %{http_code}\nTotal Time: %{time_total}s\nConnect Time: %{time_connect}s\n" \
+            -d "{
+              \"head_commit\": {
+                \"url\": \"$COMMIT_URL\"
               },
-              "repository": {
-                "full_name": "${{ github.repository }}"
+              \"repository\": {
+                \"full_name\": \"${{ github.repository }}\"
               },
-              "ref": "${{ github.ref }}"
-            }' 2>&1)
-          
+              \"ref\": \"${{ github.ref }}\"
+            }" 2>&1)
+
+          CURL_EXIT=$?
+
+          echo "[$(date +'%Y-%m-%d %H:%M:%S')] 📨 Response received"
+          echo ""
           echo "=========================================="
-          echo "Response:"
+          echo "Pipeline Result:"
+          echo "=========================================="
           echo "$RESPONSE"
           echo "=========================================="
-          echo "Exit code: $?"
-          
+          echo ""
+
           # Check if curl succeeded
-          if [ $? -eq 0 ]; then
-            echo "Webhook triggered successfully!"
+          if [ $CURL_EXIT -eq 0 ]; then
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✅ Request completed successfully"
+
+            # Extract and parse the JSON response for status
+            HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP Status:" | awk '{print $3}')
+            PIPELINE_STATUS=$(echo "$RESPONSE" | grep -o '"status":"[^"]*' | cut -d'"' -f4)
+
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] HTTP Status Code: $HTTP_STATUS"
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] Pipeline Status: $PIPELINE_STATUS"
+
+            # Determine final exit code based on pipeline status
+            if [ "$PIPELINE_STATUS" = "passed" ]; then
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')] 🎉 Pipeline PASSED!"
+              exit 0
+            elif [ "$PIPELINE_STATUS" = "failed" ]; then
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ Pipeline FAILED!"
+              exit 1
+            else
+              echo "[$(date +'%Y-%m-%d %H:%M:%S')] ⚠️  Unknown pipeline status: $PIPELINE_STATUS"
+              exit 1
+            fi
           else
-            echo "Failed to trigger webhook"
-            exit 1
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ Curl request failed with exit code: $CURL_EXIT"
+            exit $CURL_EXIT
           fi
