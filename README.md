@@ -444,7 +444,7 @@ with NASDAQDataDownloader(headless=True) as downloader:
 
 ## System Requirements
 
-- **Python**: 3.8+
+- **Python**: 3.10+
 - **Operating Systems**:
   - **macOS**: Full support (all modules)
   - **Linux**: Partial support
