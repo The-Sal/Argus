@@ -77,7 +77,7 @@ jobs:
 
             # Extract and parse the JSON response for status
             HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP Status:" | awk '{print $3}')
-            PIPELINE_STATUS=$(echo "$RESPONSE" | grep -o '"status":"[^"]*' | cut -d'"' -f4)
+            PIPELINE_STATUS=$(echo "$RESPONSE" | grep -o '"status": "[^"]*' | cut -d'"' -f4)
 
             echo "[$(date +'%Y-%m-%d %H:%M:%S')] HTTP Status Code: $HTTP_STATUS"
             echo "[$(date +'%Y-%m-%d %H:%M:%S')] Pipeline Status: $PIPELINE_STATUS"
