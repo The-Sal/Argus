@@ -249,17 +249,16 @@ The following environment variables work on all platforms:
 
 ## Runtime.py Compatibility
 
-The runtime entrypoint (`runtime.py`) already acknowledges Windows limitations:
+The runtime entrypoint (`runtime.py`) already acknowledges Windows limitations in its docstring (quoted verbatim):
 
-```python
-# Lines 6-9
-# - Supports: macOS, Linux, (almost anything UNIX-based or UNIX-like) does NOT support Windows.
-# - IB Dispatchers requires macOS due to ShortableShares() class implementation requires Finder
-# - Push Notifications requires macOS due to the use of osascript
-# - Capital.com, Polymarket, Binance, TradingView (Chart+Quote), etc... work on all platforms.
+```
+- Supports: macOS, Linux, (almost anything UNIX-based or UNIX-like) does NOT support Windows.
+- IB Dispatchers requires macOS due to ShortableShares() class implementation requires Finder
+- Push Notifications requires macOS due to the use of osascript to notify on machine-local notifications
+- Capital.com, Polymarket, Binance, TradingView (Chart+Quote), etc... work on all platforms.
 ```
 
-This documentation is accurate but could be updated to reflect:
+This existing documentation could be updated to reflect:
 1. Capital.com requires UDS (Unix) unless refactored
 2. NASDAQ works on Windows with proper dependencies
 
