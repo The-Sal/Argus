@@ -264,6 +264,107 @@ This existing documentation could be updated to reflect:
 
 ---
 
+## File Paths and Unix Assumptions Analysis
+
+### Path Separator Handling
+
+The codebase primarily uses **cross-platform path handling** via Python's `os.path` module:
+
+| Pattern Used | Windows Safe? | Files Using |
+|-------------|---------------|-------------|
+| `os.path.join()` | ✅ Yes | `cache_utils/__init__.py`, `capital/_caches.py`, `polymarket_direct/_example.py`, `ib/forecast.py` |
+| `os.path.expanduser("~")` | ✅ Yes | `cache_utils/__init__.py`, `capital/_caches.py` |
+| `os.path.dirname()` | ✅ Yes | `cache_utils/__init__.py` |
+| `os.path.exists()` | ✅ Yes | Multiple modules |
+
+**Good news:** The cache system uses `os.path.join()` and `os.path.expanduser()` consistently, making it Windows compatible.
+
+### Hardcoded Unix-Style Paths Found
+
+| Path | File | Impact |
+|------|------|--------|
+| `/tmp/argus_capital.sock` | `capital/__init__.py`, `capital/client.py`, `tests/test.py` | **Blocking** - UDS path |
+| `/Volumes/ftp2.interactivebrokers.com/` | `ib/_shortable_shares_data.py` | **Blocking** - macOS only |
+| `~/.argus/capital_cache.pkl` | `capital/_caches.py` | ✅ OK - `expanduser()` handles this |
+| `./polymarket_data` | `polymarket_direct/_example.py` | ✅ OK - relative path works |
+
+### Unix-Specific Socket Usage
+
+```python
+# capital/client.py:37 - Uses AF_UNIX (Unix Domain Sockets)
+self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+# tests/test.py:21 - Same issue
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+```
+
+`socket.AF_UNIX` is not available on Windows prior to Windows 10 version 1803, and even then has limited compatibility.
+
+---
+
+## Dependency Tree Impact Analysis
+
+The user correctly identified a concern: if a core component has Unix assumptions, dependent modules may fail.
+
+### Import Dependency Graph
+
+```
+argus/__init__.py
+├── argus.ib (exports all IB classes)     ← BLOCKED on Windows
+│   └── argus.ib._shortable_shares_data   ← macOS-only FTP mount
+│   └── argus.capital (DomainCache, etc.) ← OK
+└── argus.capital (exports all Capital classes) ← PARTIAL (UDS issue)
+    └── argus.capital._caches             ← ✅ OK
+
+argus.binance                             ← ✅ OK (no blockers)
+└── argus.capital (transmit_mkt_data_with_protocol_2) ← OK (just protocol encoding)
+└── argus._argus_utils (throw_fuss, Introspective)    ← OK (graceful fallback)
+
+argus.polymarket_direct                   ← ✅ OK
+└── argus.capital (DomainCache)           ← OK (cache is Windows safe)
+└── argus (throw_fuss)                    ← OK
+
+argus.tv                                  ← ✅ OK (no argus imports)
+argus.nasdaq                              ← ✅ OK (no argus imports)
+```
+
+### Key Finding: The Cache System is Safe
+
+**The cache system (`argus.capital._caches.DomainCache`) is the most shared dependency**, used by:
+- IB module
+- Polymarket Direct
+- Capital.com
+
+**Analysis:**
+- Cache path: `~/.argus/capital_cache.pkl` uses `os.path.expanduser()` ✅
+- Directory creation: `os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)` ✅
+- All file I/O uses standard Python `open()` with `rb`/`wb` modes ✅
+
+**Verdict: The cache system does NOT have Unix assumptions.** Modules depending on it will work on Windows as long as their own code doesn't have blockers.
+
+### Selective Import Strategy for Windows
+
+Windows users can safely import and use:
+```python
+# ✅ Safe imports for Windows
+from argus.binance import BinanceWss, BinanceMKTDispatcher
+from argus.tv import QuoteSession, ChartSession
+from argus.nasdaq import NASDAQDataDownloader
+from argus.polymarket_direct import EnhancedPM
+from argus.capital._caches import DomainCache, FastCache
+from argus.capital._lib import CapitalComAPI  # API client only, not dispatcher
+```
+
+Windows users should **NOT** import:
+```python
+# ❌ Will fail on Windows
+from argus.ib import MKTDispatcher, IBWss  # ShortableSharesData import fails
+from argus.capital import MKTDispatcher    # Uses UDS
+from argus import *                         # Imports everything including IB
+```
+
+---
+
 ## Conclusion
 
 **Windows Users Can Use:**
