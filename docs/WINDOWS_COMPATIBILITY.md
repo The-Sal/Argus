@@ -298,7 +298,7 @@ self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 ```
 
-`socket.AF_UNIX` is not available on Windows prior to Windows 10 version 1803, and even then has limited compatibility.
+`socket.AF_UNIX` is not available on Windows prior to Windows 10 version 1803. Even with Windows 10 1803+, AF_UNIX has significant limitations compared to Unix systems (requires specific configuration, limited interop features) and is not a reliable cross-platform solution.
 
 ---
 
@@ -310,14 +310,14 @@ The user correctly identified a concern: if a core component has Unix assumption
 
 ```
 argus/__init__.py
-├── argus.ib (exports all IB classes)     ← BLOCKED on Windows
-│   └── argus.ib._shortable_shares_data   ← macOS-only FTP mount
+├── argus.ib (exports all IB classes)     ← BLOCKED on Windows/Linux
+│   └── argus.ib._shortable_shares_data   ← macOS-only (/Volumes/, Finder, grep)
 │   └── argus.capital (DomainCache, etc.) ← OK
 └── argus.capital (exports all Capital classes) ← PARTIAL (UDS issue)
     └── argus.capital._caches             ← ✅ OK
 
 argus.binance                             ← ✅ OK (no blockers)
-└── argus.capital (transmit_mkt_data_with_protocol_2) ← OK (just protocol encoding)
+└── argus.capital (transmit_mkt_data_with_protocol_2) ← OK (pure Python protocol encoder, no sockets)
 └── argus._argus_utils (throw_fuss, Introspective)    ← OK (graceful fallback)
 
 argus.polymarket_direct                   ← ✅ OK
