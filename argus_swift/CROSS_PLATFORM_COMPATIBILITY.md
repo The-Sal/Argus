@@ -159,17 +159,20 @@ func getSystemInfo() -> String {
    
 2. **Update Package.swift** to conditionally include WebSocket library on Linux:
    ```swift
+   // Note: The 'platforms' array only specifies minimum versions for Apple platforms.
+   // Linux support is automatic in Swift Package Manager - it just needs the dependencies.
    let package = Package(
        name: "ArgusServer",
-       platforms: [.macOS(.v13)],
+       platforms: [.macOS(.v13)],  // Apple platforms only; Linux has no platform version
        dependencies: [
-           // For Linux WebSocket support
+           // For Linux WebSocket support (on macOS, native URLSessionWebSocketTask is used)
            .package(url: "https://github.com/vapor/websocket-kit.git", from: "2.0.0")
        ],
        targets: [
            .executableTarget(
                name: "ArgusServer",
                dependencies: [
+                   // Only link WebSocketKit on Linux; macOS uses native APIs
                    .product(name: "WebSocketKit", package: "websocket-kit", 
                             condition: .when(platforms: [.linux]))
                ]
@@ -267,7 +270,7 @@ func getSystemInfo() -> String {
 | ⚠️ Minor Changes | 6 files | 27.3% |
 | ❌ Needs Replacement | 8 files | 36.4% |
 
-**Overall Linux Compatibility: ~35%** (WebSocket is a blocking issue)
+**Overall Linux Compatibility: ~35%** (WebSocket is a critical blocking issue affecting all real-time data functionality; while 63% of files have some compatibility, the WebSocket dependency makes the codebase non-functional on Linux without replacement)
 
 ---
 
@@ -347,6 +350,6 @@ serverSocket = Glibc.socket(AF_UNIX, SOCK_STREAM, 0)
 
 ---
 
-*Document generated: 2024*
+*Document generated: 2025*
 *Swift version: 5.9+*
 *Analyzed files: 22 Swift source files*
