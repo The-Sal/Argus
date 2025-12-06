@@ -4,20 +4,6 @@
 
 **Argus** aims to be a high-performance financial market data aggregation system built around a server-client architecture. It provides unified access to multiple financial data sources through a custom Protocol 2 (P2) binary protocol for efficient, standardized data transmission.
 
-Version: **0.0.8**
-
----
-
-## WARNINGS:
-> The following sections are of any warnings to users about different Argus versions.
-> This is updated as needed when bugs are found both in the current and past versions. 
-> Docs are only updated every so often so always refer to this section before using any version of Argus.
-
-### Version <0.0.8
-
-The Binance documentation has been updated to clarify that the `depthStream` does not provide a full order‑book snapshot. In line with this, we have added a new `bookTicker` stream that delivers real‑time best bid and ask prices. Consequently, the dispatcher now sends only these best bid/ask prices to clients; earlier versions mixed different data types—such as order‑book updates and other events—under the same P2 format without clear distinction. While we intend to re‑introduce support for those other data types in the future, the current release supports only best bid/ask prices. A separate branch is being worked on to provide a full order‑book dispatcher, but for now the best bid/ask stream is recommended.
-It is highly advisable to upgrade to version 0.0.8 or later when using the Binance module. The Binance‑specific documentation has been temporarily removed from the `docs/` directory until it is fully updated. Because we now use the `bookTicker` stream, the P2 protocol server timestamp will be 0—Binance does not supply this value in that stream. Instead, you should use the `transmission_time` field for latency measurements; this also impacts the Swift TransCompilation branch. Importantly, the dispatcher’s contracts and responses remain unchanged, so no client‑side code modifications are required to accommodate these changes.
-
 ----
 
 ## Overview
@@ -126,12 +112,12 @@ A **Dispatcher** is a server that:
          │
          ▼
 ┌──────────────────────────────────┐
-│ Client disconnects                │
+│ Client disconnects               │
 └────────┬─────────────────────────┘
          │
          ▼
 ┌──────────────────────────────────┐
-│ Dispatcher auto-unsubscribes      │
+│ Dispatcher auto-unsubscribes     │
 │ (if no other clients need AAPL)  │
 └──────────────────────────────────┘
 ```
@@ -496,8 +482,7 @@ Argus/
 │   └── CACHE.md                # Cache system docs
 ├── runtime.py                  # Main dispatcher launcher
 ├── setup.py                    # Package setup
-├── requirements.txt            # Dependencies
-└── .env.example                # Environment template
+└── requirements.txt            # Dependencies
 ```
 
 ## Contributing
@@ -517,7 +502,5 @@ For questions, issues, or feature requests:
 - **Documentation**: `/docs` directory
 
 ---
-
-**Built for high-frequency trading and real-time analytics.**
 
 Argus provides a unified, efficient infrastructure for consuming financial market data across multiple sources, languages, and use cases.
