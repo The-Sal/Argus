@@ -20,6 +20,7 @@ supports real-time market data subscriptions via WebSocket. The keys are usually
 import json
 import os
 import time
+import uuid
 import requests
 import threading
 from argus import throw_fuss
@@ -73,6 +74,13 @@ class EnhancedPM:
         self.session = requests.Session()
         self.idx_to_callback = {}
         self.ws_messages = []
+        
+        # Rolling mechanism configuration
+        self._max_message_count = int(os.environ.get('POLYMARKET_MAX_MESSAGE_COUNT', '5000'))
+        self._enable_rolling = os.environ.get('POLYMARKET_ENABLE_ROLLING', 'true').lower() == 'true'
+        self.uuid = str(uuid.uuid4())
+        self.message_seg_id = 0
+        
         self._write_messages_to_file()
         self.ws_errors = 0
         # noinspection PyTypeChecker
@@ -88,6 +96,15 @@ class EnhancedPM:
     ############################################
     # NON-PUBLIC METHODS
     ############################################
+
+    def unique_file_name(self, file_name, file_type):
+        """Generate unique filename with UUID and segment ID"""
+        return '{}_{}-{}.{}'.format(file_name, self.uuid, self.message_seg_id, file_type)
+
+    def rollover_message_segment(self):
+        """Roll over to a new message segment, clearing memory"""
+        self.message_seg_id += 1
+        self.ws_messages = []
 
     def init_market_ws(self):
         self.market_open_semaphore = threading.Semaphore(0)
@@ -166,7 +183,23 @@ class EnhancedPM:
     def _write_messages_to_file(self, filename='ws_messages.fk'):
         while True:
             time.sleep(1)
-            with open(filename, 'w') as f:
+            
+            # Check if rolling is enabled and we've exceeded the message count
+            if self._enable_rolling and len(self.ws_messages) > self._max_message_count:
+                print(f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
+                self.rollover_message_segment()
+            
+            # Only write if we have messages
+            if not self.ws_messages:
+                continue
+                
+            # Generate filename based on whether rolling is enabled
+            if self._enable_rolling:
+                current_filename = self.unique_file_name('ws_messages', 'fk')
+            else:
+                current_filename = filename
+                
+            with open(current_filename, 'w') as f:
                 for msg in self.ws_messages:
                     f.write(str(msg) + '\n')
 
