@@ -49,8 +49,10 @@ jobs:
           echo "[$(date +'%Y-%m-%d %H:%M:%S')] 📤 Sending request to long-webhook endpoint..."
 
           # Use --max-time 0 to disable timeout (will use job timeout-minutes instead)
+          # Use -s to disable progress meter so we can cleanly separate JSON response from metadata
           RESPONSE=$(curl \
             --max-time 0 \
+            -s \
             -X POST "$ENDPOINT" \
             -H "Content-Type: application/json" \
             -w "\n\n=== CURL METADATA ===\nHTTP Status: %{http_code}\nTotal Time: %{time_total}s\nConnect Time: %{time_connect}s\n" \
