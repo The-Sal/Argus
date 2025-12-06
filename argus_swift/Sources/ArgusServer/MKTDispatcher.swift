@@ -231,38 +231,27 @@ class BinanceMKTDispatcher {
 
     /// Callback for Binance market data
     private func binanceCallback(symbol: String, msg: AbstractBinanceType) {
+        // CRITICAL: Only process bookTicker messages
+        guard msg.idx == BinanceTypes.BOOK_TICKER else {
+            // Ignore other message types (depth, aggTrade, kline)
+            return
+        }
+        
+        guard let bookTickerMsg = msg.obj as? BookTickerMessage else {
+            return
+        }
+
         // Get or create market data cache for this symbol
         threadLock.lock()
         let existingData = symbolDataCache[symbol]
         threadLock.unlock()
 
-        // Update market data based on message type
-        let marketData: Binance_CapitalComMKTDataLive
-
-        if msg.idx == BinanceTypes.DEPTH_STREAM {
-            // Order book update
-            guard let depthMsg = msg.obj as? DepthStreamMessage else {
-                return
-            }
-            marketData = Binance_CapitalComMKTDataLive.fromBinanceDepth(
-                symbol: symbol,
-                depthUpdate: depthMsg.data,
-                existingData: existingData
-            )
-        } else if msg.idx == BinanceTypes.AGG_TRADE {
-            // Aggregate trade update
-            guard let tradeMsg = msg.obj as? AggTradeMessage else {
-                return
-            }
-            marketData = Binance_CapitalComMKTDataLive.fromBinanceTrade(
-                symbol: symbol,
-                tradeData: tradeMsg.data,
-                existingData: existingData
-            )
-        } else {
-            // Other message types (kline, etc.) - skip for now
-            return
-        }
+        // Create market data from book ticker
+        let marketData = Binance_CapitalComMKTDataLive.fromBinanceBookTicker(
+            symbol: symbol,
+            bookTicker: bookTickerMsg.data,
+            existingData: existingData
+        )
 
         // Update cache
         threadLock.lock()

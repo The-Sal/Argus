@@ -158,7 +158,7 @@ class IBMKTDispatcher {
             }
 
             // Client disconnected
-            try? client.close()
+            client.close()
         }
     }
 

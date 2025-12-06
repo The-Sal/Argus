@@ -145,6 +145,8 @@ class BinanceWss {
             abstractMsg = parseAggTradeMessage(json, symbol: symbol)
         } else if streamType == "kline_1s" {
             abstractMsg = parseKlineMessage(json, symbol: symbol)
+        } else if streamType == "bookTicker" {
+            abstractMsg = parseBookTickerMessage(json, symbol: symbol)
         } else {
             logger.warning("Unknown stream type: \(streamType)")
             return
@@ -212,6 +214,21 @@ class BinanceWss {
         return AbstractBinanceType(idx: BinanceTypes.KLINE, obj: message)
     }
 
+    /// Parse book ticker message
+    private func parseBookTickerMessage(_ json: [String: Any], symbol: String) -> AbstractBinanceType? {
+        guard let bookTicker = try? BookTicker.fromDict(json) else {
+            return nil
+        }
+
+        let message = BookTickerMessage(
+            stream: json["stream"] as? String ?? "",
+            data: bookTicker,
+            receivedAt: json["received_at"] as? Double
+        )
+
+        return AbstractBinanceType(idx: BinanceTypes.BOOK_TICKER, obj: message)
+    }
+
     /// Subscribe to a symbol with callback
     func subscribe(symbol: String, callback: @escaping (AbstractBinanceType) -> Void) {
         let lowercaseSymbol = symbol.lowercased()
@@ -224,10 +241,10 @@ class BinanceWss {
         let subscribeMsg: [String: Any] = [
             "method": "SUBSCRIBE",
             "params": [
-                "!miniTicker@arr@1000ms",
                 "\(lowercaseSymbol)@aggTrade",
                 "\(lowercaseSymbol)@depth@100ms",
-                "\(lowercaseSymbol)@kline_1s"
+                "\(lowercaseSymbol)@kline_1s",
+                "\(lowercaseSymbol)@bookTicker"
             ],
             "id": 1
         ]
@@ -263,7 +280,8 @@ class BinanceWss {
             "params": [
                 "\(lowercaseSymbol)@aggTrade",
                 "\(lowercaseSymbol)@depth@100ms",
-                "\(lowercaseSymbol)@kline_1s"
+                "\(lowercaseSymbol)@kline_1s",
+                "\(lowercaseSymbol)@bookTicker"
             ],
             "id": 1
         ]
@@ -334,6 +352,7 @@ struct BinanceTypes {
     static let DEPTH_STREAM = "depth_stream"
     static let AGG_TRADE = "agg_trade"
     static let KLINE = "kline"
+    static let BOOK_TICKER = "book_ticker"
 }
 
 /// Abstract wrapper for Binance message types

@@ -137,7 +137,7 @@ class FXCDispatcher {
                 self.handleClientCommand(message, client: client)
             }
 
-            try? client.close()
+            client.close()
         }
     }
 
@@ -247,7 +247,7 @@ class FXCDispatcher {
         marketLock.lock()
         defer { marketLock.unlock() }
 
-        if let market = activeMarket, !isMarketFullyResolved() {
+        if activeMarket != nil, !isMarketFullyResolved() {
             throw FxCError.marketNotFinishedResolution
         }
 

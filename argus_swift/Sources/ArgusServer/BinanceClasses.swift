@@ -146,6 +146,44 @@ struct KlineMessage {
     let receivedAt: Double?
 }
 
+// MARK: - Book Ticker
+
+struct BookTicker {
+    let u: Int        // Order book updateId
+    let s: String     // Symbol
+    let b: Decimal    // Best bid price
+    let B: Decimal    // Best bid quantity
+    let a: Decimal    // Best ask price
+    let A: Decimal    // Best ask quantity
+
+    static func fromDict(_ dict: [String: Any]) throws -> BookTicker {
+        guard let data = dict["data"] as? [String: Any] else {
+            throw BinanceError.invalidResponse
+        }
+        
+        guard let u = data["u"] as? Int,
+              let s = data["s"] as? String,
+              let bStr = data["b"] as? String,
+              let BStr = data["B"] as? String,
+              let aStr = data["a"] as? String,
+              let AStr = data["A"] as? String,
+              let b = Decimal(string: bStr),
+              let B = Decimal(string: BStr),
+              let a = Decimal(string: aStr),
+              let A = Decimal(string: AStr) else {
+            throw BinanceError.invalidResponse
+        }
+        
+        return BookTicker(u: u, s: s, b: b, B: B, a: a, A: A)
+    }
+}
+
+struct BookTickerMessage {
+    let stream: String
+    let data: BookTicker
+    let receivedAt: Double?
+}
+
 // MARK: - Binance Market Data for Protocol 2
 
 class Binance_CapitalComMKTDataLive: CapitalComMKTDataLive {
@@ -232,5 +270,40 @@ class Binance_CapitalComMKTDataLive: CapitalComMKTDataLive {
                 timestamp: tradeData.T
             )
         }
+    }
+
+    /// Create market data from Binance book ticker (best bid/ask)
+    static func fromBinanceBookTicker(
+        symbol: String,
+        bookTicker: BookTicker,
+        existingData: Binance_CapitalComMKTDataLive? = nil
+    ) -> Binance_CapitalComMKTDataLive {
+        let bidPrice = Double(truncating: bookTicker.b as NSDecimalNumber)
+        let bidSize = Double(truncating: bookTicker.B as NSDecimalNumber)
+        let askPrice = Double(truncating: bookTicker.a as NSDecimalNumber)
+        let askSize = Double(truncating: bookTicker.A as NSDecimalNumber)
+        
+        // Use existing trade data if available, otherwise approximate with mid price
+        let (lastPrice, lastSize, timestamp): (Double, Double, Int)
+        if let existing = existingData, existing.last > 0 {
+            lastPrice = existing.last
+            lastSize = existing.lastSize
+            timestamp = existing.timestamp
+        } else {
+            lastPrice = (bidPrice + askPrice) / 2.0
+            lastSize = 0.0
+            timestamp = 0
+        }
+        
+        return Binance_CapitalComMKTDataLive(
+            symbol: symbol.uppercased(),
+            bid: bidPrice,
+            bidSize: bidSize,
+            ask: askPrice,
+            askSize: askSize,
+            last: lastPrice,
+            lastSize: lastSize,
+            timestamp: timestamp
+        )
     }
 }
