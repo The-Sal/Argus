@@ -76,6 +76,9 @@ class EnhancedPM:
         self.ws_messages = []
         
         # Rolling mechanism configuration
+        # Addresses issue #20: Unbounded memory growth due to lack of rolling mechanism
+        # See commit e518e24 for initial rolling implementation
+        # See commit 11ee88e for write interval optimization
         self._max_message_count = int(os.environ.get('POLYMARKET_MAX_MESSAGE_COUNT', '5000'))
         self._enable_rolling = os.environ.get('POLYMARKET_ENABLE_ROLLING', 'true').lower() == 'true'
         self._write_interval = int(os.environ.get('POLYMARKET_WRITE_INTERVAL', '30'))
@@ -99,11 +102,21 @@ class EnhancedPM:
     ############################################
 
     def unique_file_name(self, file_name, file_type):
-        """Generate unique filename with UUID and segment ID"""
+        """Generate unique filename with UUID and segment ID
+        
+        Part of issue #20 fix - creates segmented filenames for rolling mechanism
+        Pattern: {filename}_{uuid}-{segment_id}.{file_type}
+        """
         return '{}_{}-{}.{}'.format(file_name, self.uuid, self.message_seg_id, file_type)
 
     def rollover_message_segment(self):
-        """Roll over to a new message segment, clearing memory"""
+        """Roll over to a new message segment, clearing memory
+        
+        Core fix for issue #20 - prevents unbounded memory growth by:
+        1. Incrementing segment ID for new file naming
+        2. Clearing in-memory message list (saw-tooth pattern)
+        3. Creating new file segment for subsequent messages
+        """
         self.message_seg_id += 1
         self.ws_messages = []
 
@@ -182,6 +195,18 @@ class EnhancedPM:
 
     @runAsThread
     def _write_messages_to_file(self, filename='ws_messages.fk'):
+        """Write WebSocket messages to file with rolling mechanism
+        
+        Addresses issue #20 - Unbounded memory growth in .fk file:
+        - Initial fix (commit e518e24): Added rolling mechanism with configurable limits
+        - Optimization (commit 11ee88e): Added configurable write interval (default: 30s)
+        - Reduces I/O overhead from 1s to 30s intervals while maintaining memory control
+        
+        Environment Variables:
+        - POLYMARKET_ENABLE_ROLLING: Enable/disable rolling (default: true)
+        - POLYMARKET_MAX_MESSAGE_COUNT: Messages before rollover (default: 5000)
+        - POLYMARKET_WRITE_INTERVAL: Seconds between file writes (default: 30)
+        """
         while True:
             time.sleep(self._write_interval)
             
