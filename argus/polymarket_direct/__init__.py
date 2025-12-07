@@ -207,11 +207,11 @@ class EnhancedPM:
         - POLYMARKET_MAX_MESSAGE_COUNT: Messages before rollover (default: 5000)
         - POLYMARKET_WRITE_INTERVAL: Seconds between file writes (default: 30)
         """
-        while True:
+        while self._enable_rolling:
             time.sleep(self._write_interval)
             
             # Check if rolling is enabled and we've exceeded the message count
-            if self._enable_rolling and len(self.ws_messages) > self._max_message_count:
+            if len(self.ws_messages) > self._max_message_count:
                 print(f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
                 self.rollover_message_segment()
             
@@ -219,12 +219,8 @@ class EnhancedPM:
             if not self.ws_messages:
                 continue
                 
-            # Generate filename based on whether rolling is enabled
-            if self._enable_rolling:
-                current_filename = self.unique_file_name('ws_messages', 'fk')
-            else:
-                current_filename = filename
-                
+            # Generate filename based on rolling mechanism
+            current_filename = self.unique_file_name('ws_messages', 'fk')
             with open(current_filename, 'w') as f:
                 for msg in self.ws_messages:
                     f.write(str(msg) + '\n')
