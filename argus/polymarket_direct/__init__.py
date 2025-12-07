@@ -78,6 +78,7 @@ class EnhancedPM:
         # Rolling mechanism configuration
         self._max_message_count = int(os.environ.get('POLYMARKET_MAX_MESSAGE_COUNT', '5000'))
         self._enable_rolling = os.environ.get('POLYMARKET_ENABLE_ROLLING', 'true').lower() == 'true'
+        self._write_interval = int(os.environ.get('POLYMARKET_WRITE_INTERVAL', '30'))
         self.uuid = str(uuid.uuid4())
         self.message_seg_id = 0
         
@@ -182,7 +183,7 @@ class EnhancedPM:
     @runAsThread
     def _write_messages_to_file(self, filename='ws_messages.fk'):
         while True:
-            time.sleep(1)
+            time.sleep(self._write_interval)
             
             # Check if rolling is enabled and we've exceeded the message count
             if self._enable_rolling and len(self.ws_messages) > self._max_message_count:
