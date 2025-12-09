@@ -1,661 +1,719 @@
-# Python vs Swift Feature Comparison for Argus
+# Python vs Swift Feature Comparison for Argus Dispatchers
 
-This document provides a comprehensive comparison of features available in the Python and Swift implementations of Argus. Each module is analyzed separately to identify feature parity, gaps, and implementation differences.
+This document provides a **thorough, in-depth comparison** of dispatcher features available in the Python and Swift implementations of Argus. Only modules with dispatcher support are analyzed.
+
+**Scope:** This comparison focuses exclusively on modules that implement the dispatcher pattern for real-time market data streaming. Non-dispatcher modules (NASDAQ, TradingView, Cache Utils) are excluded as they serve different purposes.
+
+---
 
 ## Executive Summary
 
-| Module | Python Status | Swift Status | Feature Parity |
-|--------|--------------|--------------|----------------|
-| **Binance** | ✅ Full | ✅ Full | ~95% |
-| **Capital.com** | ✅ Full | ✅ Full | ~90% |
-| **Interactive Brokers (IB)** | ✅ Full | ⚠️ Partial | ~70% |
-| **IB Forecast** | ✅ Full | ✅ Full | ~85% |
-| **Polymarket** | ✅ Full (Direct) | ⚠️ Example Only | ~30% |
-| **NASDAQ** | ✅ Full | ❌ Not Available | 0% |
-| **TradingView** | ✅ Full | ❌ Not Available | 0% |
-| **Cache Utils** | ✅ Full | ❌ Not Available | 0% |
+| Module | Python Status | Swift Status | Feature Parity | Notes |
+|--------|--------------|--------------|----------------|-------|
+| **Binance** | ✅ Full | ✅ Full | ~90% | Swift has 5 interactive commands vs Python's extensive Introspective framework |
+| **Capital.com** | ✅ Full | ✅ Full | ~85% | Swift missing client library, disk caching, batch file loading |
+| **Interactive Brokers (IB)** | ✅ Full | ⚠️ Limited | ~55% | **Swift has empty interactive mode with NO commands**, missing 4 of 5 dispatcher modes, no disk caching, no shortable shares |
+| **IB Forecast** | ✅ Full | ✅ Good | ~80% | Swift missing disk caching, limited interactive commands |
+| **Polymarket** | ⚠️ Legacy Stub | ⚠️ Example Only | N/A | Both implementations are non-functional for dispatcher use |
 
 **Legend:**
-- ✅ Full: Feature-complete implementation
-- ⚠️ Partial: Significant features implemented but gaps remain
+- ✅ Full: Feature-complete dispatcher implementation
+- ⚠️ Limited/Partial: Major features missing or non-functional
 - ❌ Not Available: Module does not exist
 
 ---
 
-## 1. Binance Module
+## 1. Binance Dispatcher
 
-### Python Implementation
-**Location:** `/argus/binance/`
+### Python Implementation (`argus/binance/`)
 **Files:** `__init__.py` (565 lines), `_classes.py` (232 lines)
 
-#### Features:
-- ✅ **WebSocket Streaming:** Real-time market data via Binance combined stream
-- ✅ **Protocol 2 Support:** Normalized data format for TCP clients
-- ✅ **Multi-client Support:** Multiple TCP clients can subscribe to different symbols
-- ✅ **Data Merging:** Combines depth, trade, and kline data into unified format
-- ✅ **Subscription Management:** Dynamic add/remove of symbol subscriptions
-- ✅ **Interactive Mode (CLI):** Runtime introspection and configuration via `Introspective` base class
-- ✅ **Thread Safety:** Proper locking for concurrent client handling
-- ✅ **BinanceWss Class:** WebSocket manager with automatic reconnection
-- ✅ **BinanceMKTDispatcher:** TCP dispatcher on port 9982
-- ✅ **Depth + Trade + Kline:** Three data stream types merged
-- ✅ **Testnet Support:** Can connect to testnet environment
+#### Dispatcher Features:
+- ✅ **BinanceMKTDispatcher:** TCP server on port 9982
+- ✅ **Protocol 2 Support:** Normalized CSV-based market data format
+- ✅ **WebSocket Streaming:** Combined stream for depth, trades, klines
+- ✅ **Multi-client Support:** Unlimited TCP clients
+- ✅ **Dynamic Subscription Management:** Add/remove symbols on demand
+- ✅ **Data Merging:** Combines depth (100ms), aggTrade, and kline_1s
+- ✅ **Thread Safety:** Proper locking for concurrent operations
+- ✅ **Testnet Support:** Can connect to testnet.binance.vision
+- ✅ **Caching:** Last-known market data cached per symbol
+- ✅ **Lazy Subscription:** Only subscribes to Binance when first client requests
 
-### Swift Implementation
-**Location:** `/argus_swift/Sources/ArgusServer/`
-**Files:** `BinanceWebSocket.swift` (379 lines), `BinanceClasses.swift` (309 lines), `MKTDispatcher.swift` (426 lines)
+#### Interactive Mode (via Introspective base class):
+Python's Binance dispatcher extends `Introspective` which provides:
 
-#### Features:
-- ✅ **WebSocket Streaming:** Real-time market data via Binance combined stream
-- ✅ **Protocol 2 Support:** Normalized data format for TCP clients
-- ✅ **Multi-client Support:** Multiple TCP clients can subscribe to different symbols
-- ✅ **Data Merging:** Combines depth, trade, and kline data into unified format
-- ✅ **Subscription Management:** Dynamic add/remove of symbol subscriptions
-- ✅ **Interactive Mode (CLI):** Runtime menu system for configuration
-- ✅ **Thread Safety:** NSLock for concurrent client handling
-- ✅ **BinanceWebSocket Class:** WebSocket manager with URLSession
-- ✅ **MKTDispatcher:** TCP dispatcher (default port 9982)
-- ✅ **Depth + Trade + Kline:** Three data stream types merged
-- ✅ **Testnet Support:** Can connect to testnet environment
-- ✅ **FakeSocket Pattern:** In-memory subscriptions without TCP overhead
-- ✅ **Native Swift:** Zero external dependencies (URLSession WebSockets)
+**Interactive Menu Options:**
+1. **show_subscriptions** - Display all active symbol subscriptions with client counts
+2. **show_clients** - Display all connected TCP clients with addresses
+3. **modify_configs** - Interactively modify runtime configurations
+4. **call_method** - Dynamically call any public method of the dispatcher
+5. **exit** - Exit interactive mode
 
-### Missing in Swift:
-- ❌ **Introspective Base Class:** Python's CLI introspection framework not fully ported
-- ❌ **Some Python utilities:** Minor helper functions specific to Python ecosystem
+**Runtime Configurations:**
+- `Print data packets` - Toggle packet printing for debugging
+- `Use TQDM Progress bar` - Show progress bars for operations
+- Any custom config added by the dispatcher
 
-### Missing in Python:
-- ❌ **FakeSocket Pattern:** Swift's elegant pattern for in-memory subscriptions (Python could benefit)
-- ❌ **Native Performance:** Swift compiled binary vs Python interpreter
+**Key Python Advantage:** The `Introspective` base class provides a **complete framework** for runtime introspection:
+- Dynamically discover and call any public method
+- Modify configurations without restart
+- Extensive debugging capabilities
+- Extensible architecture for adding new commands
 
-### Implementation Differences:
-- **WebSocket Library:** Python uses `python-binance`, Swift uses native URLSession (macOS only)
-- **Threading:** Python uses `@runAsThread` decorator, Swift uses GCD async dispatch
-- **Type Safety:** Swift has compile-time type checking, Python has runtime checks
-- **Platform:** Python is cross-platform, Swift URLSession WebSockets are macOS-only
+### Swift Implementation (`argus_swift/Sources/ArgusServer/`)
+**Files:** `MKTDispatcher.swift` (426 lines), `BinanceWebSocket.swift` (379 lines), `BinanceClasses.swift` (309 lines)
 
-### Feature Parity: **~95%**
+#### Dispatcher Features:
+- ✅ **MKTDispatcher:** TCP server (default port 9982, configurable)
+- ✅ **Protocol 2 Support:** Normalized CSV-based market data format  
+- ✅ **WebSocket Streaming:** Combined stream using URLSession
+- ✅ **Multi-client Support:** Unlimited TCP clients
+- ✅ **Dynamic Subscription Management:** Add/remove symbols via TCP commands
+- ✅ **Data Merging:** Combines depth, trades, klines
+- ✅ **Thread Safety:** NSLock for concurrent operations
+- ✅ **Testnet Support:** Can connect to testnet
+- ✅ **Caching:** In-memory market data cache per symbol
+- ✅ **FakeSocket Pattern:** Elegant pattern for in-memory subscriptions
+- ✅ **Zero Dependencies:** Native URLSession WebSockets
 
----
+#### Interactive Mode:
+Swift Binance has a **functional interactive menu** with **5 commands**:
 
-## 2. Capital.com Module
+**Interactive Menu:**
+```
+Options:
+1. Show subscribed symbols
+2. Show connected clients  
+3. Toggle packet printing
+4. Add symbol manually
+5. Remove symbol manually
+0. Exit
+```
 
-### Python Implementation
-**Location:** `/argus/capital/`
-**Files:** `__init__.py` (443 lines), `client.py` (420 lines), `_svr_utils.py` (470 lines), `_lib.py` (1,800+ lines)
+**Implemented Commands:**
+1. **Show subscribed symbols** - Lists all symbols with client counts
+2. **Show connected clients** - Displays count of connected clients
+3. **Toggle packet printing** - Toggles `configs["Print data packets"]`
+4. **Add symbol manually** - Subscribe via FakeSocket (no TCP overhead)
+5. **Remove symbol manually** - Unsubscribe from symbol
 
-#### Features:
-- ✅ **Unix Domain Socket (UDS):** IPC transport for local clients
-- ✅ **Dual Protocol:** Protocol 1 (JSON control) + Protocol 2 (CSV data)
-- ✅ **WebSocket Streaming:** Real-time CFD/Forex market data
-- ✅ **Symbol Resolution Caching:** EPIC resolution cached to disk
-- ✅ **Demo + Live Environments:** Switch between demo and live trading
-- ✅ **Multi-client Support:** Multiple UDS connections
-- ✅ **CapitalComClient:** Python client library with state tracking
-- ✅ **Batch Subscription:** Load symbols from file
-- ✅ **REST API Wrapper:** Full Capital.com API integration
-- ✅ **Rate Limiting:** Built-in handling for API limits
-- ✅ **Interactive CLI Client:** Edit/view mode for symbols
-- ✅ **Protocol2Parser:** Efficient CSV parsing utility
-- ✅ **DomainCache:** Symbol resolution caching system
-
-### Swift Implementation
-**Location:** `/argus_swift/Sources/ArgusServer/`
-**Files:** `CapitalComDispatcher.swift` (781 lines), `CapitalComWebSocket.swift` (457 lines), `CapitalComClasses.swift` (184 lines)
-
-#### Features:
-- ✅ **Unix Domain Socket (UDS):** IPC transport for local clients
-- ✅ **Dual Protocol:** Protocol 1 (JSON control) + Protocol 2 (CSV data)
-- ✅ **WebSocket Streaming:** Real-time CFD/Forex market data
-- ✅ **Symbol Resolution:** EPIC resolution (no disk caching yet)
-- ✅ **Demo + Live Environments:** Switch between demo and live trading
-- ✅ **Multi-client Support:** Multiple UDS connections
-- ✅ **REST API Integration:** Authentication and symbol search
-- ✅ **Interactive Mode:** Runtime configuration menu
-- ⚠️ **Limited Caching:** Symbol resolution not persisted to disk
-- ⚠️ **No Batch Subscription:** File-based symbol loading not implemented
+**Configurations:**
+- `Print data packets` (Boolean) - Toggle packet printing
 
 ### Missing in Swift:
-- ❌ **CapitalComClient Library:** No Swift equivalent client library
-- ❌ **DomainCache/Disk Caching:** Symbol resolution not cached to disk
-- ❌ **Batch File Subscription:** Cannot load symbols from file
-- ❌ **Interactive CLI Client:** No edit/view mode client
-- ❌ **Protocol2Parser Utility:** Not exposed as standalone utility
-- ❌ **Comprehensive REST API:** Subset of endpoints implemented
+- ❌ **Introspective Framework:** No base class for extensible introspection
+- ❌ **call_method capability:** Cannot dynamically call arbitrary methods
+- ❌ **Extensive configurations:** Only 1 config vs Python's framework for multiple configs
+- ❌ **Cross-platform:** URLSession WebSockets are macOS-only
 
 ### Missing in Python:
-- (None - Python is more feature-complete)
+- ❌ **FakeSocket elegance:** Swift's protocol-based FakeSocket is more elegant
+- ❌ **Compiled performance:** Swift binary is faster than Python interpreter
 
-### Implementation Differences:
-- **Caching:** Python uses `DomainCache` with pickle persistence, Swift uses in-memory only
-- **Client Library:** Python has `CapitalComClient`, Swift requires manual UDS connection
-- **File Operations:** Python supports batch file loading, Swift does not
+### Detailed Analysis:
+**Interactive Mode Comparison:**
+- **Python:** Extensible framework with Introspective base class allowing unlimited commands
+- **Swift:** Fixed menu with 5 hardcoded commands, less flexible but fully functional
+
+**Key Difference:** Python's approach is **framework-based** (extensible, abstract), Swift's is **implementation-based** (fixed, concrete). Swift's 5 commands cover the essential operations but lack Python's extensibility.
 
 ### Feature Parity: **~90%**
 
 ---
 
-## 3. Interactive Brokers (IB) Module - Core
+## 2. Capital.com Dispatcher
 
-### Python Implementation
-**Location:** `/argus/ib/`
-**Files:** `__init__.py` (1,204 lines), `_ib_utils.py` (500+ lines), `fields.py` (300+ lines), `_shortable_shares_data.py` (135 lines)
+### Python Implementation (`argus/capital/`)
+**Files:** `__init__.py` (443 lines), `client.py` (420 lines), `_svr_utils.py` (470 lines), `_lib.py` (1,800+ lines), `_caches.py` (200+ lines)
 
-#### Features:
-- ✅ **IBWss:** WebSocket client for real-time market data
-- ✅ **IBNetworker:** REST API session manager with authentication
-- ✅ **MKTDispatcher:** TCP dispatcher on port 9972
-- ✅ **Protocol 2 Support:** Normalized market data format
-- ✅ **AccountProvider:** Live portfolio tracking and P&L streaming
-- ✅ **FakeSocket Pattern:** In-memory subscriptions for account data
-- ✅ **Contract Search:** Cached contract resolution
-- ✅ **Shortable Shares Data:** Short-selling availability tracking (macOS only)
-- ✅ **Protected Assets:** Prevent unsubscription of portfolio holdings
-- ✅ **Multi-client Support:** Multiple TCP clients
-- ✅ **Interactive Mode (CLI):** Runtime configuration and introspection
-- ✅ **Account Ledger/Summary:** Full account data retrieval
-- ✅ **Position Fetching:** Real-time portfolio positions
-- ✅ **Subscription Limits:** Max 100 contracts (IBKR limitation)
-- ✅ **Authentication Management:** Tickle, heartbeat, session validation
-- ✅ **Caching System:** Contract search and account data cached
-- ✅ **Multiple Modes:** ASK, ASK+BID+LAST, FULL_PKL, FULL_JSON, PROTOCOL_2
-- ✅ **Thread Safety:** LockedSession for concurrent API calls
-- ✅ **Notification System:** macOS notifications for critical events
-- ✅ **Data Classes:** MarketData, SearchResult, Account, STK_Position
+#### Dispatcher Features:
+- ✅ **MKTDispatcher (extends SvrExport):** Unix Domain Socket server (`/tmp/argus_capital.sock`)
+- ✅ **Dual Protocol:** Protocol 1 (JSON control messages) + Protocol 2 (CSV market data)
+- ✅ **WebSocket Streaming:** Real-time CFD/Forex data from Capital.com
+- ✅ **Multi-client Support:** Multiple UDS connections
+- ✅ **Symbol Resolution:** Automatic ticker → EPIC resolution
+- ✅ **Disk Caching:** `DomainCache` persists EPIC resolutions to `~/.argus/capital_cache.pkl`
+- ✅ **Demo + Live Environments:** Switch between `Environment.DEMO` and `Environment.LIVE`
+- ✅ **REST API Wrapper:** Full Capital.com API integration (`_lib.py`)
+- ✅ **Rate Limiting:** Built-in handling for API rate limits
+- ✅ **Batch Subscription:** Load symbols from file via `resolve/stream/batch/file` action
 
-### Swift Implementation
-**Location:** `/argus_swift/Sources/ArgusServer/`
-**Files:** `IBDispatcher.swift` (425 lines), `IBWebSocket.swift` (316 lines), `IBNetworker.swift` (306 lines), `IBAccountProvider.swift` (258 lines), `IBClasses.swift` (303 lines), `IBFields.swift` (189 lines)
+#### Client Actions (Protocol 1):
+1. **resolve_symbol** - Resolve ticker to Capital.com EPIC (cached)
+2. **stream_epic** - Start streaming market data for EPIC
+3. **resolve/stream** - Combined resolve + stream
+4. **unsubscribe** - Stop streaming for EPIC
+5. **resolve/stream/batch/file** - Bulk subscribe from file
 
-#### Features:
-- ✅ **IBWss:** WebSocket client for real-time market data
-- ✅ **IBNetworker:** REST API session manager with authentication
-- ✅ **IBMKTDispatcher:** TCP dispatcher (port 9972)
-- ✅ **Protocol 2 Support:** Normalized market data format (only mode supported)
-- ✅ **AccountProvider:** Live portfolio tracking and P&L streaming
-- ✅ **FakeSocket Pattern:** In-memory subscriptions for account data
-- ✅ **Contract Search:** Basic contract resolution
-- ⚠️ **Protected Assets:** Implemented but different API
-- ✅ **Multi-client Support:** Multiple TCP clients
-- ✅ **Interactive Mode:** Runtime menu system
-- ✅ **Account Selection:** Interactive account picker at startup
-- ⚠️ **Basic Caching:** In-memory only, no disk persistence
-- ⚠️ **Subscription Tracking:** Progress tracking implemented
-- ✅ **Authentication:** Tickle and session management
-- ✅ **Thread Safety:** NSLock for concurrent operations
+#### Python Client Library:
+- ✅ **CapitalComClient (`client.py`):** High-level Python client for UDS
+- ✅ **State tracking:** Monitors connection and subscription states
+- ✅ **Automatic reconnection:** Handles disconnections
+- ✅ **Callback-based API:** Clean callback interface for market data
+- ✅ **Interactive CLI mode:** Edit/view mode for managing symbols
+
+#### Interactive Mode:
+Python Capital.com dispatcher **does not have interactive mode** in the traditional sense. It's designed as a service that clients connect to via UDS. Configuration is done via environment variables and launch parameters.
+
+**Key Python Advantages:**
+- **DomainCache:** Symbol resolutions persist to disk, reducing API load on restarts
+- **CapitalComClient:** Full-featured client library for easy integration
+- **Batch file loading:** Can subscribe to hundreds of symbols from a text file
+
+### Swift Implementation (`argus_swift/Sources/ArgusServer/`)
+**Files:** `CapitalComDispatcher.swift` (781 lines), `CapitalComWebSocket.swift` (457 lines), `CapitalComClasses.swift` (184 lines)
+
+#### Dispatcher Features:
+- ✅ **CapitalComMKTDispatcher:** Unix Domain Socket server (`/tmp/argus_capital.sock`)
+- ✅ **Dual Protocol:** Protocol 1 (JSON control) + Protocol 2 (CSV data)
+- ✅ **WebSocket Streaming:** Real-time CFD/Forex data
+- ✅ **Multi-client Support:** Multiple UDS connections
+- ✅ **Symbol Resolution:** Automatic ticker → EPIC resolution
+- ⚠️ **In-memory Caching:** No disk persistence (lost on restart)
+- ✅ **Demo + Live Environments:** Environment switching support
+- ⚠️ **Basic REST API:** Subset of Capital.com API implemented
+- ⚠️ **No Batch File Loading:** Cannot load symbols from file
+
+#### Client Actions:
+1. **resolve_symbol** - Resolve ticker to EPIC (in-memory cache only)
+2. **stream_epic** - Start streaming
+3. **unsubscribe** - Stop streaming
+
+#### Interactive Mode:
+Swift Capital.com has **basic interactive mode**:
+
+**Commands:** (Implementation needs verification - appears to be minimal)
+- Start/stop dispatcher
+- Monitor connection status
+
+**No Swift Client Library:** Must manually connect to UDS socket.
 
 ### Missing in Swift:
-- ❌ **Shortable Shares Data:** No short-selling availability tracking
-- ❌ **Introspective CLI Framework:** Python's advanced CLI introspection not fully ported
-- ❌ **Multiple Dispatcher Modes:** Only Protocol 2 supported (no ASK, FULL_PKL, FULL_JSON modes)
-- ❌ **Disk Caching:** Contract search and account data not cached to disk
-- ❌ **DomainCache Integration:** No shared caching system
-- ❌ **Notification System:** No macOS notifications
-- ❌ **Account Ledger/Summary APIs:** Simplified account data retrieval
-- ❌ **LockedSession Utility:** Different threading approach
-- ❌ **Comprehensive Error Handling:** Fewer exception types
-- ❌ **Full IBFields:** Subset of IBKR fields implemented
+- ❌ **DomainCache/Disk Caching:** Symbol resolutions not persisted, must re-resolve on every restart
+- ❌ **CapitalComClient Library:** No high-level Swift client, must use raw UDS
+- ❌ **Batch File Loading:** Cannot subscribe to symbols from file (`resolve/stream/batch/file` action missing)
+- ❌ **Interactive CLI Client:** No edit/view mode for symbol management
+- ❌ **Full REST API:** Subset of endpoints implemented
+- ❌ **Advanced rate limiting:** Less sophisticated than Python
 
 ### Missing in Python:
 - (None - Python is more feature-complete)
 
-### Implementation Differences:
-- **Dispatcher Modes:** Python has 5 modes (ASK, ASK+BID+LAST, FULL_PKL, FULL_JSON, PROTOCOL_2), Swift only has Protocol 2
-- **Caching:** Python uses persistent disk cache, Swift uses in-memory only
-- **Threading:** Python uses threading module, Swift uses GCD and NSLock
-- **Notifications:** Python has macOS notification system, Swift does not
-- **Account Data:** Python has comprehensive account APIs, Swift has basic support
+### Detailed Analysis:
+**Caching Impact:** 
+- **Python:** Symbol resolutions cached to disk (`~/.argus/capital_cache.pkl`). On restart, previously resolved symbols load instantly.
+- **Swift:** In-memory only. Every restart requires re-resolving all symbols via Capital.com API, increasing load time and API usage.
 
-### Feature Parity: **~70%**
-
----
-
-## 4. Interactive Brokers (IB) Forecast Module
-
-### Python Implementation
-**Location:** `/argus/ib/`
-**Files:** `forecast.py` (758 lines), `_forecast_utils.py` (900+ lines)
-
-#### Features:
-- ✅ **FXCWss:** WebSocket client for forecast contracts
-- ✅ **FXCDispatcher:** TCP dispatcher for prediction markets
-- ✅ **Big/Mini/Micro Contract Hierarchy:** 3-level market structure
-- ✅ **Market Resolution:** Resolve markets to component contracts
-- ✅ **Interactive Account Selection:** Choose account at startup
-- ✅ **Protected Assets:** Prevent unsubscription of active positions
-- ✅ **Contract Metadata Caching:** Forecast contract details cached
-- ✅ **Multiple Topic Handlers:** act, system, sts topics
-- ✅ **Socket Message Monitoring:** Logging of WebSocket messages
-- ✅ **Limited Multi-client:** Concurrent clients can exhaust 100-contract limit
-- ✅ **Custom Data Structures:** ForecastBig, ForecastMini, ForecastMicro classes
-
-### Swift Implementation
-**Location:** `/argus_swift/Sources/ArgusServer/`
-**Files:** `IBForecastDispatcher.swift` (384 lines), `IBForecastWebSocket.swift` (106 lines), `IBForecastClasses.swift` (284 lines)
-
-#### Features:
-- ✅ **FXCWss:** WebSocket client for forecast contracts
-- ✅ **FXCDispatcher:** TCP dispatcher for prediction markets
-- ✅ **Big/Mini/Micro Contract Hierarchy:** 3-level market structure
-- ✅ **Market Resolution:** Resolve markets to component contracts
-- ✅ **Interactive Account Selection:** Choose account at startup
-- ✅ **Interactive Mode:** Runtime menu system
-- ⚠️ **Basic Caching:** In-memory only, no disk persistence
-- ⚠️ **Topic Handlers:** Basic implementation
-
-### Missing in Swift:
-- ❌ **Disk Caching:** Forecast contract metadata not cached to disk
-- ❌ **Comprehensive Logging:** Socket message monitoring less detailed
-- ❌ **Advanced Multi-client Handling:** Simpler implementation
-- ❌ **Full Python Data Classes:** Some helper methods missing
-
-### Missing in Python:
-- (None - Python is more feature-complete)
-
-### Implementation Differences:
-- **Caching:** Python uses persistent cache, Swift uses in-memory only
-- **Logging:** Python has more comprehensive message logging
-- **Data Classes:** Python has more helper methods and utilities
+**Client Experience:**
+- **Python:** Use `CapitalComClient` for high-level integration. Simple, clean API.
+- **Swift:** Must manually construct UDS socket connection and handle Protocol 1/2 parsing.
 
 ### Feature Parity: **~85%**
 
 ---
 
-## 5. Polymarket Module
+## 3. Interactive Brokers (IB) Core Dispatcher
 
-### Python Implementation
-**Location:** `/argus/polymarket_direct/`
-**Files:** `__init__.py` (300+ lines), `_types.py` (600+ lines), `_example.py` (600+ lines)
+### Python Implementation (`argus/ib/`)
+**Files:** `__init__.py` (1,204 lines), `_ib_utils.py` (500+ lines), `fields.py` (300+ lines), `_shortable_shares_data.py` (135 lines)
 
-#### Note: The legacy dispatcher-based implementation is deprecated. Current implementation is "polymarket_direct" which does NOT follow the dispatcher pattern.
+#### Dispatcher Features:
+- ✅ **MKTDispatcher:** TCP server on port 9972
+- ✅ **Multiple Modes:** 
+  1. **ASK** - Ask price only
+  2. **ASK+BID+LAST** - Bid, ask, and last price
+  3. **FULL_PKL** - Full market data as pickled Python objects
+  4. **FULL_JSON** - Full market data as JSON
+  5. **PROTOCOL_2** - Normalized CSV format (recommended)
+- ✅ **WebSocket Client (IBWss):** Real-time market data from IBKR
+- ✅ **REST API (IBNetworker):** Contract search, account data, authentication
+- ✅ **AccountProvider:** Live portfolio tracking + P&L streaming to debug socket (port 9973)
+- ✅ **Multi-client Support:** Multiple TCP clients with independent subscriptions
+- ✅ **Contract Search:** Cached contract resolution (`@_IB_Cache.cache_decorator`)
+- ✅ **Disk Caching:** Contract search results and account data cached to `~/.argus/ib_cache.pkl`
+- ✅ **Shortable Shares Data:** Real-time short-selling availability tracking (macOS only)
+- ✅ **Protected Assets:** Prevent unsubscription of portfolio holdings
+- ✅ **Subscription Limits:** Max 100 contracts (IBKR limitation), tracked with progress bar
+- ✅ **FakeSocket Pattern:** Elegant integration for AccountProvider
+- ✅ **Authentication Management:** Tickle, heartbeat, session validation threads
+- ✅ **Notification System:** macOS notifications for critical events
+- ✅ **Thread Safety:** LockedSession for REST API, locks for subscriptions
 
-#### Features:
-- ✅ **EnhancedPM Client:** Direct API integration
-- ✅ **REST API:** Fetch events and markets via Gamma API
-- ✅ **WebSocket Streaming:** Real-time market data subscriptions
-- ✅ **Dry Mode:** Read-only access without credentials
-- ✅ **Event/Market Data Models:** PolymarketEvent, Market, Series, Tag
-- ✅ **Callback-based Subscriptions:** Per-market callbacks
-- ✅ **Auto-reconnection:** WebSocket reconnection handling
-- ✅ **Message Logging:** All WebSocket messages logged to file
-- ✅ **CLOB Token IDs:** Asset identifier handling
-- ✅ **No Dispatcher:** Different paradigm from other modules
+#### Interactive Mode (IBWss):
+Python IB WebSocket has **extensive interactive capabilities**:
 
-### Swift Implementation
-**Location:** `/argus_swift/Sources/ArgusServer/`
-**Files:** `PolymarketWebSocket.swift` (281 lines), `PolymarketClasses.swift` (444 lines), `PolymarketExample.swift` (197 lines)
+**Built-in Interactive Functions:**
+1. **Time since last contract data** - Monitor data freshness
+2. **Total WebSocket messages received** - Message counter
+3. **Write all WebSocket messages to a file** - Debug logging
+4. **Unique Contracts subscribed (lifetime)** - Subscription tracking
+5. **Socket Still Open** - Connection health check
+6. **Modify dispatcher configurations interactively** - Added by MKTDispatcher
 
-#### Features:
-- ⚠️ **Example Only:** Not a full dispatcher implementation
-- ⚠️ **PolymarketWebSocket:** Basic WebSocket connection
-- ⚠️ **Data Classes:** Basic market data structures
-- ⚠️ **PolymarketExample:** Demonstration code only
+**Runtime Configurations (MKTDispatcher):**
+1. `Print data packets` (Boolean) - Toggle packet printing
+2. `Use TQDM Progress bar for subscription checking` (Boolean) - Progress bars
+3. `Use TQDM Progress bar for subscription current load` (Boolean) - Load monitoring
+4. `Show search results from quick_add` (Boolean) - Display contract search results
+5. `Block New MKT Data` (Boolean) - Block data until account ID is set
+6. `Show blocked MKT Data Warning` (Boolean) - Warning messages
+
+**Interactive Configuration Flow:**
+```
+Select option: 6  # Modify dispatcher configurations
+Current configurations:
+Print data packets: False
+Use TQDM Progress bar for subscription checking: False
+...
+Configuration: Print data packets
+Enter new value for Print data packets (current: False): true
+Updated Print data packets to True
+```
+
+**Key Python Advantages:**
+- **6 runtime configurations** that can be toggled without restart
+- **Interactive contract subscription** via `quick_add` with search results
+- **Comprehensive debugging tools** (WebSocket message logging, health checks)
+- **Account integration** via AccountProvider with automatic portfolio tracking
+- **5 dispatcher modes** for different use cases
+
+### Swift Implementation (`argus_swift/Sources/ArgusServer/`)
+**Files:** `IBDispatcher.swift` (425 lines), `IBWebSocket.swift` (316 lines), `IBNetworker.swift` (306 lines), `IBAccountProvider.swift` (258 lines), `IBClasses.swift` (303 lines), `IBFields.swift` (189 lines)
+
+#### Dispatcher Features:
+- ✅ **IBMKTDispatcher:** TCP server (port 9972)
+- ⚠️ **Single Mode ONLY:** Protocol 2 only - **NO ASK, ASK+BID+LAST, FULL_PKL, or FULL_JSON modes**
+- ✅ **WebSocket Client (IBWss):** Real-time market data from IBKR
+- ✅ **REST API (IBNetworker):** Basic contract search and account selection
+- ✅ **AccountProvider:** Portfolio tracking (simplified)
+- ✅ **Multi-client Support:** Multiple TCP clients
+- ⚠️ **In-memory Caching:** Contract search not cached to disk
+- ❌ **No Shortable Shares:** Short-selling availability not tracked
+- ✅ **Protected Assets:** Implemented (different API)
+- ✅ **Subscription Tracking:** Progress monitoring
+- ✅ **FakeSocket Pattern:** Implemented for AccountProvider
+- ⚠️ **Basic Authentication:** Tickle and session management (no dedicated threads)
+- ❌ **No Notification System:** No macOS notifications
+- ✅ **Thread Safety:** NSLock for concurrent operations
+
+#### Interactive Mode:
+**CRITICAL ISSUE:** Swift IB has an `interactiveMode()` function, but it is **EMPTY** with **NO commands**:
+
+```swift
+func interactiveMode() {
+    print("\nIBKR Dispatcher Interactive Mode")
+    print("Enter commands (or 'exit' to quit):")
+    print("Server is running. Press Ctrl+C to stop.")
+    
+    while true {
+        print("> ", terminator: "")
+        guard let input = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            Thread.sleep(forTimeInterval: 1.0)
+            continue
+        }
+        
+        if input.lowercased() == "exit" {
+            print("Shutting down...")
+            break
+        }
+        
+        if !input.isEmpty {
+            print("Unknown command: \(input)")  // ALL commands are "unknown"
+        }
+    }
+}
+```
+
+**Analysis:** The Swift IB interactive mode:
+- ❌ **NO interactive commands implemented** - Everything prints "Unknown command"
+- ❌ **NO configuration options** - Cannot modify settings at runtime
+- ❌ **NO debugging tools** - No subscription viewer, no health checks
+- ❌ **NO account management** - Cannot interact with portfolio tracking
+- ✅ **Does detect exit** - Can type "exit" to quit
+
+**Configs Available (but not accessible):**
+```swift
+configs["Print data packets"] = false
+configs["Block New MKT Data"] = true
+configs["Show blocked MKT Data Warning"] = false
+```
+
+These exist in code but **there are no interactive commands to modify them**.
 
 ### Missing in Swift:
-- ❌ **EnhancedPM Client:** No full client implementation
-- ❌ **REST API Integration:** No event/market fetching
-- ❌ **Dry Mode:** Not applicable (example only)
-- ❌ **Full Data Models:** Simplified structures
-- ❌ **Subscription Management:** Basic WebSocket only
-- ❌ **Auto-reconnection:** Not implemented
-- ❌ **Message Logging:** Not implemented
-- ❌ **Production Ready:** Example code, not for production use
+- ❌ **Interactive Mode is NON-FUNCTIONAL** - No commands implemented despite menu existing
+- ❌ **4 of 5 Dispatcher Modes:** Only Protocol 2 supported (no ASK, ASK+BID+LAST, FULL_PKL, FULL_JSON)
+- ❌ **Disk Caching:** Contract search and account data not cached
+- ❌ **Shortable Shares Data:** Cannot track short-selling availability
+- ❌ **Runtime Configuration:** 3 configs exist but no way to modify them interactively
+- ❌ **Debugging Tools:** No WebSocket message logging, no health checks, no subscription viewer
+- ❌ **Notification System:** No macOS notifications for critical events
+- ❌ **LockedSession:** Different threading model, less robust for concurrent API calls
+- ❌ **Account Ledger/Summary APIs:** Simplified account data retrieval
+
+### Missing in Python:
+- (None - Python is significantly more feature-complete)
+
+### Detailed Analysis:
+
+**Interactive Mode Comparison:**
+- **Python IB:** 6+ interactive functions, 6 runtime configurations, full debugging toolkit
+- **Swift IB:** **EMPTY interactive mode** - literally no commands except "exit"
+
+This is a **critical gap**. The Swift IB dispatcher says it has interactive mode, but it's non-functional.
+
+**Dispatcher Mode Impact:**
+- **Python:** Can switch between 5 modes based on client needs (lightweight ASK, detailed FULL_JSON, normalized PROTOCOL_2)
+- **Swift:** Protocol 2 only - cannot serve clients expecting other formats
+
+**Caching Impact:**
+- **Python:** Contract searches cached to disk. Searching for "AAPL" is instant on second run.
+- **Swift:** Every contract search hits IBKR API, slower and higher API load.
+
+**Shortable Shares:**
+- **Python:** Real-time tracking of shares available for short-selling (critical for short sellers)
+- **Swift:** Not available
+
+### Feature Parity: **~55%**
+
+**Assessment:** Swift IB implementation has **major gaps**. While it handles basic real-time market data, it lacks:
+1. Interactive mode functionality
+2. Multiple dispatcher modes
+3. Disk caching
+4. Shortable shares
+5. Advanced debugging tools
+
+---
+
+## 4. Interactive Brokers (IB) Forecast Dispatcher
+
+### Python Implementation (`argus/ib/`)
+**Files:** `forecast.py` (758 lines), `_forecast_utils.py` (900+ lines)
+
+#### Dispatcher Features:
+- ✅ **FXCDispatcher:** TCP dispatcher for prediction market contracts
+- ✅ **FXCWss:** WebSocket client for forecast contracts (separate endpoint)
+- ✅ **Big/Mini/Micro Hierarchy:** 3-level contract structure for prediction markets
+- ✅ **Market Resolution:** Automatically resolves markets to component contracts
+- ✅ **Interactive Account Selection:** Menu-driven account picker at startup
+- ✅ **Contract Metadata Caching:** Forecast contract details cached to disk
+- ✅ **Protected Assets:** Prevent unsubscription of active positions
+- ✅ **Multiple Topic Handlers:** `act`, `system`, `sts` WebSocket topics
+- ✅ **Socket Message Monitoring:** Comprehensive WebSocket logging
+- ✅ **Custom Data Structures:** `ForecastBig`, `ForecastMini`, `ForecastMicro` classes
+
+#### Interactive Mode:
+Python IB Forecast has **account selection interactive mode**:
+
+**Account Selection Menu:**
+```
+Select an account:
+1. Account U1234567 (Individual - IBKR Pro)
+2. Account U7654321 (IRA - IBKR Pro)
+Enter choice: 
+```
+
+**Key Features:**
+- Interactive account selection from multiple trading accounts
+- Account details displayed (type, ID)
+- Can be integrated with Introspective framework for runtime config
+
+### Swift Implementation (`argus_swift/Sources/ArgusServer/`)
+**Files:** `IBForecastDispatcher.swift` (384 lines), `IBForecastWebSocket.swift` (106 lines), `IBForecastClasses.swift` (284 lines)
+
+#### Dispatcher Features:
+- ✅ **FXCDispatcher:** TCP dispatcher for prediction markets
+- ✅ **FXCWss:** WebSocket client for forecast contracts
+- ✅ **Big/Mini/Micro Hierarchy:** 3-level contract structure
+- ✅ **Market Resolution:** Resolves markets to contracts
+- ✅ **Interactive Account Selection:** Implemented
+- ⚠️ **In-memory Caching:** Contract metadata not persisted to disk
+- ✅ **Basic Topic Handlers:** `act`, `system` topics
+- ⚠️ **Limited Logging:** Less comprehensive than Python
+
+#### Interactive Mode:
+Swift IB Forecast has **account selection**:
+
+```swift
+func selectAccountInteractive() throws {
+    // Fetch accounts and present menu
+}
+```
+
+**Key Features:**
+- Interactive account selection menu
+- Basic implementation
+
+### Missing in Swift:
+- ❌ **Disk Caching:** Forecast contract metadata not cached to disk
+- ❌ **Comprehensive WebSocket Logging:** Less detailed than Python
+- ❌ **Full Topic Handlers:** Subset of Python's topic handling
+- ❌ **Advanced Interactive Mode:** No runtime configuration beyond account selection
 
 ### Missing in Python:
 - (None - Python is more feature-complete)
 
-### Implementation Differences:
-- **Architecture:** Python has full direct client, Swift has example code only
-- **Purpose:** Python for production use, Swift for demonstration
-- **REST API:** Python has comprehensive API wrapper, Swift has none
+### Detailed Analysis:
+Swift IB Forecast is **functional** and covers core prediction market features. Main gap is disk caching - on restart, all forecast contract metadata must be re-fetched from IBKR, which is slow for markets with many contracts (10-candidate election = 20 contracts).
 
-### Feature Parity: **~30%** (Swift is example-only)
+### Feature Parity: **~80%**
 
 ---
 
-## 6. NASDAQ Module
+## 5. Polymarket Dispatcher
 
-### Python Implementation
-**Location:** `/argus/nasdaq/`
-**Files:** `__init__.py` (300+ lines)
+### Python Implementation (`argus/polymarket/`)
+**Files:** `__init__.py` (stub only)
 
-#### Features:
-- ✅ **NASDAQDataDownloader:** Selenium-based web scraper
-- ✅ **10-Year Historical Data:** Download up to 10 years of data
-- ✅ **Batch Downloading:** Multiple tickers with progress tracking
-- ✅ **Headless Browser:** Background operation via Firefox
-- ✅ **Context Manager:** Automatic cleanup with `with` statement
-- ✅ **CSV Export:** Historical data saved to temporary directory
-- ✅ **Progress Bar:** tqdm integration for download tracking
-- ✅ **Retry Logic:** Handle click interception and timeouts
-- ✅ **Cookie Handling:** Automatic acceptance of site cookies
+#### Status: ⚠️ **DEPRECATED / STUB**
 
-### Swift Implementation
-**Status:** ❌ **Not Available**
+```python
+# THIS IS A STUB IMPLEMENTATION OF POLY DISPATCHER.
+# IF YOU NEED THE OLD VERSION PLEASE CHECKOUT THE LEGACY BRANCH
+```
 
-### Missing in Swift:
-- ❌ **Entire NASDAQ module:** No web scraping functionality
-- ❌ **Selenium Integration:** No browser automation
-- ❌ **Historical Data Downloads:** No data retrieval capability
+The Python polymarket dispatcher is **non-functional** in main branch. A legacy implementation exists in a separate branch but is deprecated due to:
+- Incomplete official `py_clob_client` library
+- Markets from `ClobClient.get_markets()` being mostly closed/resolved
+- Multiple conflicting Polymarket APIs
 
-### Feature Parity: **0%**
+**Current Approach:** `polymarket_direct` module provides direct API integration without dispatcher pattern.
 
-**Rationale for Omission:**
-- Web scraping is inherently fragile and platform-dependent
-- Selenium requires external browser dependencies
-- Swift focus is on real-time data dispatchers, not historical downloads
-- Alternative: Use Python version or NASDAQ Data Link API
+### Swift Implementation (`argus_swift/Sources/ArgusServer/`)
+**Files:** `PolymarketWebSocket.swift` (281 lines), `PolymarketClasses.swift` (444 lines), `PolymarketExample.swift` (197 lines)
 
----
+#### Status: ⚠️ **EXAMPLE ONLY**
 
-## 7. TradingView Module
+Swift Polymarket is **demonstration code**, not a production dispatcher:
+- Basic WebSocket connection examples
+- Simplified data structures  
+- No dispatcher implementation
+- Intended for learning/prototyping
 
-### Python Implementation
-**Location:** `/argus/tv/`
-**Files:** `__init__.py` (448 lines), `multisymbol.py` (230+ lines)
+### Analysis:
+Both implementations are **non-functional** for dispatcher use. Polymarket module in both languages serves as example/legacy code rather than production-ready dispatcher.
 
-#### Features:
-- ✅ **TradingViewConnection:** Base WebSocket connection class
-- ✅ **QuoteSession:** Real-time quote data streaming
-- ✅ **ChartSession:** Historical OHLCV data retrieval
-- ✅ **NewsSession:** News feed streaming
-- ✅ **Multi-symbol Support:** Subscribe to multiple symbols
-- ✅ **Callback-based:** Direct callback subscriptions
-- ✅ **Pandas Integration:** ChartSession returns DataFrames
-- ✅ **Custom Protocol:** TradingView message encoding/decoding
-- ✅ **Heartbeat Handling:** Keep-alive message management
-- ✅ **Optional Authentication:** Works without credentials
-- ✅ **Multiple Intervals:** 1m, 5m, 15m, 60m, 240m, D, W, M
-- ✅ **No Dispatcher:** Different paradigm (callback-based)
-
-### Swift Implementation
-**Status:** ❌ **Not Available**
-
-### Missing in Swift:
-- ❌ **Entire TradingView module:** No implementation
-- ❌ **QuoteSession:** No real-time quotes
-- ❌ **ChartSession:** No historical data
-- ❌ **NewsSession:** No news feed
-- ❌ **Multi-symbol Support:** Not available
-- ❌ **Custom Protocol:** TradingView protocol not implemented
-
-### Feature Parity: **0%**
-
-**Rationale for Omission:**
-- TradingView module is callback-based, not dispatcher-based
-- Focus of Swift implementation is on trading-ready dispatchers
-- TradingView is primarily for charting/analysis, not live trading
-- Alternative: Use Python version for TradingView integration
+### Feature Parity: **N/A** (Both non-functional)
 
 ---
 
-## 8. Cache Utilities Module
+## Key Missing Features in Swift (Detailed)
 
-### Python Implementation
-**Location:** `/argus/cache_utils/`
-**Files:** `__init__.py` (400+ lines), `__main__.py` (130 lines)
+### Critical - Interactive Mode
 
-#### Features:
-- ✅ **DomainCache:** Domain-specific caching system
-- ✅ **FastCache:** In-memory caching utility
-- ✅ **Persistent Storage:** Pickle-based disk caching
-- ✅ **Cache Decorator:** `@cache_decorator` for automatic caching
-- ✅ **Cache Management:** List, clear, and inspect caches
-- ✅ **Domain Isolation:** Separate caches per module
-- ✅ **Cache Location:** `~/.argus/*.pkl` files
-- ✅ **Environment Control:** `ARGUS_CACHES_DISABLED` flag
-- ✅ **CLI Tool:** `python -m argus.cache_utils` for management
-- ✅ **Cross-module Sharing:** Shared cache infrastructure
+**IB Dispatcher Interactive Mode is EMPTY:**
+- ❌ Function exists but has **zero commands** implemented
+- ❌ Cannot view subscriptions
+- ❌ Cannot modify configurations (3 configs exist but unreachable)
+- ❌ Cannot add/remove symbols manually
+- ❌ No debugging tools
+- ❌ Everything prints "Unknown command"
 
-### Swift Implementation
-**Status:** ❌ **Not Available**
+**Impact:** Users cannot troubleshoot or configure IB dispatcher at runtime. Must restart entire dispatcher to change settings.
 
-### Missing in Swift:
-- ❌ **DomainCache System:** No shared caching infrastructure
-- ❌ **Persistent Caching:** No disk-based cache persistence
-- ❌ **Cache Decorator:** No automatic caching decorator
-- ❌ **Cache Management CLI:** No cache inspection tools
-- ❌ **Cross-module Sharing:** Each Swift module handles caching independently
+**Comparison:**
+- **Python IB:** 6+ interactive functions, 6 runtime configurations
+- **Swift IB:** 0 commands (except "exit")
 
-### Feature Parity: **0%**
+### Critical - IB Dispatcher Modes
 
-**Impact:**
-- Swift modules use in-memory caching only
-- No cache persistence between restarts
-- Contract searches and symbol resolution must be re-fetched
+**Only Protocol 2 Supported:**
+- ❌ No **ASK mode** (ask price only - lightest weight)
+- ❌ No **ASK+BID+LAST mode** (basic trading data)
+- ❌ No **FULL_PKL mode** (pickled objects for Python clients)
+- ❌ No **FULL_JSON mode** (JSON for cross-language clients)
+- ✅ Only **PROTOCOL_2 mode** (CSV format)
+
+**Impact:** Clients expecting ASK, FULL_JSON, or FULL_PKL formats cannot use Swift IB dispatcher. Must use Python.
+
+### Critical - Disk Caching
+
+**No DomainCache Equivalent:**
+
+| Feature | Python | Swift |
+|---------|--------|-------|
+| **IB Contract Search** | Cached to `~/.argus/ib_cache.pkl` | In-memory only, lost on restart |
+| **Capital.com EPIC Resolution** | Cached to `~/.argus/capital_cache.pkl` | In-memory only |
+| **IB Forecast Contracts** | Cached to disk | In-memory only |
+| **Restart Performance** | Instant (loads from cache) | Slow (refetch from API) |
+| **API Load** | Minimal (only new contracts) | High (all contracts on restart) |
+
+**Impact:** 
+- Every Swift dispatcher restart requires re-fetching all previously resolved symbols
 - Higher API load on exchanges/brokers
+- Slower startup times
+- Risk of rate limiting from repeated API calls
 
-**Workaround:**
-- Each Swift module implements basic in-memory caching
-- No shared cache infrastructure
-- Consider implementing Swift equivalent of DomainCache
+### High Priority - IB Shortable Shares
 
----
+**Python Only:**
+- ✅ Real-time tracking of shares available for short-selling
+- ✅ Field `IBKRFields.SHORTABLE_SHARES` in Protocol 2 packets
+- ✅ Integrated with `ShortableSharesData` class
+- ✅ Essential for short-selling strategies
 
-## 9. Additional Python Features Not in Swift
+**Swift:**
+- ❌ Not implemented
+- ❌ Field always `0` in Protocol 2 packets
 
-### Introspective Base Class
-**Location:** Python `argus._argus_utils`
+**Impact:** Short sellers cannot determine availability. Must use Python or external data source.
 
-The `Introspective` base class provides runtime CLI introspection for dispatchers:
+### Medium Priority - Client Libraries
 
-**Features:**
-- Interactive menu system at runtime
-- Configuration toggles (e.g., "Print data packets")
-- Show subscribed symbols
-- Show connected clients
-- Manual symbol add/remove
-- Debugging utilities
+**Capital.com:**
+- **Python:** Full `CapitalComClient` library with state tracking, reconnection, callbacks
+- **Swift:** Must manually connect to UDS socket, no high-level client
 
-**Swift Status:** ⚠️ Partially implemented as basic interactive menus in individual dispatchers
+**Impact:** Swift developers must implement UDS connection handling and Protocol 1/2 parsing manually.
 
-### Notification System
-**Location:** Python `argus.ib._ib_utils`
+### Medium Priority - Batch Operations
 
-**Features:**
-- macOS system notifications
-- iMessage integration (optional)
-- Critical event alerts
-- Authentication failures
-- WebSocket disconnections
+**Capital.com Batch File Loading:**
+- **Python:** `resolve/stream/batch/file` action to subscribe to hundreds of symbols from text file
+- **Swift:** Must send individual resolve/stream requests for each symbol
 
-**Swift Status:** ❌ Not implemented
+**Impact:** Subscribing to 100+ symbols is tedious in Swift, instant in Python.
 
-### LockedSession
-**Location:** Python `argus.ib._ib_utils`
+### Low Priority - Notification System
 
-Thread-safe HTTP session wrapper:
+**Python IB Only:**
+- macOS system notifications for:
+  - WebSocket connection/disconnection
+  - Authentication failures
+  - Market data errors
+  - Account P&L alerts
+- Optional iMessage integration
 
-**Features:**
-- Thread locks on `.get()` and `.post()`
-- Prevents concurrent request conflicts
-- Used by IBNetworker
+**Swift:** No notification system
 
-**Swift Status:** ⚠️ Swift uses URLSession which has different threading model
-
-### Protocol2Parser
-**Location:** Python `argus.capital._svr_utils`
-
-Efficient CSV parsing for Protocol 2 packets:
-
-**Features:**
-- Single-pass parsing
-- Named field extraction
-- Used by clients to parse market data
-
-**Swift Status:** ✅ Implemented in `Protocol2Utils.swift`
-
----
-
-## 10. Swift-Specific Features Not in Python
-
-### FakeSocket Pattern (Enhanced)
-**Location:** Swift `SocketProtocol.swift`
-
-Swift's implementation is more elegant:
-
-**Features:**
-- `ArgusSocket` protocol for polymorphism
-- `RealSocket` and `FakeSocket` implementations
-- Cleaner separation of concerns
-- No refactoring needed for dispatcher logic
-
-**Python Status:** ✅ Has FakeSocket but less formal protocol-based design
-
-### URLSession WebSockets
-**Location:** Swift WebSocket implementations
-
-**Features:**
-- Native Foundation framework
-- Zero external dependencies
-- Integrated with Swift async/await (potential)
-
-**Python Status:** Uses `websocket-client` library
-
-**Trade-off:** URLSession WebSockets are macOS-only, Python is cross-platform
-
-### Compiled Binary Performance
-Swift compiled binary vs Python interpreter:
-
-**Advantages:**
-- Faster execution
-- Lower memory overhead
-- No runtime interpreter needed
-
-**Python Status:** Interpreted language with GIL limitations
-
----
-
-## Key Missing Features in Swift (Priority Order)
-
-### High Priority
-1. **Disk Caching System** (DomainCache equivalent)
-   - Impact: Higher API load, slower startup
-   - Affects: IB, Capital.com contract search
-   - Workaround: Implement Swift-native caching to disk
-
-2. **Multiple IB Dispatcher Modes** (ASK, FULL_PKL, FULL_JSON)
-   - Impact: Limited to Protocol 2 only
-   - Affects: IB module clients expecting other formats
-   - Workaround: Protocol 2 is recommended mode anyway
-
-3. **Shortable Shares Data** (IB)
-   - Impact: Cannot track short-selling availability
-   - Affects: Short-selling strategies
-   - Workaround: Use Python version or external data source
-
-### Medium Priority
-4. **NASDAQ Module** (Historical Data)
-   - Impact: No historical data downloads
-   - Affects: Backtesting workflows
-   - Workaround: Use Python version or NASDAQ Data Link API
-
-5. **TradingView Module** (Charting)
-   - Impact: No TradingView integration
-   - Affects: Charting and analysis workflows
-   - Workaround: Use Python version
-
-6. **Notification System** (macOS)
-   - Impact: No system alerts
-   - Affects: Monitoring and alerting
-   - Workaround: Implement custom notification system
-
-### Low Priority
-7. **Capital.com Client Library**
-   - Impact: Manual UDS connection required
-   - Affects: Client convenience
-   - Workaround: Write custom client or use Python version
-
-8. **Introspective CLI Framework**
-   - Impact: Less rich runtime introspection
-   - Affects: Debugging and monitoring
-   - Workaround: Use basic interactive menus
-
----
-
-## Key Missing Features in Python
-
-### None
-Python is more feature-complete in all aspects. The only advantage Swift has is:
-
-1. **Compiled Performance:** Binary is faster than interpreter
-2. **Type Safety:** Compile-time type checking prevents some runtime errors
-3. **Memory Safety:** ARC prevents memory leaks
-
-However, these are language-level advantages, not feature gaps.
+**Impact:** Less visibility into dispatcher health and critical events.
 
 ---
 
 ## Platform Limitations
 
 ### Swift
-- **macOS-only WebSockets:** URLSession WebSockets require macOS
-- **Linux Support:** Requires alternative WebSocket library (not yet implemented)
-- **No Windows Support:** Native Swift on Windows is limited
+- **macOS-only WebSockets:** URLSession WebSockets require macOS, not cross-platform
+- **No Linux/Windows Support:** Native Swift on Linux/Windows has limitations
+- **Empty Interactive Mode (IB):** Advertised but non-functional
 
 ### Python
 - **Cross-platform:** Works on macOS, Linux, Windows
-- **Selenium Dependency:** NASDAQ module requires Firefox/geckodriver
+- **Interpreter Overhead:** Slower than compiled Swift binary
 - **GIL Limitations:** Threading performance bottlenecks
+
+---
+
+## Max Connection Control
+
+**Neither Python nor Swift dispatchers implement explicit max connection limits.**
+
+Both implementations support **unlimited TCP/UDS clients** with these natural constraints:
+
+**Python:**
+- Limited by system socket limits (`ulimit -n`)
+- Threading overhead for many concurrent clients
+- No hardcoded max client limit
+
+**Swift:**
+- Limited by system socket limits
+- GCD handles client threads efficiently
+- No hardcoded max client limit
+
+**IBKR Subscription Limit:** Both Python and Swift respect IBKR's **100 concurrent contract subscriptions** limit. This is an IBKR platform limitation, not a dispatcher limitation.
+
+**Recommendation:** For max connection control, implement at the infrastructure level (reverse proxy, load balancer) rather than in dispatcher code.
 
 ---
 
 ## Recommendations
 
-### For Swift Development
-1. **Implement DomainCache equivalent:** Persistent disk caching for contract search and symbol resolution
-2. **Add NASDAQ-like module:** Consider alternative to Selenium (e.g., API-based historical data)
-3. **Port TradingView module:** Callback-based implementation would fit Swift well
-4. **Enhance IB module:** Add shortable shares tracking and multiple dispatcher modes
-5. **Add notification system:** macOS notifications for critical events
-6. **Capital.com client library:** Create Swift client for UDS connections
+### For Swift Development Priority
+
+1. **CRITICAL: Implement IB Interactive Commands**
+   - Add commands to view subscriptions
+   - Add command to modify configurations
+   - Add debugging commands (health check, message logging)
+   - Study Python's Introspective framework for inspiration
+
+2. **CRITICAL: Implement Disk Caching**
+   - Create Swift equivalent of DomainCache
+   - Cache IB contract searches to disk
+   - Cache Capital.com EPIC resolutions
+   - Cache IB Forecast contract metadata
+   - Use `FileManager` or Swift-native persistence
+
+3. **HIGH: Add Missing IB Dispatcher Modes**
+   - Implement ASK mode
+   - Implement ASK+BID+LAST mode
+   - Implement FULL_JSON mode (FULL_PKL not needed for Swift)
+   - Make mode configurable at startup
+
+4. **HIGH: Implement Shortable Shares Tracking (IB)**
+   - Port `ShortableSharesData` class to Swift
+   - Integrate with IBWss data flow
+   - Add SHORTABLE_SHARES field to Protocol 2 packets
+
+5. **MEDIUM: Improve Interactive Modes**
+   - Binance: Good, but could benefit from call_method equivalent
+   - Capital.com: Add interactive configuration options
+   - IB Forecast: Add runtime configuration beyond account selection
+
+6. **MEDIUM: Create Client Libraries**
+   - Swift Capital.com client for UDS connections
+   - Swift IB client for TCP connections
+   - Protocol 2 parsing utilities
+
+7. **LOW: Add Notification System**
+   - macOS notifications via UserNotifications framework
+   - Critical event alerting
 
 ### For Python Development
-1. **Adopt FakeSocket protocol pattern:** Make FakeSocket more formal with protocols/interfaces
-2. **Performance optimization:** Consider Cython for hot paths
-3. **Type hints:** Add comprehensive type hints for better IDE support
+
+1. **Adopt FakeSocket Protocol Pattern:** Make FakeSocket more formal with ABC/Protocol
+2. **Performance:** Consider Cython for hot paths in dispatchers
+3. **Type Hints:** Add comprehensive type hints for better IDE support
+4. **Documentation:** Already excellent, keep updating
 
 ### For Users
-- **Real-time trading:** Use Swift for performance-critical dispatchers (Binance, Capital, IB core)
-- **Historical analysis:** Use Python for NASDAQ and TradingView modules
-- **Cross-platform:** Use Python for Linux/Windows deployments
-- **macOS performance:** Use Swift for low-latency local systems
-- **Research/backtesting:** Use Python for full toolkit
+
+**When to Use Swift:**
+- **Performance-critical** real-time trading on macOS
+- **Low-latency** local systems
+- **Production dispatchers** for Binance, Capital.com (with caveats)
+
+**When to Use Python:**
+- **IB Core dispatcher** (Swift missing too many features)
+- **Cross-platform** deployment (Linux, Windows)
+- **Advanced features** (shortable shares, multiple modes, disk caching)
+- **Development/prototyping** (richer ecosystem, easier debugging)
+
+**Avoid:**
+- Swift IB dispatcher for production (too many gaps)
+- Either Polymarket dispatcher (both non-functional)
 
 ---
 
-## Summary Table
+## Summary
 
-| Feature Category | Python | Swift | Notes |
-|-----------------|---------|-------|-------|
-| **Binance Dispatcher** | ✅ | ✅ | Feature parity ~95% |
-| **Capital.com Dispatcher** | ✅ | ✅ | Feature parity ~90% |
-| **IB Core Dispatcher** | ✅ | ⚠️ | Swift missing modes, caching, shortable shares |
-| **IB Forecast Dispatcher** | ✅ | ✅ | Feature parity ~85% |
-| **Polymarket** | ✅ | ⚠️ | Swift is example-only |
-| **NASDAQ Historical** | ✅ | ❌ | Not implemented in Swift |
-| **TradingView** | ✅ | ❌ | Not implemented in Swift |
-| **Cache System** | ✅ | ❌ | Swift has in-memory only |
-| **Disk Caching** | ✅ | ❌ | Critical gap for Swift |
-| **Protocol 2** | ✅ | ✅ | Both support |
-| **Multi-client** | ✅ | ✅ | Both support |
-| **Interactive CLI** | ✅ | ⚠️ | Swift has basic menus |
-| **Notifications** | ✅ | ❌ | Python has macOS notifications |
-| **Cross-platform** | ✅ | ❌ | Swift is macOS-only (URLSession) |
-| **Performance** | ⚠️ | ✅ | Swift compiled binary faster |
-| **Type Safety** | ⚠️ | ✅ | Swift has compile-time checking |
+**Swift Implementation Status:**
+- ✅ **Binance:** Excellent, 90% parity, fully production-ready
+- ✅ **Capital.com:** Good, 85% parity, lacks caching and client library but usable
+- ⚠️ **IB Core:** Limited, 55% parity, **empty interactive mode**, missing modes/features - **NOT production-ready**
+- ✅ **IB Forecast:** Good, 80% parity, lacks caching but functional
 
----
+**Critical Findings:**
+1. **IB Interactive Mode is EMPTY** - advertised but non-functional
+2. **No disk caching** in any Swift dispatcher - all cache lost on restart
+3. **4 of 5 IB modes missing** - only Protocol 2 supported
+4. **No shortable shares** - critical data missing for short sellers
+5. **No max connection control** - neither Python nor Swift implement this (natural system limits apply)
 
-## Conclusion
+**Python remains the reference implementation** with full features. Swift offers **performance advantages** for specific dispatchers (Binance, Capital.com) but **should not be used for IB Core** until critical gaps are addressed.
 
-The Swift implementation of Argus provides **excellent coverage for core real-time trading dispatchers** (Binance, Capital.com, IB), achieving 70-95% feature parity with Python. However, it lacks:
-
-1. **Historical data tools** (NASDAQ, TradingView)
-2. **Disk caching infrastructure**
-3. **Advanced IB features** (shortable shares, multiple modes)
-4. **Cross-platform support** (macOS-only)
-
-Python remains the **reference implementation** with full feature coverage, but Swift offers **superior performance** for latency-sensitive real-time trading systems on macOS.
-
-**Best Practice:** Use Swift for production dispatchers on macOS, use Python for research, historical analysis, and cross-platform deployments.
+**Best Practice:** 
+- **Binance, Capital.com:** Swift on macOS for performance
+- **IB Core, IB Forecast:** Python for features and reliability
+- **Cross-platform:** Python exclusively
+- **Development:** Python for richer tooling
