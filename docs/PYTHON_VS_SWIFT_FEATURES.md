@@ -11,10 +11,10 @@ This document provides a **thorough, in-depth comparison** of dispatcher feature
 | Module | Python Status | Swift Status | Feature Parity | Notes |
 |--------|--------------|--------------|----------------|-------|
 | **Binance** | ✅ Full | ✅ Full | ~90% | Swift has 5 interactive commands vs Python's extensive Introspective framework |
-| **Capital.com** | ✅ Full | ✅ Full | ~85% | Swift missing client library, disk caching, batch file loading |
+| **Capital.com** | ✅ Full | ⚠️ Limited | ~85% | Swift missing client library, disk caching, batch file loading |
 | **Interactive Brokers (IB)** | ✅ Full | ⚠️ Limited | ~55% | **Swift has empty interactive mode with NO commands**, missing 4 of 5 dispatcher modes, no disk caching, no shortable shares |
-| **IB Forecast** | ✅ Full | ✅ Good | ~80% | Swift missing disk caching, limited interactive commands |
-| **Polymarket** | ⚠️ Legacy Stub | ⚠️ Example Only | N/A | Both implementations are non-functional for dispatcher use |
+| **IB Forecast** | ✅ Full | ⚠️ Limited | ~80% | Swift missing disk caching, limited interactive commands |
+| **Polymarket** | ⚠️ Stub | ⚠️ Example | N/A | Both implementations are non-functional for dispatcher use |
 
 **Legend:**
 - ✅ Full: Feature-complete dispatcher implementation
@@ -319,18 +319,18 @@ func interactiveMode() {
         }
         
         if !input.isEmpty {
-            print("Unknown command: \(input)")  // ALL commands are "unknown"
+            print("Unknown command: \(input)")  // ALL non-empty commands are "unknown"
         }
     }
 }
 ```
 
 **Analysis:** The Swift IB interactive mode:
-- ❌ **NO interactive commands implemented** - Everything prints "Unknown command"
+- ❌ **NO interactive commands implemented** - All non-empty commands print "Unknown command"
 - ❌ **NO configuration options** - Cannot modify settings at runtime
 - ❌ **NO debugging tools** - No subscription viewer, no health checks
 - ❌ **NO account management** - Cannot interact with portfolio tracking
-- ✅ **Does detect exit** - Can type "exit" to quit
+- ✅ **Does detect exit** - Can type "exit" to quit (only working command)
 
 **Configs Available (but not accessible):**
 ```swift
@@ -605,9 +605,9 @@ Both implementations are **non-functional** for dispatcher use. Polymarket modul
 
 ---
 
-## Max Connection Control
+## Client Connection Limits
 
-**Neither Python nor Swift dispatchers implement explicit max connection limits.**
+**Neither Python nor Swift dispatchers implement explicit client connection limits.**
 
 Both implementations support **unlimited TCP/UDS clients** with these natural constraints:
 
@@ -708,7 +708,8 @@ Both implementations support **unlimited TCP/UDS clients** with these natural co
 2. **No disk caching** in any Swift dispatcher - all cache lost on restart
 3. **4 of 5 IB modes missing** - only Protocol 2 supported
 4. **No shortable shares** - critical data missing for short sellers
-5. **No max connection control** - neither Python nor Swift implement this (natural system limits apply)
+
+**Note:** Neither Python nor Swift implement explicit client connection limits (natural system limits apply).
 
 **Python remains the reference implementation** with full features. Swift offers **performance advantages** for specific dispatchers (Binance, Capital.com) but **should not be used for IB Core** until critical gaps are addressed.
 
