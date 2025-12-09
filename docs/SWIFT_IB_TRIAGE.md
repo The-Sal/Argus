@@ -709,15 +709,20 @@ class IBMKTDispatcher {
 
 ### Non-Essential Dispatcher Modes
 
-**ASK, ASK+BID+LAST, FULL_PKL, FULL_JSON modes are NOT priorities.**
+**ASK, ASK+BID+LAST, FULL_PKL, FULL_JSON modes are NOT priorities for initial implementation.**
 
 **Rationale:**
-- Only Protocol 2 is used in production
-- Other modes exist for legacy compatibility
-- Swift can focus on Protocol 2 exclusively
+- Only Protocol 2 is used in production systems
+- Other modes exist for legacy client compatibility
+- Swift can focus on Protocol 2 exclusively for MVP
 - Simplifies codebase without reducing production value
 
-If other modes become necessary, they can be added using the same pattern as Protocol 2 formatting.
+**When to add them:**
+- If specific clients require lightweight ASK mode for low-bandwidth scenarios
+- If cross-language clients need FULL_JSON for interoperability
+- If legacy Python clients need ASK+BID+LAST compatibility
+
+If other modes become necessary, they can be added using the same pattern as Protocol 2 formatting—the extensible architecture makes this straightforward.
 
 ---
 
