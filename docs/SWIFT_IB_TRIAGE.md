@@ -94,7 +94,8 @@ func interactiveMode() {
         print("0. Exit")
         
         print("\nSelect option: ", terminator: "")
-        fflush(stdout)
+        // Note: fflush is available in Swift but not strictly necessary
+        // as print() flushes automatically with terminator parameter
         
         guard let choice = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) else {
             continue
@@ -250,9 +251,11 @@ private func writeWebSocketMessagesToFile() {
     }
     
     let filename = "ibkr_websocket_messages_\(Date().timeIntervalSince1970).txt"
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+    
     do {
-        try messages.joined(separator: "\n").write(toFile: filename, atomically: true, encoding: .utf8)
-        print("Wrote \(messages.count) messages to \(filename)")
+        try messages.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        print("Wrote \(messages.count) messages to \(url.path)")
     } catch {
         print("Error writing file: \(error)")
     }
@@ -336,8 +339,10 @@ class IBWss {
     }
     
     func isConnected() -> Bool {
-        // Check WebSocket connection status
-        return webSocket != nil
+        // Check actual WebSocket connection state
+        // Assuming webSocket has a readyState or similar property
+        guard let ws = webSocket else { return false }
+        return ws.state == .open  // Adjust based on actual WebSocket API
     }
     
     func getStoredMessages() -> [String] {
@@ -955,12 +960,16 @@ class LockedSession {
         lock.lock()
         defer { lock.unlock() }
         
+        guard let requestURL = URL(string: url) else {
+            throw NSError(domain: "LockedSession", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL: \(url)"])
+        }
+        
         // Synchronous request using semaphore
         var result: Data?
         var error: Error?
         let semaphore = DispatchSemaphore(value: 0)
         
-        let task = session.dataTask(with: URL(string: url)!) { data, _, err in
+        let task = session.dataTask(with: requestURL) { data, _, err in
             result = data
             error = err
             semaphore.signal()
@@ -971,7 +980,12 @@ class LockedSession {
         if let error = error {
             throw error
         }
-        return result!
+        
+        guard let data = result else {
+            throw NSError(domain: "LockedSession", code: -2, userInfo: [NSLocalizedDescriptionKey: "No data received"])
+        }
+        
+        return data
     }
 }
 ```
