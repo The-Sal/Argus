@@ -47,6 +47,7 @@ def discover_modules_and_test_imports():
         print('Testing sub-imports for module:', module)
         core_modules.append(imported_module)
         print('Successfully imported module:', module)
+        print('Module:', imported_module)
 
 
 if __name__ == '__main__':
