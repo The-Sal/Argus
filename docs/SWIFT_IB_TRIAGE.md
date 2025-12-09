@@ -1,488 +1,368 @@
-# Swift Interactive Brokers (IB) Module Triage
+# Swift IB Architectural Patterns: Porting Python's Extensible Design
 
 ## Overview
 
-This document provides a detailed roadmap for bringing the Swift IB implementation up to feature parity with the Python implementation. It addresses the significant gaps identified in the feature comparison analysis and provides actionable implementation steps.
+This document explains **how** Python's IB implementation achieves extensibility and **how to port** these architectural patterns to Swift. The focus is on understanding the design patterns rather than enumerating features.
 
-**Current Status:** Swift IB is at **~55% feature parity** and is **NOT production-ready**.
+**Current Gap:** Swift IB has hardcoded implementations where Python uses extensible patterns.
 
-**Goal:** Achieve **95%+ feature parity** and production-ready status.
-
----
-
-## Executive Summary
-
-### Critical Gaps (Must Fix)
-
-1. **Empty Interactive Mode** - Function exists but has NO commands
-2. **Missing 4 of 5 Dispatcher Modes** - Only Protocol 2 supported
-3. **No Disk Caching** - All cache lost on restart
-4. **No Shortable Shares** - Critical for short sellers
-
-### High Priority Gaps
-
-5. Runtime Configuration System
-6. Debugging Tools
-7. WebSocket Message Logging
-8. Account Ledger/Summary APIs
-
-### Medium Priority Gaps
-
-9. Notification System
-10. Enhanced AccountProvider
-11. LockedSession Pattern
+**Goal:** Port Python's architectural patterns to create a Swift implementation that's equally extensible.
 
 ---
 
-## Phase 1: Fix Interactive Mode (Critical)
+## Architecture Pattern 1: Introspective Framework
 
-**Priority:** URGENT  
-**Estimated Effort:** 2-3 days  
-**Impact:** Makes dispatcher usable for development and debugging
+### Python's Design
 
-### Current State
+Python uses the **`Introspective` base class** to create a meta-programming layer for runtime extensibility.
 
-```swift
-func interactiveMode() {
-    print("\nIBKR Dispatcher Interactive Mode")
-    print("Enter commands (or 'exit' to quit):")
-    print("Server is running. Press Ctrl+C to stop.")
+**Location:** `argus/_argus_utils.py`
+
+**Key Pattern:**
+
+```python
+class Introspective:
+    """Enables classes to expose methods for interactive runtime access."""
     
-    while true {
-        print("> ", terminator: "")
-        guard let input = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) else {
-            Thread.sleep(forTimeInterval: 1.0)
-            continue
-        }
+    def _interactive_ui(self, functions: dict):
+        """
+        Generic interactive menu system.
         
-        if input.lowercased() == "exit" {
-            print("Shutting down...")
-            break
-        }
+        Args:
+            functions: dict mapping 'name' -> ('description', callable)
+        """
+        # Automatically adds 'call_method' to discover class methods
+        functions['call_method'] = ('Interactively call a method of this class', self.call_method)
+        functions['exit'] = ('Exit the interactive UI', lambda: None)
         
-        if !input.isEmpty {
-            print("Unknown command: \(input)")  // ALL commands print this!
-        }
-    }
-}
+        while True:
+            # Display all registered functions
+            for i, (name, (doc, _)) in enumerate(functions.items(), 1):
+                print(f"{i}. {name} - {doc}")
+            
+            # User selects and invokes
+            choice = int(input("Choose: "))
+            func_name = list(functions.keys())[choice - 1]
+            func = functions[func_name][1]
+            func()
+    
+    def call_method(self):
+        """Uses Python's inspect module to discover all public methods."""
+        methods = {name: func for name, func in inspect.getmembers(self, predicate=inspect.ismethod)
+                   if not name.startswith('_')}
+        # Let user select and invoke ANY public method
 ```
 
-**Problem:** No commands implemented - everything prints "Unknown command".
+**How it's used in Binance:**
 
-### Implementation Plan
+```python
+class BinanceMKTDispatcher(Introspective):
+    def interactive_mode(self):
+        functions = {
+            'show_subscriptions': ('Show all active symbol subscriptions', self.show_subscriptions),
+            'show_clients': ('Show all connected clients', self.show_clients),
+            'modify_configs': ('Modify dispatcher configurations', self._modify_configs_interactive),
+        }
+        self._interactive_ui(functions)  # Delegates to base class
+```
 
-#### Step 1: Add Menu System
+**Why It's Extensible:**
+1. **New features are just dictionary entries** - no menu rewrite needed
+2. **call_method provides runtime introspection** - can call ANY public method
+3. **No hardcoded command parsing** - framework handles dispatch
 
-Create a menu-driven interface similar to Binance Swift:
+### Swift Port Strategy
+
+**Pattern: Protocol + Dictionary-Based Dispatch**
 
 ```swift
-func interactiveMode() {
-    print("\nIBKR Dispatcher Interactive Mode")
-    print(String(repeating: "=", count: 50))
+// 1. Define protocol for interactive functions
+protocol InteractiveFunction {
+    var name: String { get }
+    var description: String { get }
+    func execute()
+}
+
+// 2. Concrete implementation wraps closures
+struct InteractiveClosure: InteractiveFunction {
+    let name: String
+    let description: String
+    private let closure: () -> Void
     
-    while true {
-        print("\nOptions:")
-        print("1. Show subscribed contracts")
-        print("2. Show connected clients")
-        print("3. Show configurations")
-        print("4. Modify configuration")
-        print("5. Show subscription stats")
-        print("6. Show WebSocket health")
-        print("7. Write WebSocket messages to file")
-        print("8. Show account info")
-        print("9. Search contract")
-        print("0. Exit")
+    func execute() {
+        closure()
+    }
+}
+
+// 3. Base protocol for Introspective behavior
+protocol Introspective: AnyObject {
+    var interactiveFunctions: [String: InteractiveFunction] { get set }
+    func registerFunction(name: String, description: String, function: @escaping () -> Void)
+    func interactiveMode()
+}
+
+// 4. Default implementation via protocol extension
+extension Introspective {
+    func registerFunction(name: String, description: String, function: @escaping () -> Void) {
+        interactiveFunctions[name] = InteractiveClosure(
+            name: name,
+            description: description,
+            closure: function
+        )
+    }
+    
+    func interactiveMode() {
+        // Add meta-function to call any method by name
+        registerFunction(
+            name: "call_method",
+            description: "Call any public method by name",
+            function: callMethodInteractive
+        )
         
-        print("\nSelect option: ", terminator: "")
-        // Note: fflush is available in Swift but not strictly necessary
-        // as print() flushes automatically with terminator parameter
-        
-        guard let choice = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) else {
-            continue
-        }
-        
-        switch choice {
-        case "1": showSubscribedContracts()
-        case "2": showConnectedClients()
-        case "3": showConfigurations()
-        case "4": modifyConfiguration()
-        case "5": showSubscriptionStats()
-        case "6": showWebSocketHealth()
-        case "7": writeWebSocketMessagesToFile()
-        case "8": showAccountInfo()
-        case "9": searchContract()
-        case "0": 
-            print("Shutting down...")
-            return
-        default:
-            print("Invalid option. Please try again.")
-        }
-    }
-}
-```
-
-#### Step 2: Implement Core Commands
-
-**Command 1: Show Subscribed Contracts**
-
-```swift
-private func showSubscribedContracts() {
-    threadLock.lock()
-    defer { threadLock.unlock() }
-    
-    print("\n=== Subscribed Contracts ===")
-    if conidToClients.isEmpty {
-        print("No active subscriptions")
-    } else {
-        for (conid, clients) in conidToClients.sorted(by: { $0.key < $1.key }) {
-            let symbol = caches[conid]?[IBKRFields.SYMBOL] as? String ?? "Unknown"
-            print("  Contract \(conid) (\(symbol)): \(clients.count) client(s)")
-        }
-        print("Total: \(conidToClients.count) contracts")
-    }
-}
-```
-
-**Command 2: Show Connected Clients**
-
-```swift
-private func showConnectedClients() {
-    threadLock.lock()
-    let clientCount = clients.count
-    threadLock.unlock()
-    
-    print("\n=== Connected Clients ===")
-    print("Total clients: \(clientCount)")
-    
-    // Optionally show client IDs or addresses if tracked
-}
-```
-
-**Command 3: Show Configurations**
-
-```swift
-private func showConfigurations() {
-    print("\n=== Current Configurations ===")
-    for (key, value) in configs.sorted(by: { $0.key < $1.key }) {
-        print("  \(key): \(value)")
-    }
-}
-```
-
-**Command 4: Modify Configuration**
-
-```swift
-private func modifyConfiguration() {
-    print("\n=== Modify Configuration ===")
-    print("Available configurations:")
-    let configKeys = Array(configs.keys).sorted()
-    for (index, key) in configKeys.enumerated() {
-        print("\(index + 1). \(key) (current: \(configs[key] ?? "nil"))")
-    }
-    
-    print("\nSelect configuration number (0 to cancel): ", terminator: "")
-    fflush(stdout)
-    
-    guard let input = readLine(),
-          let choice = Int(input),
-          choice > 0, choice <= configKeys.count else {
-        print("Cancelled.")
-        return
-    }
-    
-    let key = configKeys[choice - 1]
-    print("Enter new value for '\(key)' (current: \(configs[key] ?? "nil")): ", terminator: "")
-    fflush(stdout)
-    
-    guard let newValue = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) else {
-        print("Cancelled.")
-        return
-    }
-    
-    // Parse boolean values
-    if newValue.lowercased() == "true" {
-        configs[key] = true
-    } else if newValue.lowercased() == "false" {
-        configs[key] = false
-    } else {
-        configs[key] = newValue
-    }
-    
-    print("Updated '\(key)' to '\(configs[key] ?? "nil")'")
-}
-```
-
-**Command 5: Show Subscription Stats**
-
-```swift
-private func showSubscriptionStats() {
-    threadLock.lock()
-    let contractCount = conidToClients.count
-    let clientCount = clients.count
-    threadLock.unlock()
-    
-    print("\n=== Subscription Statistics ===")
-    print("Active contracts: \(contractCount)/100")
-    print("Connected clients: \(clientCount)")
-    print("WebSocket status: \(ws.isConnected() ? "Connected" : "Disconnected")")
-}
-```
-
-**Command 6: Show WebSocket Health**
-
-```swift
-private func showWebSocketHealth() {
-    print("\n=== WebSocket Health ===")
-    print("Connected: \(ws.isConnected())")
-    print("Messages received: \(ws.messageCount)")
-    print("Last message: \(ws.lastMessageTime)")
-    // Add more health metrics from IBWss
-}
-```
-
-**Command 7: Write WebSocket Messages to File**
-
-```swift
-private func writeWebSocketMessagesToFile() {
-    let messages = ws.getStoredMessages()
-    if messages.isEmpty {
-        print("No WebSocket messages to write.")
-        return
-    }
-    
-    let filename = "ibkr_websocket_messages_\(Date().timeIntervalSince1970).txt"
-    let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-    
-    do {
-        try messages.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
-        print("Wrote \(messages.count) messages to \(url.path)")
-    } catch {
-        print("Error writing file: \(error)")
-    }
-}
-```
-
-**Command 8: Show Account Info**
-
-```swift
-private func showAccountInfo() {
-    guard let provider = accountProvider else {
-        print("Account provider not initialized")
-        return
-    }
-    
-    print("\n=== Account Information ===")
-    print("Account ID: \(provider.accountId ?? "Not set")")
-    print("Positions: \(provider.positions.count)")
-    // Add more account details
-}
-```
-
-**Command 9: Search Contract**
-
-```swift
-private func searchContract() {
-    print("\nEnter symbol to search: ", terminator: "")
-    fflush(stdout)
-    
-    guard let symbol = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines), !symbol.isEmpty else {
-        print("Cancelled.")
-        return
-    }
-    
-    print("Searching for '\(symbol)'...")
-    
-    // Call IBNetworker to search
-    // This requires making searchContract async or running on background thread
-    DispatchQueue.global().async {
-        do {
-            let results = try self.ws.networker.searchContract(symbol: symbol)
-            DispatchQueue.main.async {
-                print("\n=== Search Results ===")
-                if results.isEmpty {
-                    print("No results found for '\(symbol)'")
-                } else {
-                    for (index, result) in results.enumerated() {
-                        print("\(index + 1). [\(result.conid)] \(result.description ?? result.symbol)")
-                    }
-                }
+        while true {
+            print("\nAvailable functions:")
+            let sorted = interactiveFunctions.keys.sorted()
+            for (i, key) in sorted.enumerated() {
+                let func = interactiveFunctions[key]!
+                print("\(i + 1). \(key) - \(func.description)")
             }
-        } catch {
-            DispatchQueue.main.async {
-                print("Error searching: \(error)")
-            }
+            
+            print("0. Exit")
+            print("\nSelect: ", terminator: "")
+            
+            guard let input = readLine(),
+                  let choice = Int(input) else { continue }
+            
+            if choice == 0 { break }
+            
+            let key = sorted[choice - 1]
+            interactiveFunctions[key]?.execute()
         }
+    }
+    
+    func callMethodInteractive() {
+        // Use Swift's Mirror API for runtime introspection
+        let mirror = Mirror(reflecting: self)
+        print("\nInspecting instance of \(mirror.subjectType)")
+        
+        // Note: Swift doesn't have Python's inspect module
+        // This is a simplified version - full implementation would need
+        // method signature discovery via objc runtime or code generation
+        print("(Swift limitation: Runtime method discovery requires @objc or code generation)")
     }
 }
 ```
 
-#### Step 3: Add Supporting Infrastructure
-
-**In IBWss.swift:**
+**Using the Pattern:**
 
 ```swift
-class IBWss {
-    // Add message tracking
-    private var storedMessages: [String] = []
-    private var _messageCount: Int = 0
-    private var _lastMessageTime: Date?
+class IBMKTDispatcher: Introspective {
+    var interactiveFunctions: [String: InteractiveFunction] = [:]
     
-    var messageCount: Int {
-        return _messageCount
-    }
-    
-    var lastMessageTime: String {
-        guard let time = _lastMessageTime else { return "Never" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        return formatter.string(from: time)
-    }
-    
-    func isConnected() -> Bool {
-        // Check actual WebSocket connection state
-        // Assuming webSocket has a readyState or similar property
-        guard let ws = webSocket else { return false }
-        return ws.state == .open  // Adjust based on actual WebSocket API
-    }
-    
-    func getStoredMessages() -> [String] {
-        return storedMessages
-    }
-    
-    // In message handler:
-    func onMessage(_ message: String) {
-        _messageCount += 1
-        _lastMessageTime = Date()
-        storedMessages.append(message)
+    func setupInteractive() {
+        // Register functions - easily extensible
+        registerFunction(
+            name: "show_contracts",
+            description: "Show subscribed contracts",
+            function: showSubscribedContracts
+        )
         
-        // Limit stored messages to prevent memory issues
-        if storedMessages.count > 1000 {
-            storedMessages.removeFirst()
-        }
+        registerFunction(
+            name: "show_clients",
+            description: "Show connected clients",
+            function: showConnectedClients
+        )
         
-        // ... rest of message handling
+        registerFunction(
+            name: "show_configs",
+            description: "Show current configurations",
+            function: showConfigurations
+        )
+        
+        // Add more easily - no menu rewrite needed
+        registerFunction(
+            name: "search",
+            description: "Search for contract",
+            function: searchContractInteractive
+        )
     }
 }
 ```
 
-### Testing Plan
+**Key Architectural Benefits:**
+1. **New commands = one line** - `registerFunction(...)` anywhere
+2. **No switch/case explosion** - dictionary dispatch
+3. **Can register at runtime** - dynamic extension
+4. **Testable** - can verify registered functions
+5. **Composable** - subclasses inherit parent's functions
 
-1. Run Swift IB dispatcher
-2. Enter interactive mode
-3. Test each command:
-   - Subscribe to a contract via TCP client
-   - Use command 1 to verify it shows up
-   - Use command 3 to see configurations
-   - Use command 4 to toggle "Print data packets"
-   - Verify packet printing changes
-   - Use command 6 to check WebSocket health
-   - Use command 9 to search for "AAPL"
+**Python vs Swift Trade-offs:**
 
-### Success Criteria
+| Aspect | Python | Swift |
+|:-------|:-------|:------|
+| Runtime introspection | `inspect.getmembers()` | Limited (Mirror API read-only, or @objc runtime) |
+| Method discovery | Automatic | Requires registration or code generation |
+| Type safety | Runtime | Compile-time |
+| Extensibility | Fully dynamic | Protocol-based, compile-time safe |
 
-- ✅ All 9 commands functional
-- ✅ Configuration changes take effect immediately
-- ✅ No "Unknown command" messages for valid inputs
-- ✅ Interactive mode is useful for debugging
+**Recommendation:** Accept Swift's registration requirement but gain type safety and performance. The pattern is still highly extensible.
 
 ---
 
-## Phase 2: Implement Disk Caching (Critical)
+## Architecture Pattern 2: Domain-Based Caching System
 
-**Priority:** CRITICAL  
-**Estimated Effort:** 3-4 days  
-**Impact:** Dramatically improves startup time and reduces API load
+### Python's Design
 
-### Current State
+Python uses **`DomainCache`** - a namespace-based persistent cache with decorator support.
 
-Swift has no disk persistence. All caches (contract searches, account data) are in-memory and lost on restart.
+**Location:** `argus/cache_utils/__init__.py`
 
-**Impact:**
-- Every restart must re-fetch all contract searches from IBKR API
-- Slow startup (10-30 seconds for 20 contracts)
-- Higher API load, risk of rate limiting
+**Key Pattern:**
 
-### Implementation Plan
+```python
+# Conceptual structure
+class DomainCache:
+    """
+    Cache organized by 'domains' (namespaces).
+    Each module has its own domain to avoid collisions.
+    """
+    def __init__(self, cache_file='~/.argus/capital_cache.pkl'):
+        self.cache = {}  # domain -> key -> value
+        self.cache_file = cache_file
+        self._load_from_disk()
+    
+    def cache_decorator(self, domain: str):
+        """Decorator that automatically caches function results."""
+        def decorator(func):
+            def wrapper(*args, **kwargs):
+                # Generate cache key from function name + args
+                cache_key = f"{func.__name__}:{args}:{kwargs}"
+                
+                # Check cache
+                if cache_key in self.cache.get(domain, {}):
+                    return self.cache[domain][cache_key]
+                
+                # Execute and cache
+                result = func(*args, **kwargs)
+                self.cache.setdefault(domain, {})[cache_key] = result
+                self._save_to_disk()
+                return result
+            return wrapper
+        return decorator
+```
 
-#### Step 1: Create Cache Manager
+**How it's used in IB:**
 
-**File:** `argus_swift/Sources/ArgusServer/CacheManager.swift`
+```python
+_IB_Cache = DomainCache('~/.argus/ib_cache.pkl')
+
+class IBNetworker:
+    @_IB_Cache.cache_decorator('IBNetworker.search_contract')
+    def search_contract(self, contract_name):
+        # This automatically caches results to disk
+        # On restart, cached results load instantly
+        return expensive_api_call(contract_name)
+```
+
+**Why It's Powerful:**
+1. **Decorator-based** - transparent caching, no manual cache checks
+2. **Domain isolation** - different modules don't collide
+3. **Persistent** - survives restarts
+4. **Centralized** - one cache file, easy to inspect/clear
+
+### Swift Port Strategy
+
+**Pattern: Protocol + Generic Cache Manager + Property Wrappers**
 
 ```swift
-import Foundation
+// 1. Protocol for cacheable values
+protocol Cacheable: Codable {
+    // Codable ensures we can save to JSON/disk
+}
 
-/// Generic disk-based cache manager inspired by Python's DomainCache
-class CacheManager {
+// 2. Domain-based cache manager
+class DomainCache {
+    private let domain: String
     private let cacheDirectory: URL
-    private let cacheFilename: String
-    private var cache: [String: Any] = [:]
+    private var cache: [String: Data] = [:]
     private let lock = NSLock()
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
     
     init(domain: String) {
-        // Use ~/.argus/ directory like Python
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser
-        self.cacheDirectory = homeDir.appendingPathComponent(".argus")
-        self.cacheFilename = "\(domain)_cache.json"
+        self.domain = domain
+        
+        // Use ~/.argus/ like Python
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        self.cacheDirectory = home.appendingPathComponent(".argus")
         
         // Create directory if needed
-        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(
+            at: cacheDirectory,
+            withIntermediateDirectories: true
+        )
         
-        // Load existing cache
-        loadCache()
+        loadFromDisk()
     }
     
     private func cacheFilePath() -> URL {
-        return cacheDirectory.appendingPathComponent(cacheFilename)
+        return cacheDirectory.appendingPathComponent("\(domain)_cache.json")
     }
     
-    private func loadCache() {
+    private func loadFromDisk() {
         lock.lock()
         defer { lock.unlock() }
         
         let path = cacheFilePath()
-        guard FileManager.default.fileExists(atPath: path.path) else {
-            print("[Cache] No existing cache file at \(path.path)")
+        guard let data = try? Data(contentsOf: path),
+              let decoded = try? decoder.decode([String: Data].self, from: data) else {
+            print("[DomainCache:\(domain)] No existing cache or failed to load")
             return
         }
         
-        do {
-            let data = try Data(contentsOf: path)
-            if let decoded = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                cache = decoded
-                print("[Cache] Loaded \(cache.count) entries from \(cacheFilename)")
-            }
-        } catch {
-            print("[Cache] Error loading cache: \(error)")
-        }
+        cache = decoded
+        print("[DomainCache:\(domain)] Loaded \(cache.count) entries")
     }
     
-    func saveCache() {
+    func saveToDisk() {
         lock.lock()
-        defer { lock.unlock() }
-        
-        do {
-            let data = try JSONSerialization.data(withJSONObject: cache, options: .prettyPrinted)
-            try data.write(to: cacheFilePath())
-            print("[Cache] Saved \(cache.count) entries to \(cacheFilename)")
-        } catch {
-            print("[Cache] Error saving cache: \(error)")
-        }
-    }
-    
-    func get(_ key: String) -> Any? {
-        lock.lock()
-        defer { lock.unlock() }
-        return cache[key]
-    }
-    
-    func set(_ key: String, value: Any) {
-        lock.lock()
-        cache[key] = value
+        let cacheCopy = cache
         lock.unlock()
         
-        // Save to disk asynchronously
-        DispatchQueue.global().async {
-            self.saveCache()
+        // Save asynchronously to avoid blocking
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                let data = try self.encoder.encode(cacheCopy)
+                try data.write(to: self.cacheFilePath())
+                print("[DomainCache:\(self.domain)] Saved \(cacheCopy.count) entries")
+            } catch {
+                print("[DomainCache:\(self.domain)] Save failed: \(error)")
+            }
+        }
+    }
+    
+    func get<T: Cacheable>(_ key: String) -> T? {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        guard let data = cache[key],
+              let value = try? decoder.decode(T.self, from: data) else {
+            return nil
+        }
+        return value
+    }
+    
+    func set<T: Cacheable>(_ key: String, value: T) {
+        do {
+            let data = try encoder.encode(value)
+            
+            lock.lock()
+            cache[key] = data
+            lock.unlock()
+            
+            saveToDisk()
+        } catch {
+            print("[DomainCache:\(domain)] Failed to encode \(key): \(error)")
         }
     }
     
@@ -490,664 +370,371 @@ class CacheManager {
         lock.lock()
         cache.removeAll()
         lock.unlock()
-        saveCache()
+        saveToDisk()
+    }
+}
+
+// 3. Decorator equivalent using wrapper type
+class CachedFunction<Input: Hashable, Output: Cacheable> {
+    private let cache: DomainCache
+    private let cacheKeyPrefix: String
+    private let function: (Input) -> Output
+    
+    init(cache: DomainCache, name: String, function: @escaping (Input) -> Output) {
+        self.cache = cache
+        self.cacheKeyPrefix = name
+        self.function = function
+    }
+    
+    func callAsFunction(_ input: Input) -> Output {
+        let key = "\(cacheKeyPrefix):\(input)"
+        
+        // Check cache
+        if let cached: Output = cache.get(key) {
+            print("[Cache HIT] \(cacheKeyPrefix)")
+            return cached
+        }
+        
+        // Execute and cache
+        print("[Cache MISS] \(cacheKeyPrefix)")
+        let result = function(input)
+        cache.set(key, value: result)
+        return result
     }
 }
 ```
 
-#### Step 2: Integrate with IBNetworker
-
-**In IBNetworker.swift:**
+**Using the Pattern:**
 
 ```swift
+// Make SearchResult cacheable
+extension SearchResult: Cacheable {
+    // Codable conformance handles serialization
+}
+
 class IBNetworker {
-    private let cache: CacheManager
+    private let cache = DomainCache(domain: "ib")
     
-    init(cookie: String) {
-        self.cache = CacheManager(domain: "ib")
-        // ... rest of init
+    // Cached version of expensive function
+    private lazy var cachedSearchContract = CachedFunction(
+        cache: cache,
+        name: "searchContract"
+    ) { (symbol: String) -> [SearchResult] in
+        // This closure contains the expensive operation
+        return self.performActualSearch(symbol: symbol)
     }
     
-    func searchContract(symbol: String) throws -> [SearchResult] {
-        // Check cache first
-        let cacheKey = "contract_search:\(symbol)"
-        if let cached = cache.get(cacheKey) as? [[String: Any]] {
-            print("[IBNetworker] Using cached results for '\(symbol)'")
-            return cached.compactMap { SearchResult.from(dict: $0) }
-        }
-        
-        print("[IBNetworker] Searching IBKR API for '\(symbol)'")
-        let results = try performSearch(symbol: symbol)
-        
-        // Cache results
-        let serialized = results.map { $0.toDictionary() }
-        cache.set(cacheKey, value: serialized)
-        
-        return results
+    func searchContract(symbol: String) -> [SearchResult] {
+        // Automatically uses cache
+        return cachedSearchContract(symbol)
+    }
+    
+    private func performActualSearch(symbol: String) -> [SearchResult] {
+        // Expensive IBKR API call
+        // ...
     }
 }
 ```
 
-#### Step 3: Make SearchResult Serializable
+**Alternative: Property Wrapper for Simple Cases**
 
 ```swift
-extension SearchResult {
-    func toDictionary() -> [String: Any] {
-        return [
-            "conid": conid,
-            "symbol": symbol,
-            "description": description ?? "",
-            "secType": secType ?? "",
-            // ... all fields
-        ]
-    }
+@propertyWrapper
+struct Cached<T: Cacheable> {
+    private let key: String
+    private let cache: DomainCache
     
-    static func from(dict: [String: Any]) -> SearchResult? {
-        guard let conid = dict["conid"] as? Int,
-              let symbol = dict["symbol"] as? String else {
-            return nil
+    var wrappedValue: T? {
+        get { cache.get(key) }
+        nonmutating set {
+            if let value = newValue {
+                cache.set(key, value: value)
+            }
         }
-        
-        return SearchResult(
-            conid: conid,
-            symbol: symbol,
-            description: dict["description"] as? String,
-            secType: dict["secType"] as? String
-            // ... all fields
-        )
+    }
+    
+    init(key: String, cache: DomainCache) {
+        self.key = key
+        self.cache = cache
     }
 }
 ```
 
-#### Step 4: Add Cache Management Commands
+**Key Architectural Benefits:**
+1. **Persistent across restarts** - JSON on disk like Python's pickle
+2. **Type-safe** - Codable ensures serializability
+3. **Thread-safe** - NSLock protects concurrent access
+4. **Transparent** - `CachedFunction` wrapper makes caching implicit
+5. **Domain isolation** - each module has its cache file
 
-Add to interactive mode:
+**Python vs Swift Trade-offs:**
 
-```swift
-case "10": clearCache()
-case "11": showCacheStats()
+| Aspect | Python | Swift |
+|:-------|:-------|:------|
+| Decorator syntax | `@cache.decorator()` | Wrapper type or property wrapper |
+| Storage format | Pickle (binary) | JSON (human-readable) |
+| Type checking | Runtime | Compile-time (via Codable) |
+| Introspection | Can cache anything | Must conform to Codable |
 
-private func clearCache() {
-    print("Are you sure you want to clear the cache? (yes/no): ", terminator: "")
-    fflush(stdout)
-    
-    guard let confirm = readLine()?.lowercased(), confirm == "yes" else {
-        print("Cancelled.")
-        return
-    }
-    
-    ws.networker.clearCache()
-    print("Cache cleared.")
-}
-
-private func showCacheStats() {
-    let stats = ws.networker.getCacheStats()
-    print("\n=== Cache Statistics ===")
-    print("Cache file: \(stats.filename)")
-    print("Entries: \(stats.entryCount)")
-    print("Size: \(stats.sizeInBytes) bytes")
-}
-```
-
-### Testing Plan
-
-1. Start Swift IB dispatcher
-2. Search for "AAPL" - should hit API (slow)
-3. Restart dispatcher
-4. Search for "AAPL" again - should use cache (instant)
-5. Verify cache file exists at `~/.argus/ib_cache.json`
-6. Verify file contains contract data
-
-### Success Criteria
-
-- ✅ Contract searches cached to disk
-- ✅ Cache persists across restarts
-- ✅ Second search for same symbol is instant
-- ✅ Cache file location matches Python (`~/.argus/`)
-- ✅ Cache can be cleared via interactive command
+**Recommendation:** Use JSON instead of binary format for debuggability. Accept Codable requirement for type safety. The pattern achieves same extensibility.
 
 ---
 
-## Phase 3: Implement Multiple Dispatcher Modes (Critical)
+## Architecture Pattern 3: Configuration System
 
-**Priority:** CRITICAL  
-**Estimated Effort:** 4-5 days  
-**Impact:** Enables compatibility with various client types
+### Python's Design
 
-### Current State
+**Pattern: Dictionary with Interactive Modification**
 
-Swift only supports Protocol 2 mode. Python supports 5 modes:
-1. ASK - Ask price only (lightest)
-2. ASK+BID+LAST - Basic trading data
-3. FULL_PKL - Pickled Python objects (not needed for Swift)
-4. FULL_JSON - JSON format (cross-language)
-5. PROTOCOL_2 - CSV format (current Swift mode)
+```python
+class MKTDispatcher:
+    def __init__(self):
+        self._configs = {
+            'Print data packets': False,
+            'Use TQDM Progress bar': False,
+            'Block New MKT Data': True,
+            # Easily add more
+        }
+    
+    def _modify_configs_interactive(self):
+        """Let user change any config at runtime."""
+        for key, value in self._configs.items():
+            print(f"{key}: {value}")
+        
+        choice = input("Configuration: ")
+        if choice in self._configs:
+            new_value = input(f"New value: ")
+            # Auto-parse boolean
+            if new_value.lower() == 'true':
+                self._configs[choice] = True
+            # ... etc
+```
 
-### Implementation Plan
+**Why It's Extensible:**
+1. **New configs = new dict entries** - no code changes needed elsewhere
+2. **Runtime modification** - no restart required
+3. **Type-agnostic** - stores Any type
 
-#### Step 1: Define Mode Enum
+### Swift Port Strategy
+
+**Pattern: Enum + Dictionary with Type-Safe Access**
 
 ```swift
-enum DispatcherMode: String {
-    case ask = "ASK"
-    case askBidLast = "ASK+BID+LAST"
-    case fullJson = "FULL_JSON"
-    case protocol2 = "PROTOCOL_2"
+// 1. Define configuration keys as enum for type safety
+enum ConfigKey: String, CaseIterable {
+    case printPackets = "Print data packets"
+    case blockNewData = "Block New MKT Data"
+    case showBlockedWarning = "Show blocked MKT Data Warning"
+    // Adding new config = adding enum case
+}
+
+// 2. Configuration manager
+class ConfigurationManager {
+    private var configs: [ConfigKey: Any] = [:]
+    private let lock = NSLock()
+    
+    subscript(key: ConfigKey) -> Any? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return configs[key]
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            configs[key] = newValue
+        }
+    }
+    
+    // Type-safe accessors
+    func getBool(_ key: ConfigKey, default defaultValue: Bool = false) -> Bool {
+        return (self[key] as? Bool) ?? defaultValue
+    }
+    
+    func setBool(_ key: ConfigKey, value: Bool) {
+        self[key] = value
+    }
+    
+    // Interactive modification
+    func modifyInteractive() {
+        print("\n=== Configurations ===")
+        for key in ConfigKey.allCases {
+            print("\(key.rawValue): \(self[key] ?? "nil")")
+        }
+        
+        print("\nSelect configuration (or 'done'):")
+        for (i, key) in ConfigKey.allCases.enumerated() {
+            print("\(i + 1). \(key.rawValue)")
+        }
+        
+        guard let input = readLine(),
+              let choice = Int(input),
+              choice > 0,
+              choice <= ConfigKey.allCases.count else {
+            return
+        }
+        
+        let key = Array(ConfigKey.allCases)[choice - 1]
+        print("Enter new value for '\(key.rawValue)': ", terminator: "")
+        
+        guard let newValue = readLine()?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return
+        }
+        
+        // Parse value based on current type
+        if let currentBool = self[key] as? Bool {
+            // It's a boolean config
+            if newValue.lowercased() == "true" {
+                self[key] = true
+            } else if newValue.lowercased() == "false" {
+                self[key] = false
+            }
+        } else {
+            // String config
+            self[key] = newValue
+        }
+        
+        print("Updated '\(key.rawValue)' to '\(self[key] ?? "nil")'")
+    }
 }
 ```
 
-#### Step 2: Add Mode Selection
-
-**In IBMKTDispatcher:**
+**Using the Pattern:**
 
 ```swift
 class IBMKTDispatcher {
-    private let mode: DispatcherMode
+    let config = ConfigurationManager()
     
-    init(cookie: String, host: String = "localhost", port: Int32 = 9972, mode: DispatcherMode = .protocol2) {
-        self.mode = mode
-        print("[IB Dispatcher] Mode: \(mode.rawValue)")
-        // ... rest of init
-    }
-}
-```
-
-**In main.swift:**
-
-```swift
-func runIBDispatcher(args: Arguments, host: String, envVars: [String: String]) {
-    // Parse mode from args
-    let modeString = args.mode ?? "PROTOCOL_2"
-    let mode = DispatcherMode(rawValue: modeString) ?? .protocol2
-    
-    let dispatcher = IBMKTDispatcher(cookie: cookie, host: host, port: port, mode: mode)
-    // ...
-}
-```
-
-#### Step 3: Implement ASK Mode
-
-Simplest mode - only send ask price:
-
-```swift
-private func formatDataForMode(_ marketData: IBMarketData) -> Data? {
-    switch mode {
-    case .ask:
-        return formatAsAsk(marketData)
-    case .askBidLast:
-        return formatAsAskBidLast(marketData)
-    case .fullJson:
-        return formatAsFullJson(marketData)
-    case .protocol2:
-        return formatAsProtocol2(marketData)
-    }
-}
-
-private func formatAsAsk(_ data: IBMarketData) -> Data? {
-    guard let ask = data.fields[IBKRFields.ASK_PRICE] as? Double else {
-        return nil
+    init() {
+        // Set defaults
+        config.setBool(.printPackets, value: false)
+        config.setBool(.blockNewData, value: true)
+        config.setBool(.showBlockedWarning, value: false)
     }
     
-    let string = String(format: "%.2f\n", ask)
-    return string.data(using: .utf8)
-}
-```
-
-#### Step 4: Implement ASK+BID+LAST Mode
-
-```swift
-private func formatAsAskBidLast(_ data: IBMarketData) -> Data? {
-    guard let ask = data.fields[IBKRFields.ASK_PRICE] as? Double,
-          let bid = data.fields[IBKRFields.BID_PRICE] as? Double,
-          let last = data.fields[IBKRFields.LAST_PRICE] as? Double else {
-        return nil
-    }
-    
-    let string = String(format: "%.2f,%.2f,%.2f\n", bid, ask, last)
-    return string.data(using: .utf8)
-}
-```
-
-#### Step 5: Implement FULL_JSON Mode
-
-```swift
-private func formatAsFullJson(_ data: IBMarketData) -> Data? {
-    var json: [String: Any] = [:]
-    
-    // Convert all fields to JSON
-    for (field, value) in data.fields {
-        let fieldName = IBKRFields.fieldName(for: field) ?? "\(field)"
-        json[fieldName] = value
-    }
-    
-    json["symbol"] = data.symbol
-    json["conid"] = data.conid
-    json["timestamp"] = Date().timeIntervalSince1970
-    
-    guard let jsonData = try? JSONSerialization.data(withJSONObject: json, options: []) else {
-        return nil
-    }
-    
-    // Add newline delimiter
-    var result = jsonData
-    result.append(contentsOf: "\n".utf8)
-    return result
-}
-```
-
-#### Step 6: Keep Protocol 2 Implementation
-
-Already implemented, no changes needed.
-
-### Testing Plan
-
-1. Test ASK mode:
-   ```bash
-   argus_server ib --mode ASK
-   # Client connects, should receive only ask prices
-   ```
-
-2. Test ASK+BID+LAST mode:
-   ```bash
-   argus_server ib --mode ASK+BID+LAST
-   # Client connects, should receive CSV with 3 fields
-   ```
-
-3. Test FULL_JSON mode:
-   ```bash
-   argus_server ib --mode FULL_JSON
-   # Client connects, should receive JSON objects
-   ```
-
-4. Test Protocol 2 (default):
-   ```bash
-   argus_server ib
-   # Should work as before
-   ```
-
-### Success Criteria
-
-- ✅ All 4 modes implemented (ASK, ASK+BID+LAST, FULL_JSON, PROTOCOL_2)
-- ✅ Mode selectable via command-line argument
-- ✅ Each mode sends correct format
-- ✅ Clients can parse data correctly
-- ✅ Mode displayed at startup
-
----
-
-## Phase 4: Implement Shortable Shares (High Priority)
-
-**Priority:** HIGH  
-**Estimated Effort:** 2-3 days  
-**Impact:** Critical for short-selling strategies
-
-### Current State
-
-Python tracks shares available for short-selling via `ShortableSharesData` class. Swift has no equivalent.
-
-**Impact:** Short sellers cannot determine availability before attempting to short.
-
-### Implementation Plan
-
-#### Step 1: Create ShortableSharesData Class
-
-**File:** `argus_swift/Sources/ArgusServer/ShortableSharesData.swift`
-
-```swift
-import Foundation
-
-/// Tracks shares available for short-selling for each contract
-class ShortableSharesData {
-    private var data: [Int: Int] = [:]  // conid -> shares
-    private let lock = NSLock()
-    
-    func update(conid: Int, shares: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        data[conid] = shares
-    }
-    
-    func get(conid: Int) -> Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return data[conid] ?? 0
-    }
-    
-    func getAll() -> [Int: Int] {
-        lock.lock()
-        defer { lock.unlock() }
-        return data
-    }
-}
-```
-
-#### Step 2: Integrate with IBWss
-
-```swift
-class IBWss {
-    private let shortableShares = ShortableSharesData()
-    
-    func handleMarketData(message: [String: Any]) {
-        // ... existing parsing ...
-        
-        // Check for shortable shares field (field 588)
-        if let shares = message["588"] as? Int {
-            shortableShares.update(conid: conid, shares: shares)
+    func processMarketData(_ data: IBMarketData) {
+        // Use configs
+        if config.getBool(.printPackets) {
+            print("Market data: \(data)")
         }
-    }
-    
-    func getShortableShares(conid: Int) -> Int {
-        return shortableShares.get(conid: conid)
-    }
-}
-```
-
-#### Step 3: Add to Protocol 2 Output
-
-```swift
-private func formatAsProtocol2(_ data: IBMarketData) -> Data? {
-    // Get shortable shares for this contract
-    let shortableShares = ws.getShortableShares(conid: data.conid)
-    
-    // Include in CSV fields
-    let csvData = "\(bid),\(bidSize),\(ask),\(askSize),\(last),\(lastSize),\(shortableShares),\(timestamp),\(transmissionTime)"
-    
-    // ... rest of Protocol 2 formatting
-}
-```
-
-#### Step 4: Add Interactive Command
-
-```swift
-case "12": showShortableShares()
-
-private func showShortableShares() {
-    let shares = ws.getAllShortableShares()
-    
-    print("\n=== Shortable Shares ===")
-    if shares.isEmpty {
-        print("No data available")
-    } else {
-        for (conid, count) in shares.sorted(by: { $0.key < $1.key }) {
-            let symbol = caches[conid]?[IBKRFields.SYMBOL] as? String ?? "Unknown"
-            print("  [\(conid)] \(symbol): \(count) shares")
+        
+        if config.getBool(.blockNewData) {
+            // Block logic
         }
     }
 }
 ```
 
-### Testing Plan
-
-1. Subscribe to a contract known to have shortable shares
-2. Use interactive command 12 to view shortable shares data
-3. Verify Protocol 2 packets include shortable shares field
-4. Test with contracts that have 0 shortable shares (hard to borrow)
-
-### Success Criteria
-
-- ✅ Shortable shares tracked per contract
-- ✅ Data included in Protocol 2 output
-- ✅ Interactive command shows shortable shares
-- ✅ Correctly handles 0 shares (hard to borrow)
+**Key Architectural Benefits:**
+1. **Type-safe keys** - enum prevents typos
+2. **Runtime modification** - no restart needed
+3. **Extensible** - add enum case = add config
+4. **Discoverable** - `ConfigKey.allCases` lists all
+5. **Thread-safe** - NSLock protection
 
 ---
 
-## Phase 5: Enhanced Features (Medium Priority)
+## Implementation Roadmap
 
-### 5.1 Notification System
+### Phase 1: Port Introspective Pattern (3-4 days)
 
-**Effort:** 2-3 days
+**Objective:** Replace hardcoded switch in `interactiveMode()` with protocol-based dispatch.
 
-Implement macOS notifications for critical events using UserNotifications framework:
+**Steps:**
+1. Create `Introspective` protocol with default `interactiveMode()` implementation
+2. Make `IBMKTDispatcher` conform to `Introspective`
+3. Register all existing functions (show contracts, clients, etc.)
+4. Test that all commands work via registration
 
-```swift
-import UserNotifications
+**Success:** Can add new interactive commands by calling `registerFunction()` anywhere.
 
-class NotificationManager {
-    static let shared = NotificationManager()
-    
-    func requestPermission() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            print("[Notifications] Permission granted: \(granted)")
-        }
-    }
-    
-    func send(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        
-        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
-    }
-}
+### Phase 2: Port DomainCache Pattern (3-4 days)
 
-// Use in IBWss:
-NotificationManager.shared.send(title: "IBKR WebSocket", body: "Connection lost")
-```
+**Objective:** Replace in-memory caches with disk-persisted domain caches.
 
-### 5.2 Account Ledger/Summary APIs
+**Steps:**
+1. Create `DomainCache` class with JSON persistence
+2. Make `SearchResult` conform to `Codable`
+3. Create `CachedFunction` wrapper for `searchContract`
+4. Verify cache file created at `~/.argus/ib_cache.json`
+5. Test restart - second search should be instant
 
-**Effort:** 2-3 days
+**Success:** Contract searches cached to disk, fast startup on restart.
 
-Add comprehensive account data retrieval to IBNetworker:
+### Phase 3: Port Configuration Pattern (2-3 days)
 
-```swift
-func getAccountLedger(accountId: String) throws -> AccountLedger {
-    let url = "https://api.ibkr.com/v1/api/portfolio/\(accountId)/ledger"
-    // ... implement
-}
+**Objective:** Make configuration system extensible.
 
-func getAccountSummary(accountId: String) throws -> AccountSummary {
-    let url = "https://api.ibkr.com/v1/api/portfolio/\(accountId)/summary"
-    // ... implement
-}
-```
+**Steps:**
+1. Create `ConfigKey` enum with existing configs
+2. Create `ConfigurationManager` class
+3. Replace `configs` dictionary with manager
+4. Add interactive modification command
+5. Test runtime config changes take effect
 
-### 5.3 LockedSession Pattern
-
-**Effort:** 1-2 days
-
-Implement thread-safe HTTP session manager:
-
-```swift
-class LockedSession {
-    private let session: URLSession
-    private let lock = NSLock()
-    
-    func get(url: String) throws -> Data {
-        lock.lock()
-        defer { lock.unlock() }
-        
-        guard let requestURL = URL(string: url) else {
-            throw NSError(domain: "LockedSession", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid URL: \(url)"])
-        }
-        
-        // Synchronous request using semaphore
-        var result: Data?
-        var error: Error?
-        let semaphore = DispatchSemaphore(value: 0)
-        
-        let task = session.dataTask(with: requestURL) { data, _, err in
-            result = data
-            error = err
-            semaphore.signal()
-        }
-        task.resume()
-        semaphore.wait()
-        
-        if let error = error {
-            throw error
-        }
-        
-        guard let data = result else {
-            throw NSError(domain: "LockedSession", code: -2, userInfo: [NSLocalizedDescriptionKey: "No data received"])
-        }
-        
-        return data
-    }
-}
-```
+**Success:** Can add new configs by adding enum case, modify at runtime.
 
 ---
 
-## Implementation Timeline
+## Key Architectural Principles
 
-### Week 1: Critical Fixes
-- **Days 1-3:** Implement interactive mode commands (Phase 1)
-- **Days 4-5:** Begin disk caching implementation (Phase 2)
+### 1. Protocol-Oriented Design
+- **Python:** Uses duck typing and base classes
+- **Swift:** Use protocols with default implementations
+- **Benefit:** Compile-time safety + same extensibility
 
-### Week 2: Core Features
-- **Days 1-2:** Complete disk caching (Phase 2)
-- **Days 3-5:** Implement dispatcher modes (Phase 3)
+### 2. Dictionary-Based Dispatch
+- **Python:** `functions[name]()`
+- **Swift:** `interactiveFunctions[name]?.execute()`
+- **Benefit:** No switch statement explosion
 
-### Week 3: High Priority
-- **Days 1-3:** Implement shortable shares (Phase 4)
-- **Days 4-5:** Testing and bug fixes
+### 3. Type-Safe Persistence
+- **Python:** Pickle (any object)
+- **Swift:** Codable (type-safe serialization)
+- **Benefit:** Human-readable JSON + compile-time checking
 
-### Week 4: Medium Priority & Polish
-- **Days 1-2:** Notification system (Phase 5.1)
-- **Days 3-4:** Account APIs (Phase 5.2)
-- **Day 5:** Final testing and documentation
+### 4. Registration Over Discovery
+- **Python:** `inspect.getmembers()` finds methods automatically
+- **Swift:** Explicit `registerFunction()` calls
+- **Benefit:** Clear, explicit, still extensible
 
-**Total Estimated Time:** 4 weeks for one developer
-
----
-
-## Testing Strategy
-
-### Unit Tests
-
-Create test suite for each phase:
-
-```swift
-import XCTest
-
-class IBDispatcherTests: XCTestCase {
-    func testInteractiveCommands() {
-        // Test each interactive command
-    }
-    
-    func testCacheManager() {
-        // Test cache save/load
-    }
-    
-    func testDispatcherModes() {
-        // Test each mode format
-    }
-    
-    func testShortableShares() {
-        // Test shortable shares tracking
-    }
-}
-```
-
-### Integration Tests
-
-1. **Interactive Mode Test:** Run dispatcher, execute all commands, verify outputs
-2. **Cache Persistence Test:** Restart dispatcher, verify cache loaded
-3. **Mode Switching Test:** Test each dispatcher mode with real client
-4. **Shortable Shares Test:** Verify field in Protocol 2 output
-
-### Performance Tests
-
-1. **Startup Time:** Measure with cold cache vs warm cache
-2. **Memory Usage:** Monitor over 24 hours with active subscriptions
-3. **API Load:** Count API calls before/after caching
+### 5. Enum-Based Configuration
+- **Python:** String keys (typo-prone)
+- **Swift:** Enum keys (typo-proof)
+- **Benefit:** Compiler catches errors
 
 ---
 
-## Success Criteria
+## What's NOT Being Ported
 
-### Minimum Viable Product (MVP)
+### Non-Essential Dispatcher Modes
 
-To consider Swift IB **production-ready**:
+**ASK, ASK+BID+LAST, FULL_PKL, FULL_JSON modes are NOT priorities.**
 
-- ✅ Interactive mode with 9+ functional commands
-- ✅ Disk caching for contract searches
-- ✅ Support for ASK, ASK+BID+LAST, FULL_JSON, PROTOCOL_2 modes
-- ✅ Shortable shares tracking and output
-- ✅ Feature parity reaches **85%+**
-- ✅ No critical bugs in 1-week testing period
+**Rationale:**
+- Only Protocol 2 is used in production
+- Other modes exist for legacy compatibility
+- Swift can focus on Protocol 2 exclusively
+- Simplifies codebase without reducing production value
 
-### Full Feature Parity (95%+)
-
-For complete parity with Python:
-
-- ✅ All MVP features
-- ✅ Notification system
-- ✅ Complete account ledger/summary APIs
-- ✅ LockedSession pattern
-- ✅ WebSocket message logging to file
-- ✅ Comprehensive test coverage (80%+)
-- ✅ Documentation updated
+If other modes become necessary, they can be added using the same pattern as Protocol 2 formatting.
 
 ---
 
-## Risk Mitigation
+## Summary
 
-### Risk 1: IBKR API Changes
+The path to Swift IB parity is not about copying features—it's about **porting architectural patterns**:
 
-**Mitigation:** 
-- Version check on startup
-- Graceful degradation if API unavailable
-- Comprehensive error logging
+1. **Introspective Pattern** → Protocol + Dictionary Dispatch
+2. **DomainCache Pattern** → Codable + JSON Persistence  
+3. **Configuration Pattern** → Enum + Type-Safe Manager
 
-### Risk 2: Cache Corruption
+These patterns provide the **same extensibility** as Python while leveraging Swift's strengths:
+- Type safety catches errors at compile time
+- Protocols enable flexible composition
+- Codable ensures serializability
+- Enums prevent typos
 
-**Mitigation:**
-- JSON format (human-readable, debuggable)
-- Validation on load
-- Automatic cache clear if invalid
-- Backup previous cache before overwrite
+Once these patterns are in place, adding new features becomes trivial—just like in Python.
 
-### Risk 3: Memory Leaks
-
-**Mitigation:**
-- Use Instruments to profile memory
-- Limit stored WebSocket messages (1000 max)
-- Regular testing with long-running instances
-- ARC should handle most issues automatically
-
-### Risk 4: Threading Issues
-
-**Mitigation:**
-- Use NSLock consistently
-- Document all thread access points
-- Test with Thread Sanitizer
-- Follow Swift concurrency best practices
-
----
-
-## Maintenance Plan
-
-### Post-Implementation
-
-1. **Weekly:** Monitor GitHub issues for Swift IB bugs
-2. **Monthly:** Review Python changes for new features
-3. **Quarterly:** Performance testing and optimization
-4. **Yearly:** Major version sync with Python
-
-### Version Compatibility
-
-- Maintain compatibility with IBKR API version used by Python
-- Document any divergence from Python implementation
-- Keep feature comparison document updated
-
----
-
-## Conclusion
-
-Bringing Swift IB up to parity is **achievable in 4 weeks** for a dedicated developer. The critical path is:
-
-1. Fix interactive mode (unlock debugging capabilities)
-2. Implement disk caching (improve performance and reduce API load)
-3. Add dispatcher modes (enable diverse clients)
-4. Add shortable shares (enable short-selling strategies)
-
-Once these 4 phases are complete, Swift IB will be **production-ready** at **85%+ feature parity**.
-
-The remaining medium-priority features (notifications, enhanced account APIs, LockedSession) can be added incrementally based on user feedback and requirements.
-
-**Key Takeaway:** The current 55% parity is primarily due to **incomplete implementation** rather than fundamental architectural issues. All gaps are addressable with focused development effort.
+**Estimated Effort:** 8-11 days for three patterns, creating a foundation as extensible as Python's.
