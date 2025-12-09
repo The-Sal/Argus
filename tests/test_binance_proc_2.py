@@ -17,8 +17,13 @@ def main():
         s.connect((HOST, 9982))
     except socket.error:
         print('Trying alternative port 9984...')
-        s = socket.socket()
-        s.connect((HOST, 9984))
+        try:
+            s = socket.socket()
+            s.connect((HOST, 9984))
+        except socket.error:
+            print('Trying argus-swift default port 9974...')
+            s = socket.socket()
+            s.connect((HOST, 9974))
     # Subscribe to BTCUSDT ticker stream
     s.sendall(b'add=BTCUSDT')
     time.sleep(0.1)
