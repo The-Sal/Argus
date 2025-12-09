@@ -214,7 +214,7 @@ This document provides a comprehensive comparison of features available in the P
 
 ### Python Implementation
 **Location:** `/argus/ib/`
-**Files:** `forecast.py` (758 lines), `_forcast_utils.py` (900+ lines)
+**Files:** `forecast.py` (758 lines), `_forecast_utils.py` (900+ lines)
 
 #### Features:
 - ✅ **FXCWss:** WebSocket client for forecast contracts
