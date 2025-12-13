@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 /// WebSocket manager for Binance using native URLSession
 /// Transcompiled from argus/binance/__init__.py: BinanceWss (main branch)
@@ -33,11 +30,12 @@ class BinanceWss {
     private var statsStamps: [Double] = []
 
     init(configs: [String: Bool]? = nil) {
-        self.configs = configs ?? [
-            "auto_dump": true,
-            "total_message_statistics": true,
-            "show_me_charts": false  // Disabled for Swift
-        ]
+        self.configs =
+            configs ?? [
+                "auto_dump": true,
+                "total_message_statistics": true,
+                "show_me_charts": false,  // Disabled for Swift
+            ]
 
         // Configure URLSession
         let config = URLSessionConfiguration.default
@@ -110,7 +108,8 @@ class BinanceWss {
         statsStamps.append(Date().timeIntervalSince1970)
 
         guard let jsonData = text.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else {
+            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
+        else {
             logger.warning("Failed to parse message")
             return
         }
@@ -169,7 +168,8 @@ class BinanceWss {
     /// Parse depth (order book) message
     private func parseDepthMessage(_ json: [String: Any], symbol: String) -> AbstractBinanceType? {
         guard let data = json["data"] as? [String: Any],
-              let depthUpdate = try? DepthUpdate.fromDict(data) else {
+            let depthUpdate = try? DepthUpdate.fromDict(data)
+        else {
             return nil
         }
 
@@ -183,9 +183,11 @@ class BinanceWss {
     }
 
     /// Parse aggregate trade message
-    private func parseAggTradeMessage(_ json: [String: Any], symbol: String) -> AbstractBinanceType? {
+    private func parseAggTradeMessage(_ json: [String: Any], symbol: String) -> AbstractBinanceType?
+    {
         guard let data = json["data"] as? [String: Any],
-              let tradeData = try? AggTradeData.fromDict(data) else {
+            let tradeData = try? AggTradeData.fromDict(data)
+        else {
             return nil
         }
 
@@ -201,7 +203,8 @@ class BinanceWss {
     /// Parse kline message
     private func parseKlineMessage(_ json: [String: Any], symbol: String) -> AbstractBinanceType? {
         guard let data = json["data"] as? [String: Any],
-              let klineData = try? KlineEventData.fromDict(data) else {
+            let klineData = try? KlineEventData.fromDict(data)
+        else {
             return nil
         }
 
@@ -215,7 +218,9 @@ class BinanceWss {
     }
 
     /// Parse book ticker message
-    private func parseBookTickerMessage(_ json: [String: Any], symbol: String) -> AbstractBinanceType? {
+    private func parseBookTickerMessage(_ json: [String: Any], symbol: String)
+        -> AbstractBinanceType?
+    {
         guard let bookTicker = try? BookTicker.fromDict(json) else {
             return nil
         }
@@ -244,13 +249,14 @@ class BinanceWss {
                 "\(lowercaseSymbol)@aggTrade",
                 "\(lowercaseSymbol)@depth@100ms",
                 "\(lowercaseSymbol)@kline_1s",
-                "\(lowercaseSymbol)@bookTicker"
+                "\(lowercaseSymbol)@bookTicker",
             ],
-            "id": 1
+            "id": 1,
         ]
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: subscribeMsg),
-              let jsonString = String(data: jsonData, encoding: .utf8) else {
+            let jsonString = String(data: jsonData, encoding: .utf8)
+        else {
             logger.error("Failed to create subscription message")
             return
         }
@@ -281,13 +287,14 @@ class BinanceWss {
                 "\(lowercaseSymbol)@aggTrade",
                 "\(lowercaseSymbol)@depth@100ms",
                 "\(lowercaseSymbol)@kline_1s",
-                "\(lowercaseSymbol)@bookTicker"
+                "\(lowercaseSymbol)@bookTicker",
             ],
-            "id": 1
+            "id": 1,
         ]
 
         guard let jsonData = try? JSONSerialization.data(withJSONObject: unsubscribeMsg),
-              let jsonString = String(data: jsonData, encoding: .utf8) else {
+            let jsonString = String(data: jsonData, encoding: .utf8)
+        else {
             logger.error("Failed to create unsubscribe message")
             return
         }
@@ -322,7 +329,9 @@ class BinanceWss {
                     self.lock.unlock()
 
                     let avgPerSec = Double(count) / statisticsInterval
-                    print("[STATISTICS] Received \(count) messages in the last \(Int(statisticsInterval)) seconds (avg: \(String(format: "%.2f", avgPerSec)) msgs/sec)")
+                    print(
+                        "[STATISTICS] Received \(count) messages in the last \(Int(statisticsInterval)) seconds (avg: \(String(format: "%.2f", avgPerSec)) msgs/sec)"
+                    )
                 }
             }
         }

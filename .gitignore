@@ -11,3 +11,4 @@ examples/ADX_data
 *.DS_Store
 *.pkl*
 *.toon
+argus_swift/.build

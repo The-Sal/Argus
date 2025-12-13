@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
 
 /// WebSocket manager for Capital.com streaming API
 class CapitalComWss {
@@ -45,7 +42,12 @@ class CapitalComWss {
         stopEvent = false  // Reset stop event flag
         reconnectAttempts = 0  // Reset reconnect attempts
 
-        guard let url = URL(string: "\(baseURL)?cst=\(authTokens.cst)&x-security-token=\(authTokens.xSecurityToken)") else {
+        guard
+            let url = URL(
+                string:
+                    "\(baseURL)?cst=\(authTokens.cst)&x-security-token=\(authTokens.xSecurityToken)"
+            )
+        else {
             print("Invalid WebSocket URL")
             return
         }
@@ -111,7 +113,9 @@ class CapitalComWss {
         let currentStatus = wsStatus
         subscriptionLock.unlock()
 
-        print("Added subscription for \(epic) (total: \(subscriptions.count), wsStatus: \(currentStatus))")
+        print(
+            "Added subscription for \(epic) (total: \(subscriptions.count), wsStatus: \(currentStatus))"
+        )
 
         // Send subscription message if connected
         // If connecting, resubscribeAll() will handle it when connection is established
@@ -161,7 +165,9 @@ class CapitalComWss {
     }
 
     /// Unsubscribe from OHLC data
-    func unsubscribeFromOHLC(epic: String, resolution: HistoricalPriceResolution, barType: OhlcBarType = .classic) {
+    func unsubscribeFromOHLC(
+        epic: String, resolution: HistoricalPriceResolution, barType: OhlcBarType = .classic
+    ) {
         subscriptionLock.lock()
         defer { subscriptionLock.unlock() }
 
@@ -203,13 +209,15 @@ class CapitalComWss {
             "correlationId": "sub-\(epic)-\(Int(Date().timeIntervalSince1970))",
             "cst": tokens.cst,
             "securityToken": tokens.xSecurityToken,
-            "payload": payload
+            "payload": payload,
         ]
 
         sendJSON(message)
     }
 
-    private func sendOHLCSubscriptionMessage(epic: String, resolution: HistoricalPriceResolution, barType: OhlcBarType) {
+    private func sendOHLCSubscriptionMessage(
+        epic: String, resolution: HistoricalPriceResolution, barType: OhlcBarType
+    ) {
         guard let tokens = authTokens else { return }
 
         let message: [String: Any] = [
@@ -220,8 +228,8 @@ class CapitalComWss {
             "payload": [
                 "epics": [epic],
                 "resolutions": [resolution.rawValue],
-                "type": barType.rawValue
-            ]
+                "type": barType.rawValue,
+            ],
         ]
 
         sendJSON(message)
@@ -236,13 +244,15 @@ class CapitalComWss {
             "correlationId": "unsub-\(epic)-\(Int(Date().timeIntervalSince1970))",
             "cst": tokens.cst,
             "securityToken": tokens.xSecurityToken,
-            "payload": ["epics": [epic]]
+            "payload": ["epics": [epic]],
         ]
 
         sendJSON(message)
     }
 
-    private func sendOHLCUnsubscriptionMessage(epic: String, resolution: HistoricalPriceResolution, barType: OhlcBarType) {
+    private func sendOHLCUnsubscriptionMessage(
+        epic: String, resolution: HistoricalPriceResolution, barType: OhlcBarType
+    ) {
         guard let tokens = authTokens else { return }
 
         let message: [String: Any] = [
@@ -253,8 +263,8 @@ class CapitalComWss {
             "payload": [
                 "epics": [epic],
                 "resolutions": [resolution.rawValue],
-                "types": [barType.rawValue]
-            ]
+                "types": [barType.rawValue],
+            ],
         ]
 
         sendJSON(message)
@@ -262,7 +272,8 @@ class CapitalComWss {
 
     private func sendJSON(_ message: [String: Any]) {
         guard let jsonData = try? JSONSerialization.data(withJSONObject: message),
-              let jsonString = String(data: jsonData, encoding: .utf8) else {
+            let jsonString = String(data: jsonData, encoding: .utf8)
+        else {
             print("Failed to serialize JSON message")
             return
         }
@@ -279,7 +290,9 @@ class CapitalComWss {
 
     private func startPingTimer() {
         DispatchQueue.main.async { [weak self] in
-            self?.pingTimer = Timer.scheduledTimer(withTimeInterval: self?.appPingInterval ?? 540, repeats: true) { [weak self] _ in
+            self?.pingTimer = Timer.scheduledTimer(
+                withTimeInterval: self?.appPingInterval ?? 540, repeats: true
+            ) { [weak self] _ in
                 self?.sendApplicationPing()
             }
         }
@@ -292,7 +305,7 @@ class CapitalComWss {
             "destination": "ping",
             "correlationId": "app-ping-\(Int(Date().timeIntervalSince1970))",
             "cst": tokens.cst,
-            "securityToken": tokens.xSecurityToken
+            "securityToken": tokens.xSecurityToken,
         ]
 
         sendJSON(pingMessage)
@@ -333,7 +346,8 @@ class CapitalComWss {
 
     private func handleTextMessage(_ text: String) {
         guard let data = text.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
             print("Failed to parse WebSocket message as JSON")
             return
         }
@@ -352,25 +366,28 @@ class CapitalComWss {
 
         // Handle subscription confirmations
         if let status = json["status"] as? String,
-           status == "OK",
-           let payload = json["payload"] as? [String: Any],
-           let subscriptions = payload["subscriptions"] as? [String: String] {
+            status == "OK",
+            let payload = json["payload"] as? [String: Any],
+            let subscriptions = payload["subscriptions"] as? [String: String]
+        {
             print("Subscription confirmation: \(subscriptions)")
             return
         }
 
         // Handle ping responses
         if let destination = json["destination"] as? String,
-           destination == "ping",
-           let status = json["status"] as? String,
-           status == "OK" {
+            destination == "ping",
+            let status = json["status"] as? String,
+            status == "OK"
+        {
             print("Application-level WebSocket PONG received")
             return
         }
 
         // Handle market data
         if let payload = json["payload"] as? [String: Any],
-           let epic = payload["epic"] as? String {
+            let epic = payload["epic"] as? String
+        {
 
             let serverDestination = json["destination"] as? String
             var streamKey: String?
@@ -379,7 +396,8 @@ class CapitalComWss {
                 streamKey = "/market/\(epic)"
             } else if serverDestination == "ohlc.event" {
                 if let resolution = payload["resolution"] as? String,
-                   let barType = payload["type"] as? String {
+                    let barType = payload["type"] as? String
+                {
                     streamKey = "/ohlc/\(epic)/\(resolution)/\(barType)"
                 }
             }
@@ -391,7 +409,8 @@ class CapitalComWss {
 
                 if let subscription = subscription, subscription.active {
                     do {
-                        let marketData = try CapitalCom_CapitalComMKTDataLive.fromWebSocketPayload(payload)
+                        let marketData = try CapitalCom_CapitalComMKTDataLive.fromWebSocketPayload(
+                            payload)
                         subscription.callback(marketData)
                     } catch {
                         print("Error parsing market data: \(error)")
@@ -410,8 +429,10 @@ class CapitalComWss {
 
         // Attempt reconnection with token refresh
         if reconnectAttempts < maxReconnectAttempts {
-            let delay = min(initialReconnectDelay * pow(2.0, Double(reconnectAttempts)), maxReconnectDelay)
-            print("WebSocket disconnected. Will refresh tokens and reconnect in \(delay) seconds...")
+            let delay = min(
+                initialReconnectDelay * pow(2.0, Double(reconnectAttempts)), maxReconnectDelay)
+            print(
+                "WebSocket disconnected. Will refresh tokens and reconnect in \(delay) seconds...")
 
             DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
                 guard let self = self, !self.stopEvent else { return }
@@ -448,7 +469,8 @@ class CapitalComWss {
                     sendSubscriptionMessage(epic: sub.epic, dataType: .market)
                 case .ohlc:
                     if let resolution = sub.resolution, let barType = sub.barType {
-                        sendOHLCSubscriptionMessage(epic: sub.epic, resolution: resolution, barType: barType)
+                        sendOHLCSubscriptionMessage(
+                            epic: sub.epic, resolution: resolution, barType: barType)
                     }
                 }
             }
