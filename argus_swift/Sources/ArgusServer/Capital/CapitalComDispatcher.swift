@@ -1,9 +1,4 @@
 import Foundation
-#if canImport(Darwin)
-import Darwin
-#else
-import Glibc
-#endif
 
 /// Unix Domain Socket server dispatcher for Capital.com market data streaming
 class CapitalComMKTDispatcher {
@@ -256,11 +251,8 @@ class CapitalComMKTDispatcher {
         }
 
         // Create Unix domain socket
-        #if canImport(Darwin)
         serverSocket = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        #else
-        serverSocket = Glibc.socket(AF_UNIX, SOCK_STREAM, 0)
-        #endif
+
 
         guard serverSocket >= 0 else {
             throw CapitalComAPIError.networkError("Failed to create Unix domain socket")
@@ -324,11 +316,7 @@ class CapitalComMKTDispatcher {
 
             let clientSocket = withUnsafeMutablePointer(to: &clientAddr) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    #if canImport(Darwin)
                     Darwin.accept(serverSocket, $0, &clientAddrLen)
-                    #else
-                    Glibc.accept(serverSocket, $0, &clientAddrLen)
-                    #endif
                 }
             }
 

@@ -12,3 +12,5 @@ examples/ADX_data
 *.pkl*
 *.toon
 argus_swift/.build
+.zed
+.rg-doc

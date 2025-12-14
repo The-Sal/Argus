@@ -21,7 +21,11 @@ let package = Package(
         .executableTarget(
             name: "ArgusServer",
             dependencies: [],
-            path: "Sources/ArgusServer"
+            path: "Sources/ArgusServer",
+            swiftSettings: [
+                .unsafeFlags(["-strict-concurrency=minimal"]),
+                .unsafeFlags(["-Xfrontend", "-warn-concurrency"]),
+            ]
         ),
     ]
 )
