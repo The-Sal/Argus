@@ -16,3 +16,4 @@ argus_swift/.build
 .rg-doc
 argus_swift/*.zip
 *.enc
+argus_swift/argus_server_dist

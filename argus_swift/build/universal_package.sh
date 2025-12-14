@@ -52,7 +52,6 @@ cat argus_server_dist/BUILD_MANIFEST.txt
 echo ""
 echo "=== Creating distribution archive ==="
 zip -r argus_dist.zip argus_server_dist
-rm -rf argus_server_dist
 rm -rf builds
 
 # Get file size
@@ -93,10 +92,3 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
 elif command -v xdg-open &> /dev/null; then
     xdg-open . &
 fi
-
-rm -rf builds
-echo renaming with build version
-# Extract version from version.swift
-version=$(grep "let version:" Sources/ArgusServer/Utils/version.swift | grep -oE '[0-9]+(\.[0-9]+)?')
-# Rename the file
-mv argus.zip.enc argus_${version}.zip.enc¢

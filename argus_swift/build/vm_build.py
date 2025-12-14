@@ -26,7 +26,7 @@ for i in range(len(VM_CONFIGS)):
             raise
 
         if oroute_info["reachable"]:
-            print(f"Found a faster  -> {oroute_info['local_address']}")
+            print(f"Found a faster route -> {oroute_info['local_address']}")
             VM_CONFIGS[i]["host"] = user_name + "@" + oroute_info["local_address"]
 
     except subprocess.SubprocessError as e:
@@ -180,16 +180,34 @@ def build_on_vm(vm_config):
                 "-e",
                 "ssh",
                 host,
+                "echo '=== Build Environment Information ===' && "
+                "echo 'Build Date:' $(date -u +\"%Y-%m-%d %H:%M:%S UTC\") && echo && "
                 "echo '=== System Information ===' && "
                 "uname -srvmpio && echo && "
                 "echo '=== OS Release ===' && "
                 "cat /etc/os-release && echo && "
+                "echo '=== Kernel Version ===' && "
+                "uname -r && echo && "
                 "echo '=== GLIBC Version ===' && "
                 "ldd --version | head -n1 && echo && "
                 "echo '=== cURL Version ===' && "
                 "curl --version && echo && "
+                "echo '=== OpenSSL Version ===' && "
+                "openssl version && echo && "
+                "echo '=== libssl Version ===' && "
+                "dpkg -l | grep -E '^ii.*libssl' | head -n3 || rpm -qa | grep -E 'openssl|libssl' | head -n3 || echo 'Package info not available' && echo && "
                 "echo '=== Swift Version ===' && "
-                "~/.local/share/swiftly/bin/swift --version",
+                "~/.local/share/swiftly/bin/swift --version && echo && "
+                "echo '=== Swiftly Version ===' && "
+                "~/.local/share/swiftly/bin/swiftly --version 2>/dev/null || echo 'Swiftly version not available' && echo && "
+                "echo '=== Compiler Information ===' && "
+                "gcc --version 2>/dev/null | head -n1 || clang --version 2>/dev/null | head -n1 || echo 'Compiler info not available' && echo && "
+                "echo '=== Linker Information ===' && "
+                "ld --version 2>/dev/null | head -n1 || echo 'Linker version not available' && echo && "
+                "echo '=== System Libraries ===' && "
+                "echo 'libc.so:' $(readlink -f /usr/lib/libc.so.* 2>/dev/null | head -n1 || echo 'not found') && "
+                "echo 'libssl.so:' $(readlink -f /usr/lib/libssl.so.* 2>/dev/null | head -n1 || echo 'not found') && "
+                "echo 'libcrypto.so:' $(readlink -f /usr/lib/libcrypto.so.* 2>/dev/null | head -n1 || echo 'not found')",
             ],
             env=env,
             capture_output=True,
