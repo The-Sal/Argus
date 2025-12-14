@@ -15,3 +15,4 @@ argus_swift/.build
 .zed
 .rg-doc
 argus_swift/*.zip
+*.enc
