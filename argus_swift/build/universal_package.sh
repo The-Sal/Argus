@@ -12,7 +12,15 @@ mkdir argus_server_dist
 mv Linux argus_server_dist
 mv macOS argus_server_dist
 
+tree argus_server_dist
+
 zip -r argus_dist.zip argus_server_dist
 rm -rf argus_server_dist
 
-open argus_dist.zip --reveal
+if command -v sdist &> /dev/null; then
+    echo Found SDist, Encrypting Binary....
+    sdist -c -p X -f encrypt -a argus_dist.zip argus.zip
+    rm -rf argus_dist.zip
+fi
+
+open .
