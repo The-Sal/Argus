@@ -14,3 +14,4 @@ examples/ADX_data
 argus_swift/.build
 .zed
 .rg-doc
+argus_swift/*.zip

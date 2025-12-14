@@ -1,5 +1,8 @@
 import Foundation
 
+//TODO: Automate increments
+let version: Float = 0.02
+
 /// Argus Server - Swift Edition
 /// Entry point for market data dispatchers
 /// Transcompiled from runtime.py
@@ -147,6 +150,7 @@ func getEnvironmentVariable(_ name: String, envVars: [String: String] = [:]) -> 
 
 func main() {
     print("Argus Server (Swift Edition)")
+    print("Version:", version)
     print("Platform: \(getSystemInfo())")
     print("Arguments: \(CommandLine.arguments)")
     print("Process ID: \(ProcessInfo.processInfo.processIdentifier)")
