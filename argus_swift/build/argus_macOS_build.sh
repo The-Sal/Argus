@@ -13,6 +13,16 @@ lipo -create -output .build/release/argus_server \
   .build/arm64-apple-macosx/release/argus_server \
   .build/x86_64-apple-macosx/release/argus_server
 
+# Verify universal binary and display architectures
+echo ""
+echo "=== Universal Binary Verification ==="
+echo "Architectures contained in universal binary:"
+lipo -archs .build/release/argus_server
+echo ""
+echo "Detailed architecture information:"
+lipo -detailed_info .build/release/argus_server
+echo ""
+
 # Copy the universal binary to builds directory
 mkdir -p ./builds/macos
 cp .build/release/argus_server ./builds/macos/
