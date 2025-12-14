@@ -6,4 +6,4 @@ Refer to the original repository [README.md](https://github.com/The-Sal/Argus/bl
 
 ## Important Things to Read (Updated 14th December 2024)
 * [Binance Module Problems](docs/TRIAGE/SWIFT_BINANCE_TRIAGE.md) - **RESOLVED**
-* [Linux Support](docs/PLATFORMS/Linux.md)
+* [Linux Support](docs/PLATFORMS/linux.md)
