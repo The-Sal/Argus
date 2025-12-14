@@ -4,6 +4,6 @@ Refer to the original repository [README.md](https://github.com/The-Sal/Argus/bl
 > Argus–Swift is very experimental and will always lag behind the canonical Argus Python code.
 
 
-## Important Things to Read (Updated 6th December 2024)
+## Important Things to Read (Updated 14th December 2024)
 * [Binance Module Problems](docs/TRIAGE/SWIFT_BINANCE_TRIAGE.md) - **RESOLVED**
 * [Linux Support](docs/PLATFORMS/Linux.md)
