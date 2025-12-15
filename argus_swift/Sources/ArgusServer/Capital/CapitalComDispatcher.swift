@@ -3,6 +3,38 @@ import Foundation
 
 fileprivate let cache = CacheManager("capital.com")
 
+/// This specification follows the Python convention for Protocol 1 within Capital.com
+/// ~NNNN|<JSON>
+fileprivate func fullProtocol1Decoder(_ rawDataStream: Data) -> [[String: Any]]{
+    var parsedPackets: [[String: Any]] = []
+    let startCharValue = "~".data(using: .utf8)!.first!
+    for pos in 0..<rawDataStream.count{
+        let char = rawDataStream[pos]
+        // if this is ~ build the packet instantly
+        // given ~NNNN| using NNNN to to get the rest of the packet
+        // if the char is not ~ ignore it since the packet was already constructed
+        if char == startCharValue{
+            let lengthOfPacket = Int(String(data: rawDataStream.subdata(in: pos+1..<pos+5), encoding: .utf8)!)!
+            // for sanity we should make sure after NNNN comes | otherwise something is wrong
+            if rawDataStream[pos+5] == "|".data(using: .utf8)!.first!{
+                let packet = rawDataStream.subdata(in: pos+6..<pos+6+lengthOfPacket)
+                do{
+                    parsedPackets.append(try JSONSerialization.jsonObject(with: packet, options: []) as! [String: Any])
+                } catch {
+                    print("Error: Unable to parse JSON in Capital.com P1 Parser=\(error)")
+                    print("Raw Packet: \(packet)")
+                }
+            }else{
+                print("Error: Invalid packet format in Capital.com P1 Parser")
+                print("Raw Packet: \(rawDataStream.subdata(in: pos..<pos+6+lengthOfPacket))")
+            }
+        }
+    }
+    return parsedPackets
+}
+
+
+
 /// Unix Domain Socket server dispatcher for Capital.com market data streaming
 class CapitalComMKTDispatcher {
     private let socketPath: String
@@ -372,23 +404,13 @@ class CapitalComMKTDispatcher {
     }
 
     private func handleClientData(_ data: Data, from client: ArgusSocket) {
-        do {
-            // Decode packets (may be multiple)
-            let packets = try decodeMultiplePackets(data)
-            fatalError("DO NOT USE THIS MODULE, THERE IS A FATAL ERROR IN PACKET DECODING")
-            for packetData in packets {
-                // Parse JSON request
-                guard let json = try? JSONSerialization.jsonObject(with: packetData) as? [String: Any],
-                      let action = json["action"] as? String else {
-                    sendErrorResponse(to: client, message: "Invalid request format")
-                    continue
-                }
-
-                handleClientRequest(action: action, request: json, client: client)
+        for json in fullProtocol1Decoder(data) {
+            // Parse JSON request
+            guard let action = json["action"] as? String else {
+                sendErrorResponse(to: client, message: "Invalid request format")
+                return
             }
-        } catch {
-            print("Error decoding packet: \(error)")
-            sendErrorResponse(to: client, message: "Invalid packet format")
+            handleClientRequest(action: action, request: json, client: client)
         }
     }
 
@@ -666,23 +688,10 @@ class CapitalComMKTDispatcher {
 
         threadLock.unlock()
 
-        // Convert market data to JSON format
-        let marketDataDict: [String: Any] = [
-            "symbol": marketData.symbol,
-            "bid": marketData.bid,
-            "bid_size": marketData.bidSize,
-            "ask": marketData.ask,
-            "ask_size": marketData.askSize,
-            "last": marketData.last,
-            "last_size": marketData.lastSize,
-            "timestamp": marketData.timestamp
-        ]
-
-        // Send as JSON packet to all clients
+        // Send as Protocol 2 packet to all clients
         do {
-            let jsonData = try JSONSerialization.data(withJSONObject: marketDataDict)
-            let packet = try encodePacket(jsonData)
-
+            let packet = try transmitMarketDataWithProtocol2(marketData)
+            
             for client in clients {
                 do {
                     try client.sendall(packet)

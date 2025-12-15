@@ -117,6 +117,7 @@ class CapitalComWss {
             "Added subscription for \(epic) (total: \(subscriptions.count), wsStatus: \(currentStatus))"
         )
 
+
         // Send subscription message if connected
         // If connecting, resubscribeAll() will handle it when connection is established
         if currentStatus == .connected {
