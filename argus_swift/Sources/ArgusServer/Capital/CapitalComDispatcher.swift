@@ -1,5 +1,8 @@
 import Foundation
 
+
+fileprivate let cache = CacheManager("capital.com")
+
 /// Unix Domain Socket server dispatcher for Capital.com market data streaming
 class CapitalComMKTDispatcher {
     private let socketPath: String
@@ -372,7 +375,7 @@ class CapitalComMKTDispatcher {
         do {
             // Decode packets (may be multiple)
             let packets = try decodeMultiplePackets(data)
-
+            fatalError("DO NOT USE THIS MODULE, THERE IS A FATAL ERROR IN PACKET DECODING")
             for packetData in packets {
                 // Parse JSON request
                 guard let json = try? JSONSerialization.jsonObject(with: packetData) as? [String: Any],
@@ -457,6 +460,8 @@ class CapitalComMKTDispatcher {
 
     // MARK: - Symbol Resolution
 
+    // TODO: THIS FUNCTION IS NOT TESTED YET BECAUSE OF THE ISSUE
+    // WITH THE DISPATCHER PACKET DECODER
     private func resolveSymbol(symbol: String, client: ArgusSocket) {
         guard let tokens = authTokens else {
             sendErrorResponse(to: client, message: "Not authenticated")
@@ -472,38 +477,42 @@ class CapitalComMKTDispatcher {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.setValue(tokens.cst, forHTTPHeaderField: "CST")
-        request.setValue(tokens.xSecurityToken, forHTTPHeaderField: "X-SECURITY-TOKEN")
+        let response = try! Requests.cacheRequest(cacheManager: cache, params: (
+            url: url,
+            method: "GET",
+            headers: [
+                "CST": tokens.cst,
+                "X-SECURITY-TOKEN": tokens.xSecurityToken
+            ],
+            nil
+        ))
 
-        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-            guard let self = self else { return }
+        let data = response.data
+        let error = response.error
 
-            if let error = error {
-                self.sendErrorResponse(to: client, message: "Search failed: \(error.localizedDescription)")
-                return
-            }
-
-            guard let httpResponse = response as? HTTPURLResponse,
-                  httpResponse.statusCode == 200,
-                  let data = data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let markets = json["markets"] as? [[String: Any]],
-                  let firstMarket = markets.first else {
-                self.sendErrorResponse(to: client, message: "Symbol not found")
-                return
-            }
-
-            // Extract instrument data
-            let instrumentData: [String: Any] = [
-                "epic": firstMarket["epic"] as? String ?? "",
-                "instrumentName": firstMarket["instrumentName"] as? String ?? "",
-                "marketStatus": firstMarket["marketStatus"] as? String ?? ""
-            ]
-
-            self.sendSuccessResponse(to: client, message: "Symbol resolved", data: ["instrument": instrumentData])
+        if let error = error {
+            self.sendErrorResponse(to: client, message: "Search failed: \(error.localizedDescription)")
+            return
         }
 
-        task.resume()
+        guard let httpResponse = response.response as? HTTPURLResponse,
+              httpResponse.statusCode == 200,
+              let data = data,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let markets = json["markets"] as? [[String: Any]],
+              let firstMarket = markets.first else {
+            self.sendErrorResponse(to: client, message: "Symbol not found")
+            return
+        }
+
+        // Extract instrument data
+        let instrumentData: [String: Any] = [
+            "epic": firstMarket["epic"] as? String ?? "",
+            "instrumentName": firstMarket["instrumentName"] as? String ?? "",
+            "marketStatus": firstMarket["marketStatus"] as? String ?? ""
+        ]
+
+        self.sendSuccessResponse(to: client, message: "Symbol resolved", data: ["instrument": instrumentData])
     }
 
     private func resolveAndStreamSymbol(symbol: String, client: ArgusSocket) {

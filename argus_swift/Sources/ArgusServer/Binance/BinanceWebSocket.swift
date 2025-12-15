@@ -218,9 +218,7 @@ class BinanceWss {
     }
 
     /// Parse book ticker message
-    private func parseBookTickerMessage(_ json: [String: Any], symbol: String)
-        -> AbstractBinanceType?
-    {
+    private func parseBookTickerMessage(_ json: [String: Any], symbol: String) -> AbstractBinanceType?{
         guard let bookTicker = try? BookTicker.fromDict(json) else {
             return nil
         }
