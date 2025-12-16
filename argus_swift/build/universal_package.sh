@@ -10,6 +10,21 @@ echo ""
 echo "=== Building for Linux VMs ==="
 python3 build/vm_build.py
 
+# Check if Python script failed
+if [ $? -ne 0 ]; then
+    echo "✗ VM builds failed. Halting universal build process."
+    exit 1
+fi
+
+# Check if any builds failed by examining results
+if [ -d "builds" ]; then
+    failed_count=$(find builds -name "*.failed" | wc -l 2>/dev/null || echo "0")
+    if [ "$failed_count" -gt 0 ]; then
+        echo "✗ One or more VM builds failed. Halting universal build process."
+        exit 1
+    fi
+fi
+
 echo ""
 echo "=== Preparing distribution package ==="
 

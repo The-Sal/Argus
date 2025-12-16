@@ -1,7 +1,9 @@
 import Foundation
 
-//TODO: Automate increments
+//TODO: Automate increments. Do not edit the version number below or the surrounding comments.
+// =======================
 let version: Float = 0.03
+// =======================
 
 /// Argus Server - Swift Edition
 /// Entry point for market data dispatchers

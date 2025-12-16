@@ -13,6 +13,12 @@ lipo -create -output .build/release/argus_server \
   .build/arm64-apple-macosx/release/argus_server \
   .build/x86_64-apple-macosx/release/argus_server
 
+# Verify the universal binary was created
+if [ ! -f ".build/release/argus_server" ]; then
+    echo "✗ Failed to create universal binary. Halting build process."
+    exit 1
+fi
+
 # Verify universal binary and display architectures
 echo ""
 echo "=== Universal Binary Verification ==="
@@ -26,6 +32,12 @@ echo ""
 # Copy the universal binary to builds directory
 mkdir -p ./builds/macos
 cp .build/release/argus_server ./builds/macos/
+
+# Verify the binary was created successfully
+if [ ! -f "./builds/macos/argus_server" ]; then
+    echo "✗ Failed to create universal binary. Halting build process."
+    exit 1
+fi
 
 # Capture detailed system information (without hostname/username)
 {

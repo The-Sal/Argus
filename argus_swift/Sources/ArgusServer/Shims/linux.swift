@@ -9,6 +9,7 @@ public typealias HTTPURLResponse = FoundationNetworking.HTTPURLResponse
 public typealias URLSessionConfiguration = FoundationNetworking.URLSessionConfiguration
 public typealias URLRequest = FoundationNetworking.URLRequest
 public typealias URLSessionWebSocketTask = FoundationNetworking.URLSessionWebSocketTask
+public typealias URLResponse = FoundationNetworking.URLResponse
 
 
 /*

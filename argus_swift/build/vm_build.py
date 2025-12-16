@@ -320,6 +320,11 @@ def main():
                 print(f"  ✗ {r['name']}: {r['error']}")
 
         print(f"\nTotal: {len(successful)} successful, {len(failed)} failed")
+        
+        # Exit with error code if any builds failed
+        if failed:
+            print("\n✗ One or more VM builds failed. Halting universal build process.")
+            exit(1)
 
     except KeyboardInterrupt:
         print("\n✗ Build interrupted by user")
