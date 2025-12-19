@@ -230,8 +230,11 @@ class HTTPClient {
         // Read the temp file content
         defer {
             // Clean up temp file
-            //try? FileManager.default.removeItem(at: tempFile)
+            #if DEBUG
             print("Temporary File:", tempFile)
+            #else
+            try? FileManager.default.removeItem(at: tempFile)
+            #endif
         }
 
         guard FileManager.default.fileExists(atPath: tempFilePath) else {
