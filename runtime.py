@@ -10,115 +10,90 @@ Argus runtime entrypoint.
 - DO NOT PASS AUTH CREDENTIALS VIA COMMAND LINE ARGS, use environment variables or .env file instead.
 - Automatically loads .env file if present in working directory.
 """
-
-import argparse
 import os
-import platform
 import sys
-
-from dotenv import load_dotenv
-
 import argus
-from argus.binance import BinanceMKTDispatcher
-from argus.capital import Environment
-from argus.capital import MKTDispatcher as CapitalComDispatcher
-from argus.ib import IBKRModes, MKTDispatcher
-from argus.ib.forecast import FXCDispatcher
+import platform
+import argparse
+from dotenv import load_dotenv
 from argus.polymarket import PolyDispatcher
+from argus.ib.forecast import FXCDispatcher
+from argus.ib import MKTDispatcher, IBKRModes
+from argus.binance import BinanceMKTDispatcher
+from argus.capital import MKTDispatcher as CapitalComDispatcher, Environment
+
 
 if not load_dotenv():
     print("Warning: .env was not loaded")
 
-choices = ["ib.forecast", "ib.core", "polymarket", "capital.com", "binance"]
-
+choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance']
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Argus runtime dispatcher launcher")
-    parser.add_argument("target", choices=choices, help="Dispatcher to run")
-    parser.add_argument(
-        "--host", dest="host", help="Listening host (if supported by dispatcher)"
-    )
-    parser.add_argument(
-        "--port",
-        dest="port",
-        type=int,
-        help="Listening port (if supported by dispatcher)",
-    )
-    parser.add_argument(
-        "--capital-env",
-        dest="capital_env",
-        choices=["demo", "live"],
-        help="Capital.com environment (demo or live)",
-    )
-    parser.add_argument(
-        "--testnet",
-        dest="testnet",
-        action="store_true",
-        help="Use Binance testnet (for binance dispatcher)",
-    )
+    parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
+    parser.add_argument('target', choices=choices, help='Dispatcher to run')
+    parser.add_argument('--host', dest='host', help='Listening host (if supported by dispatcher)')
+    parser.add_argument('--port', dest='port', type=int, help='Listening port (if supported by dispatcher)')
+    parser.add_argument('--capital-env', dest='capital_env', choices=['demo', 'live'], help='Capital.com environment (demo or live)')
 
     args = parser.parse_args(argv)
 
-    if args.target == "ib.forecast":
+    if args.target == 'ib.forecast':
         ib_kwargs = {}
         if args.host:
-            ib_kwargs["host"] = args.host
+            ib_kwargs['host'] = args.host
         if args.port is not None:
-            ib_kwargs["port"] = args.port
+            ib_kwargs['port'] = args.port
         dispatcher = FXCDispatcher(**ib_kwargs)
         dispatcher.select_account_interactive()
         dispatcher.interactive_mode()
         print("Exiting")
-    elif args.target == "ib.core":
+    elif args.target == 'ib.core':
         ib_kwargs = {}
         if args.host:
-            ib_kwargs["host"] = args.host
+            ib_kwargs['host'] = args.host
         if args.port is not None:
-            ib_kwargs["port"] = args.port
+            ib_kwargs['port'] = args.port
         dispatcher = MKTDispatcher(mode=IBKRModes.PROTOCOL_2, **ib_kwargs)
         dispatcher.select_account_interactive()
         dispatcher.ws.interactive_mode()
-    elif args.target == "polymarket":
+    elif args.target == 'polymarket':
         poly_kwargs = dict(
-            private_key=os.environ["POLYMARKET_PRIVATE_KEY"],
-            proxy_funder=os.environ["POLYMARKET_PROXY_FUNDER"],
+            private_key=os.environ['POLYMARKET_PRIVATE_KEY'],
+            proxy_funder=os.environ['POLYMARKET_PROXY_FUNDER']
         )
         # Only forward host/port if explicitly provided by user, mapping to PolyDispatcher's kwargs
         if args.host:
-            poly_kwargs["listen_host"] = args.host
+            poly_kwargs['listen_host'] = args.host
         if args.port is not None:
-            poly_kwargs["listen_port"] = args.port
+            poly_kwargs['listen_port'] = args.port
         dispatcher = PolyDispatcher(**poly_kwargs)
         dispatcher.interactive_mode()
-    elif args.target == "capital.com":
-        print("Warning: capital.com uses Unix domain socket, --host/--port are ignored")
-        if args.capital_env == "demo":
+    elif args.target == 'capital.com':
+        print('Warning: capital.com uses Unix domain socket, --host/--port are ignored')
+        if args.capital_env == 'demo':
             env = Environment.DEMO
         else:
             env = Environment.LIVE
-        print(f"Using Capital.com environment: {env}")
+        print(f'Using Capital.com environment: {env}')
         dispatcher = CapitalComDispatcher(environment=env)
         dispatcher.start_server()
-        input("Press enter to exit.")
+        input('Press enter to exit.')
         dispatcher.api.logout()
-    elif args.target == "binance":
+    elif args.target == 'binance':
         binance_kwargs = {}
         if args.host:
-            binance_kwargs["host"] = args.host
+            binance_kwargs['host'] = args.host
         if args.port is not None:
-            binance_kwargs["port"] = args.port
+            binance_kwargs['port'] = args.port
         dispatcher = BinanceMKTDispatcher(**binance_kwargs)
         dispatcher.interactive_mode()
         print("Exiting Binance dispatcher")
     else:
-        parser.error("Unknown target")
+        parser.error('Unknown target')
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     platform_running = platform.system()
-    print("Argus:", argus)
-    print("Running on", platform_running)
-    print("Arguments:", sys.argv)
-    print("Python Version:", sys.version)
-    print("Python Executable:", sys.executable)
+    print('Argus:', argus)
+    print('Running on', platform_running)
+    print('Arguments:', sys.argv)
     main(sys.argv[1:])
