@@ -40,7 +40,21 @@ The Argus Swift IB implementation crashes on Linux (specifically tested on Raspb
 
 ## Root Cause
 
-### The Problem: DispatchQueue.sync() Deadlock in FoundationNetworking (Linux)
+### Critical Difference: Why Binance Works but IB Doesn't
+
+**Key Finding:** The Binance module works perfectly on Linux because it **NEVER uses `URLSession.dataTask()`** for synchronous HTTP requests.
+
+**Binance approach:**
+- Only uses `URLSessionWebSocketTask` for WebSocket connections
+- No HTTP REST API calls with `dataTask()`
+- No mixing of locks + semaphores + dataTask
+
+**IB approach (problematic):**
+- Uses `URLSessionWebSocketTask` for WebSocket (works fine)
+- **ALSO** uses `URLSession.dataTask()` for synchronous HTTP REST calls (IBKR REST API)
+- Combines `NSLock` + `DispatchSemaphore` + `dataTask()` = deadlock on Linux
+
+### The Problem: NSLock + DispatchSemaphore + dataTask() = Deadlock
 
 On **macOS**, Foundation's `URLSession` is implemented using native system frameworks that don't have this issue.
 
@@ -113,11 +127,17 @@ When this runs on a dispatch queue (as it does in the WebSocket callback), the i
 
 ## Potential Solutions
 
-### Solution 1: Remove NSLock and Use Serial DispatchQueue (Recommended)
+**Constraints from requirements:**
+1. ❌ No async/await
+2. ❌ No external packages
+3. ✅ Can use C/C++ with Swift 6 FFI
+4. ✅ Must work on both Linux and macOS
+
+### Solution 1: Replace NSLock with Serial DispatchQueue (RECOMMENDED - Simplest Fix)
 
 **Replace `NSLock` with a serial `DispatchQueue` for thread-safety.**
 
-This is the most Swift-idiomatic approach and avoids lock + dispatch mixing.
+This is the simplest Swift-only solution that should resolve the deadlock.
 
 **Changes to `IBLockedSession`:**
 
@@ -180,69 +200,19 @@ class IBLockedSession {
 ```
 
 **Pros:**
+- Pure Swift, no dependencies
 - More Swift-idiomatic
 - Avoids lock/dispatch mixing
 - Works consistently across macOS and Linux
+- **Minimal code changes**
 
 **Cons:**
-- Still uses DispatchSemaphore which can be problematic in nested queue scenarios
+- Still uses DispatchSemaphore which is not ideal but should work
+- Not addressing the root URLSession.dataTask() issue
 
-### Solution 2: Async/Await Refactor (Best Long-Term)
+### Solution 2: Move HTTP Calls to Background Queue (Quick Workaround)
 
-**Convert to async/await pattern** (requires Swift 5.5+).
-
-This completely eliminates semaphores and locks, using Swift's structured concurrency.
-
-```swift
-class IBLockedSession {
-    private let session: URLSession
-    private let syncQueue = DispatchQueue(label: "com.argus.ib.session", qos: .userInitiated)
-    private var headers: [String: String]
-    
-    init(headers: [String: String]) {
-        let config = URLSessionConfiguration.default
-        self.session = URLSession(configuration: config)
-        self.headers = headers
-    }
-    
-    func post(url: String, json: [String: Any]? = nil) async throws -> (Data, HTTPURLResponse) {
-        var request = URLRequest(url: URL(string: url)!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        for (key, value) in headers {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-        
-        if let json = json {
-            request.httpBody = try JSONSerialization.data(withJSONObject: json)
-        }
-        
-        let (data, response) = try await session.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw IBError.invalidResponse
-        }
-        
-        return (data, httpResponse)
-    }
-}
-```
-
-**Pros:**
-- Modern Swift concurrency
-- No locks, no semaphores, no deadlocks
-- Better error handling
-- More maintainable
-
-**Cons:**
-- Requires refactoring all callers to use async/await
-- Larger change scope
-- Requires Swift 5.5+ (already available on modern Swift toolchains)
-
-### Solution 3: Call on Background Queue (Quick Fix)
-
-**Move the HTTP calls to a background queue** that's not involved in the WebSocket callback chain.
+**Move the HTTP calls to a separate background queue** that's not involved in the WebSocket callback chain.
 
 **Changes to `IBNetworker.runSetupMessages()`:**
 
@@ -313,94 +283,330 @@ private func runSetupMessages() throws {
 **Pros:**
 - Minimal code changes
 - Isolates the problem
+- Pure Swift solution
 
 **Cons:**
 - Still uses semaphores (nested semaphore anti-pattern)
 - Workaround rather than proper fix
 - May have other hidden queue-related issues
 
-### Solution 4: Use a Different HTTP Library (Alternative)
+### Solution 3: C/C++ HTTP Client with Swift 6 FFI (Long-Term Robust Solution)
 
-**Replace URLSession with a pure-Swift HTTP client** that doesn't have Linux-specific dispatch issues.
+**Write custom HTTP client in C/C++ and expose to Swift using Swift 6's C++ interop.**
 
-Options:
-- [AsyncHTTPClient](https://github.com/swift-server/async-http-client) - Apple's official async HTTP client
-- [curl-nio](https://github.com/swift-server/curl-nio) - libcurl wrapper for SwiftNIO
+This completely bypasses the problematic FoundationNetworking implementation on Linux.
 
-**Example with AsyncHTTPClient:**
+**Why this makes sense:**
+- IB module does complex HTTP REST API calls (unlike Binance which only uses WebSockets)
+- C/C++ HTTP libraries (libcurl, cpp-httplib) are battle-tested on Linux
+- Swift 6 FFI has zero overhead for C++ interop
+- No external Swift packages needed (libcurl is system library)
+- Full control over threading and synchronization
 
-```swift
-import AsyncHTTPClient
+**Implementation approach:**
 
-class IBLockedSession {
-    private let httpClient: HTTPClient
-    private let syncQueue = DispatchQueue(label: "com.argus.ib.session", qos: .userInitiated)
-    private var headers: [String: String]
-    
-    init(headers: [String: String]) {
-        self.httpClient = HTTPClient(eventLoopGroupProvider: .createNew)
-        self.headers = headers
+Create `argus_swift/Sources/ArgusServer/IB/Native/IBHTTPClient.cpp`:
+
+```cpp
+#include <curl/curl.h>
+#include <string>
+#include <map>
+#include <stdexcept>
+
+// Response structure
+struct HTTPResponse {
+    int status_code;
+    char* body;
+    size_t body_length;
+};
+
+// Callback for libcurl to write response data
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+    size_t realsize = size * nmemb;
+    std::string* mem = static_cast<std::string*>(userp);
+    mem->append(static_cast<char*>(contents), realsize);
+    return realsize;
+}
+
+// Synchronous HTTP POST
+extern "C" HTTPResponse* http_post_sync(
+    const char* url,
+    const char* const* headers,  // NULL-terminated array
+    const char* body,
+    size_t body_length
+) {
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        return nullptr;
     }
     
-    func post(url: String, json: [String: Any]? = nil) throws -> (Data, HTTPURLResponse) {
-        var request = try HTTPClient.Request(url: url, method: .POST)
-        
-        for (key, value) in headers {
-            request.headers.add(name: key, value: value)
-        }
-        
-        if let json = json {
-            let body = try JSONSerialization.data(withJSONObject: json)
-            request.body = .data(body)
-        }
-        
-        let response = try httpClient.execute(request: request).wait()
-        
-        // Convert to URLSession-compatible types
-        let data = response.body.map { Data(buffer: $0) } ?? Data()
-        let statusCode = response.status.code
-        
-        // Note: Would need to create HTTPURLResponse wrapper or change return type
-        return (data, /* construct HTTPURLResponse */)
+    std::string response_body;
+    struct curl_slist* header_list = nullptr;
+    
+    // Add headers
+    for (int i = 0; headers[i] != nullptr; i++) {
+        header_list = curl_slist_append(header_list, headers[i]);
+    }
+    
+    // Configure request
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, body_length);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    
+    // Perform request
+    CURLcode res = curl_easy_perform(curl);
+    
+    if (res != CURLE_OK) {
+        curl_slist_free_all(header_list);
+        curl_easy_cleanup(curl);
+        return nullptr;
+    }
+    
+    // Get status code
+    long status_code;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status_code);
+    
+    // Create response
+    HTTPResponse* response = new HTTPResponse();
+    response->status_code = static_cast<int>(status_code);
+    response->body_length = response_body.size();
+    response->body = new char[response_body.size()];
+    memcpy(response->body, response_body.data(), response_body.size());
+    
+    curl_slist_free_all(header_list);
+    curl_easy_cleanup(curl);
+    
+    return response;
+}
+
+// Free response
+extern "C" void http_response_free(HTTPResponse* response) {
+    if (response) {
+        delete[] response->body;
+        delete response;
     }
 }
 ```
 
+Create Swift wrapper `argus_swift/Sources/ArgusServer/IB/Native/IBHTTPClient.swift`:
+
+```swift
+import Foundation
+
+// Import C++ functions (Swift 6 interop)
+@_silgen_name("http_post_sync")
+func http_post_sync(
+    _ url: UnsafePointer<CChar>,
+    _ headers: UnsafePointer<UnsafePointer<CChar>?>,
+    _ body: UnsafePointer<CChar>?,
+    _ bodyLength: Int
+) -> UnsafeMutablePointer<HTTPResponse>?
+
+@_silgen_name("http_response_free")
+func http_response_free(_ response: UnsafeMutablePointer<HTTPResponse>)
+
+struct HTTPResponse {
+    var status_code: Int32
+    var body: UnsafeMutablePointer<CChar>?
+    var body_length: Int
+}
+
+/// Native HTTP client using libcurl (no FoundationNetworking issues)
+class NativeHTTPClient {
+    private var headers: [String: String]
+    
+    init(headers: [String: String]) {
+        self.headers = headers
+    }
+    
+    func post(url: String, json: [String: Any]? = nil) throws -> (Data, Int) {
+        // Prepare headers as C array
+        var headerStrings: [String] = []
+        for (key, value) in headers {
+            headerStrings.append("\(key): \(value)")
+        }
+        headerStrings.append("Content-Type: application/json")
+        
+        // Convert to C string array
+        let cHeaders = headerStrings.map { strdup($0) }
+        defer { cHeaders.forEach { free($0) } }
+        
+        var cHeaderPointers = cHeaders.map { $0 as UnsafePointer<CChar>? }
+        cHeaderPointers.append(nil)  // NULL terminator
+        
+        // Prepare body
+        var bodyData: Data?
+        if let json = json {
+            bodyData = try JSONSerialization.data(withJSONObject: json)
+        }
+        
+        // Call C++ function
+        let response: UnsafeMutablePointer<HTTPResponse>?
+        
+        if let bodyData = bodyData {
+            response = bodyData.withUnsafeBytes { bodyPtr in
+                url.withCString { urlPtr in
+                    cHeaderPointers.withUnsafeBufferPointer { headersPtr in
+                        http_post_sync(
+                            urlPtr,
+                            headersPtr.baseAddress!,
+                            bodyPtr.bindMemory(to: CChar.self).baseAddress,
+                            bodyData.count
+                        )
+                    }
+                }
+            }
+        } else {
+            response = url.withCString { urlPtr in
+                cHeaderPointers.withUnsafeBufferPointer { headersPtr in
+                    http_post_sync(urlPtr, headersPtr.baseAddress!, nil, 0)
+                }
+            }
+        }
+        
+        guard let response = response else {
+            throw IBError.networkError("HTTP request failed")
+        }
+        
+        defer { http_response_free(response) }
+        
+        // Extract response data
+        let statusCode = Int(response.pointee.status_code)
+        let responseData = Data(
+            bytes: response.pointee.body!,
+            count: response.pointee.body_length
+        )
+        
+        return (responseData, statusCode)
+    }
+    
+    func get(url: String, params: [String: String]? = nil) throws -> (Data, Int) {
+        // Similar implementation for GET
+        // ... (omitted for brevity)
+        fatalError("Not implemented")
+    }
+}
+```
+
+Then modify `IBLockedSession` to use `NativeHTTPClient`:
+
+```swift
+class IBLockedSession {
+    private let client: NativeHTTPClient
+    private let lock = NSLock()  // Still needed for header updates
+    
+    init(headers: [String: String]) {
+        self.client = NativeHTTPClient(headers: headers)
+    }
+    
+    func post(url: String, json: [String: Any]? = nil) throws -> (Data, HTTPURLResponse) {
+        lock.lock()
+        defer { lock.unlock() }
+        
+        let (data, statusCode) = try client.post(url: url, json: json)
+        
+        // Create HTTPURLResponse for compatibility
+        let response = HTTPURLResponse(
+            url: URL(string: url)!,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: nil
+        )!
+        
+        return (data, response)
+    }
+}
+```
+
+**Package.swift changes:**
+
+```swift
+.target(
+    name: "ArgusServer",
+    dependencies: [],
+    cxxSettings: [
+        .define("_GNU_SOURCE"),
+        .linkedLibrary("curl"),
+    ]
+)
+```
+
 **Pros:**
-- Avoids FoundationNetworking Linux bugs entirely
-- AsyncHTTPClient is well-maintained and used in production Swift servers
+- **Completely bypasses FoundationNetworking bugs** on Linux
+- **No external Swift packages** (libcurl is standard system library)
+- **Zero-overhead Swift/C++ interop** with Swift 6
+- Battle-tested networking (libcurl used everywhere)
+- Full control over threading - no dispatch queue issues
+- **Same code works on macOS and Linux**
 
 **Cons:**
-- Additional dependency
-- Need to adapt interfaces (HTTPURLResponse vs different types)
-- More invasive change
+- Requires libcurl-dev on build system (`apt-get install libcurl4-openssl-dev`)
+- More complex implementation
+- Need to maintain C++ code alongside Swift
+- Slightly more verbose API
+
+**Is it worth the effort?**
+
+Given that:
+1. IB networking issues are complex and worth solving properly
+2. Binance proves WebSocket-only approach works fine
+3. The problem is SPECIFICALLY `URLSession.dataTask()` on Linux
+4. You're open to C/C++ solutions
+
+**YES** - This is likely the most robust long-term solution for IB's HTTP REST API needs.
+
+### Solution 4: Eliminate HTTP REST Calls (Architectural Alternative - Not Recommended)
+
+**Refactor IBKR integration to only use WebSocket** (like Binance does).
+
+This would mean finding WebSocket-based alternatives to the IBKR REST API endpoints currently used for:
+- Authentication (`/tickle`, `/auth/status`, `/ssodh/init`)
+- Account queries (`/portfolio/accounts`, `/account/ledger`, etc.)
+
+**Why not recommended:**
+- IBKR's WebSocket API may not support all operations currently done via REST
+- Would require significant architectural changes
+- REST API is simpler for request/response patterns
+- Not addressing the actual bug, just avoiding it
 
 ---
 
 ## Recommended Implementation Plan
 
-### Phase 1: Immediate Fix (Solution 1 or 3)
+### Phase 1: Immediate Fix (Solution 1) - 1-2 days
 
-**For quick resolution**, implement **Solution 3** (background queue) to unblock development:
-- Changes are isolated to `runSetupMessages()`
-- Minimal risk
-- Can be deployed quickly
+**Implement serial DispatchQueue solution** to unblock Linux deployment:
+- Replace `NSLock` with `DispatchQueue(label: "com.argus.ib.session")`
+- Test on Linux (Raspberry Pi or Docker)
+- Verify no regression on macOS
+- **Risk:** Low - minimal changes, well-understood pattern
 
-### Phase 2: Proper Fix (Solution 1)
+### Phase 2: Evaluate C/C++ Solution (Solution 3) - Planning
 
-**Once stable**, implement **Solution 1** (serial DispatchQueue):
-- Replace NSLock with DispatchQueue throughout `IBLockedSession`
-- More idiomatic Swift
-- Better cross-platform behavior
+**Assess whether IB networking complexity justifies C/C++ HTTP client:**
+- How many REST endpoints are used? (Currently: ~10 endpoints)
+- How critical is IB reliability vs development time?
+- Is team comfortable maintaining C++ code?
 
-### Phase 3: Modern Swift (Solution 2)
+**Decision criteria:**
+- If IB is mission-critical: **DO Solution 3** (C/C++ libcurl)
+- If IB is experimental/secondary: **STAY with Solution 1** (serial queue)
 
-**Long-term**, migrate to **Solution 2** (async/await):
-- Refactor entire IB module to use structured concurrency
-- Eliminate all semaphores and locks
-- Future-proof the codebase
+### Phase 3: Long-Term (If C/C++ chosen) - 3-5 days
 
----
+**Implement native HTTP client:**
+1. Create `IBHTTPClient.cpp` with libcurl wrapper
+2. Add Swift FFI bindings
+3. Update `Package.swift` with C++ interop settings
+4. Replace `IBLockedSession` implementation
+5. Test thoroughly on both platforms
+6. Update build documentation for libcurl dependency
+
 
 ## Testing Recommendations
 
@@ -421,6 +627,9 @@ class IBLockedSession {
 ```dockerfile
 # Dockerfile for testing
 FROM swift:5.9-focal
+
+# For C++ solution: install libcurl
+RUN apt-get update && apt-get install -y libcurl4-openssl-dev
 
 WORKDIR /app
 COPY . .
@@ -443,8 +652,8 @@ CMD ["./argus_server"]
 ## References
 
 1. **Swift-corelibs-foundation URLSession source**: https://github.com/apple/swift-corelibs-foundation/blob/main/Sources/FoundationNetworking/URLSession/URLSession.swift
-2. **Swift Concurrency Documentation**: https://docs.swift.org/swift-book/LanguageGuide/Concurrency.html
-3. **AsyncHTTPClient**: https://github.com/swift-server/async-http-client
+2. **libcurl documentation**: https://curl.se/libcurl/
+3. **Swift 6 C++ Interop**: https://www.swift.org/documentation/cxx-interop/
 4. **Dispatch Queue Best Practices**: https://developer.apple.com/documentation/dispatch/dispatchqueue
 
 ---
@@ -453,14 +662,22 @@ CMD ["./argus_server"]
 
 The SIGTRAP abort on Linux is caused by a **deadlock in FoundationNetworking's URLSession implementation** when `URLSession.dataTask()` internally calls `DispatchQueue.sync()` while already executing on a dispatch queue.
 
-**Root cause**: Linux-specific `URLSession` implementation using `DispatchQueue.sync()` internally, conflicting with the existing queue context from WebSocket callbacks.
+**Why Binance works but IB doesn't:**
+- **Binance**: Only uses WebSockets, no HTTP REST calls with `dataTask()`
+- **IB**: Uses both WebSockets AND HTTP REST API (authentication, account queries)
 
-**Quick fix**: Move HTTP calls to a separate background queue (Solution 3)
+**Root cause**: 
+- Linux-specific `URLSession.dataTask()` implementation uses `DispatchQueue.sync()` internally
+- When called from WebSocket callback context with `NSLock` + `DispatchSemaphore`, causes deadlock
+- macOS uses native Foundation which doesn't have this issue
 
-**Proper fix**: Replace NSLock with serial DispatchQueue (Solution 1)
+**Solutions (given constraints: no async/await, no external packages):**
 
-**Best long-term**: Migrate to async/await (Solution 2)
+1. **Quick fix (Solution 2)**: Move HTTP calls to background queue - isolates the problem
+2. **Proper fix (Solution 1)**: Replace `NSLock` with serial `DispatchQueue` - more idiomatic Swift
+3. **Best long-term (Solution 3)**: C/C++ libcurl with Swift 6 FFI - completely bypasses FoundationNetworking bugs, zero-overhead interop, battle-tested
+4. **Not recommended (Solution 4)**: Eliminate HTTP calls - too invasive architecturally
 
-**Platform affected**: Linux only (macOS uses native Foundation which doesn't have this issue)
+**Recommendation**: Start with Solution 1 for immediate unblocking. Evaluate Solution 3 (C++ libcurl) if IB reliability is mission-critical, as it provides the most robust long-term solution without external Swift packages.
 
-This is a **known limitation of swift-corelibs-foundation** on Linux and requires careful queue management or migration to modern Swift concurrency to resolve properly.
+**Platform affected**: Linux only (macOS uses native Foundation without DispatchQueue.sync() issues)
