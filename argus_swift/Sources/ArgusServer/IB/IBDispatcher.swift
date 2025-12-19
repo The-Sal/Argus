@@ -377,6 +377,8 @@ class IBMKTDispatcher {
                     // Subscribe to portfolio updates
                     ws.sendMessage("upl+{}")
                     Thread.sleep(forTimeInterval: 1)
+                    // Subscribe to account balance/PnL updates
+                    ws.sendMessage("spl+{}")
                 }
             }
         } catch {
