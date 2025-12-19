@@ -139,6 +139,14 @@ def build_on_vm(vm_config):
                 ".build",
                 "--exclude",
                 ".env",
+                "--exclude",
+                "*.zip",
+                "--exclude",
+                "argus_server_dist",
+                "--exclude",
+                ".swiftpm",
+                "--exclude",
+                "*.enc",
             ],
             env=env,
             check=True,
@@ -320,7 +328,7 @@ def main():
                 print(f"  ✗ {r['name']}: {r['error']}")
 
         print(f"\nTotal: {len(successful)} successful, {len(failed)} failed")
-        
+
         # Exit with error code if any builds failed
         if failed:
             print("\n✗ One or more VM builds failed. Halting universal build process.")
