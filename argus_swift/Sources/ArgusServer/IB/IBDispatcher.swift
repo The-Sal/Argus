@@ -176,6 +176,7 @@ class IBMKTDispatcher {
                     print("No contract found for symbol: \(symbol)")
                     return
                 }
+                print("Top Hit contract: \(topHit)")
                 finalConid = Int(topHit.conid)
             } catch {
                 print("Failed to search contract: \(error)")
@@ -192,8 +193,10 @@ class IBMKTDispatcher {
         let needsSubscription = conidToClients[contractId] == nil
 
         if needsSubscription {
+            print("Subscribing to contract ID: \(contractId)")
             conidToClients[contractId] = [client]
         } else {
+            print("Already subscribed to contract ID: \(contractId), adding client")
             conidToClients[contractId]?.append(client)
         }
         threadLock.unlock()
