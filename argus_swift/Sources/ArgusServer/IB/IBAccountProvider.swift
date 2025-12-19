@@ -1,22 +1,5 @@
 import Foundation
 
-class ShortableSharesData {
-    private var symbolToConidMap: [String: Int] = [:]
-    private let lock = NSLock()
-
-    func registerSymbol(_ symbol: String, conid: Int) {
-        lock.lock()
-        defer { lock.unlock() }
-        symbolToConidMap[symbol] = conid
-    }
-
-    func translateSymbolToConid(_ symbol: String?) -> Int? {
-        guard let symbol = symbol else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-        return symbolToConidMap[symbol]
-    }
-}
 
 /// Account Provider - provides live-streaming support for account positions and PnL
 /// Transcompiled from argus/ib/__init__.py AccountProvider class
@@ -238,7 +221,7 @@ class AccountProvider {
         for position in accountPositions {
             portfolio[position.conid] = position
             symbolsToConids[position.contractDesc] = position.conid
-            shortableSharesData.registerSymbol(position.contractDesc, conid: position.conid)
+            // shortableSharesData.registerSymbol(position.contractDesc, conid: position.conid)
         }
 
         ibWss.writeProtectedAssets(Array(portfolio.keys))

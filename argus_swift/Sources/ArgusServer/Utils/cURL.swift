@@ -173,6 +173,11 @@ class HTTPClient {
         // Locate curl executable
         let curlPath = try findCurl()
 
+        // Create a temporary file for output
+        let tempDir = FileManager.default.temporaryDirectory
+        let tempFile = tempDir.appendingPathComponent(UUID().uuidString)
+        let tempFilePath = tempFile.path
+
         // Build curl arguments for FTP
         var arguments: [String] = []
 
@@ -188,9 +193,9 @@ class HTTPClient {
         // Follow redirects (useful for FTP servers)
         arguments.append("-L")
 
-        // Handle large files - don't limit output
-        arguments.append("--max-filesize")
-        arguments.append("0")
+        // Output to file instead of stdout
+        arguments.append("-o")
+        arguments.append(tempFilePath)
 
         // Add URL
         arguments.append(url)
@@ -200,10 +205,8 @@ class HTTPClient {
         process.executableURL = URL(fileURLWithPath: curlPath)
         process.arguments = arguments
 
-        // Setup pipes for stdout and stderr
-        let outputPipe = Pipe()
+        // Setup pipes for stderr only
         let errorPipe = Pipe()
-        process.standardOutput = outputPipe
         process.standardError = errorPipe
 
         // Launch process
@@ -225,8 +228,17 @@ class HTTPClient {
             throw HTTPError.curlExecutionFailed(exitCode)
         }
 
-        // Read output
-        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        // Read the temp file content
+        defer {
+            // Clean up temp file
+            try? FileManager.default.removeItem(at: tempFile)
+        }
+
+        guard FileManager.default.fileExists(atPath: tempFilePath) else {
+            throw HTTPError.emptyResponse
+        }
+
+        let outputData = try Data(contentsOf: tempFile)
 
         guard let responseString = String(data: outputData, encoding: .utf8) else {
             throw HTTPError.encodingError
@@ -287,12 +299,12 @@ class HTTPClient {
      print("POST Error:", error)
  }
 
- // FTP request
+ // FTP request (equivalent to: curl -u shortstock: ftp://ftp2.interactivebrokers.com/usa.txt)
  do {
      let response = try client.ftp(
          url: "ftp://ftp2.interactivebrokers.com/usa.txt",
          username: "shortstock",
-         password: "your_password"
+         password: ""
      )
      print("FTP Response:", response)
  } catch {
