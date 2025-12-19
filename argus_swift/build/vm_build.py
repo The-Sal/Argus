@@ -147,6 +147,8 @@ def build_on_vm(vm_config):
                 ".swiftpm",
                 "--exclude",
                 "*.enc",
+                "--exclude",
+                "builds",
             ],
             env=env,
             check=True,
