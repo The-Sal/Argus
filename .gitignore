@@ -18,3 +18,4 @@ argus_swift/*.zip
 *.enc
 argus_swift/argus_server_dist
 argus_swift/builds
+argus_swift/.swiftpm

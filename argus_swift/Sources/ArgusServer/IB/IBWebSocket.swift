@@ -224,6 +224,8 @@ class IBWss {
         contractCallbacks.removeValue(forKey: contractId)
         subscribeCount -= 1
 
+        print("Unsubscribed from contract \(contractId). Total Subscriptions: \(subscribeCount)")
+
         let msg = "umd+\(contractId){}"
         ws?.send(.string(msg)) { _ in }
     }

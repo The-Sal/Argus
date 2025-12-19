@@ -151,6 +151,8 @@ func getEnvironmentVariable(_ name: String, envVars: [String: String] = [:]) -> 
 // MARK: - Main Entry Point
 
 func main() {
+    // Ignore SIGPIPE signals, very important otherwise program will terminate randomly
+    ignoreSIGPIPE()
     print("Argus Server (Swift Edition)")
     print("Version:", version)
     print("Platform: \(getSystemInfo())")

@@ -1,11 +1,5 @@
 import Foundation
 
-#if canImport(Glibc)
-import Glibc
-#else
-import Darwin
-#endif
-
 /// IBKR Market Data Dispatcher
 /// Transcompiled from argus/ib/__init__.py MKTDispatcher class
 /// Only supports Protocol 2 mode
@@ -252,6 +246,7 @@ class IBMKTDispatcher {
                 print("Failed to send data to client: \(error)")
 
                 threadLock.lock()
+                print("Removing client..")
                 if let index = clients.firstIndex(where: { $0 === client }) {
                     conidToClients[marketData.contractId]?.remove(at: index)
                 }
@@ -421,5 +416,7 @@ class IBMKTDispatcher {
                 print("Unknown command: \(input)")
             }
         }
+
+        print("While true loop has exited, shutting down...")
     }
 }
