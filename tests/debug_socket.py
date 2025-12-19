@@ -3,18 +3,21 @@
 Real-time AccountProvider Debug Client
 Connects to localhost:9973 and displays live portfolio updates
 """
-import os
-import sys
+
+import argparse
 import json
+import os
 import socket
+import sys
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
-from dataclasses import dataclass
 
 
 @dataclass
 class Position:
     """Represents a stock position"""
+
     symbol: str = ""
     position: float = 0.0
     avg_cost: float = 0.0
@@ -26,23 +29,24 @@ class Position:
     currency: str = "USD"
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'Position':
+    def from_dict(cls, data: dict) -> "Position":
         return cls(
-            symbol=data.get('contract_desc', ''),
-            position=float(data.get('position', 0)),
-            avg_cost=float(data.get('avg_cost', 0)),
-            avg_price=float(data.get('avg_price', 0)),
-            unrealized_pnl=float(data.get('unrealized_pnl', 0)),
-            realized_pnl=float(data.get('realized_pnl', 0)),
-            mkt_price=float(data.get('mkt_price', 0)),
-            mkt_value=float(data.get('mkt_value', 0)),
-            currency=data.get('currency', 'USD')
+            symbol=data.get("contract_desc", ""),
+            position=float(data.get("position", 0)),
+            avg_cost=float(data.get("avg_cost", 0)),
+            avg_price=float(data.get("avg_price", 0)),
+            unrealized_pnl=float(data.get("unrealized_pnl", 0)),
+            realized_pnl=float(data.get("realized_pnl", 0)),
+            mkt_price=float(data.get("mkt_price", 0)),
+            mkt_value=float(data.get("mkt_value", 0)),
+            currency=data.get("currency", "USD"),
         )
 
 
 @dataclass
 class AccountBalances:
     """Represents account balance information"""
+
     account_id: str = ""
     daily_pnl: float = 0.0
     pnl: float = 0.0
@@ -51,21 +55,21 @@ class AccountBalances:
     excess_liquidity: float = 0.0
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'AccountBalances':
+    def from_dict(cls, data: dict) -> "AccountBalances":
         return cls(
-            account_id=data.get('account_id', ''),
-            daily_pnl=float(data.get('daily_pnl', 0)),
-            pnl=float(data.get('pnl', 0)),
-            market_value=float(data.get('market_value', 0)),
-            net_liquidation=float(data.get('net_liquidation', 0)),
-            excess_liquidity=float(data.get('excess_liquidity', 0))
+            account_id=data.get("account_id", ""),
+            daily_pnl=float(data.get("daily_pnl", 0)),
+            pnl=float(data.get("pnl", 0)),
+            market_value=float(data.get("market_value", 0)),
+            net_liquidation=float(data.get("net_liquidation", 0)),
+            excess_liquidity=float(data.get("excess_liquidity", 0)),
         )
 
 
 class PortfolioMonitor:
     """Monitors and displays portfolio data in real-time"""
 
-    def __init__(self, host: str = 'localhost', port: int = 9973):
+    def __init__(self, host: str = "localhost", port: int = 9973):
         self.host = host
         self.port = port
         self.positions: Dict[str, Position] = {}
@@ -81,22 +85,22 @@ class PortfolioMonitor:
 
     def clear_screen(self):
         """Clear the terminal screen"""
-        os.system('clear')
+        os.system("clear")
 
     def parse_message(self, message: str):
         """Parse incoming JSON message"""
         try:
             data = json.loads(message)
-            msg_type = data.get('type')
+            msg_type = data.get("type")
 
-            if msg_type == 'position':
-                pos_data = data.get('data', {})
-                symbol = pos_data.get('contract_desc', '')
+            if msg_type == "position":
+                pos_data = data.get("data", {})
+                symbol = pos_data.get("contract_desc", "")
                 if symbol:
                     self.positions[symbol] = Position.from_dict(pos_data)
 
-            elif msg_type == 'account_balances':
-                balance_data = data.get('data', {})
+            elif msg_type == "account_balances":
+                balance_data = data.get("data", {})
                 self.balances = AccountBalances.from_dict(balance_data)
 
             self.last_update = datetime.now()
@@ -112,9 +116,9 @@ class PortfolioMonitor:
 
     def format_pnl(self, value: float) -> str:
         """Format PnL with color coding"""
-        color = '\033[92m' if value >= 0 else '\033[91m'  # Green or Red
-        reset = '\033[0m'
-        sign = '+' if value >= 0 else ''
+        color = "\033[92m" if value >= 0 else "\033[91m"  # Green or Red
+        reset = "\033[0m"
+        sign = "+" if value >= 0 else ""
         return f"{color}{sign}{value:,.2f}{reset}"
 
     def draw_header(self):
@@ -135,7 +139,15 @@ class PortfolioMonitor:
             return
 
         # Table header
-        headers = ["Symbol", "Qty", "Avg Cost", "Mkt Price", "Mkt Value", "Unrealized P&L", "Realized P&L"]
+        headers = [
+            "Symbol",
+            "Qty",
+            "Avg Cost",
+            "Mkt Price",
+            "Mkt Value",
+            "Unrealized P&L",
+            "Realized P&L",
+        ]
         col_widths = [10, 10, 12, 12, 15, 18, 18]
 
         print("POSITIONS:")
@@ -217,13 +229,13 @@ class PortfolioMonitor:
 
     def process_buffer(self):
         """Process buffered data and extract complete messages"""
-        while '~' in self.buffer and 'L' in self.buffer:
-            start = self.buffer.find('~')
-            end = self.buffer.find('L', start)
+        while "~" in self.buffer and "L" in self.buffer:
+            start = self.buffer.find("~")
+            end = self.buffer.find("L", start)
 
             if start != -1 and end != -1:
-                message = self.buffer[start + 1:end]
-                self.buffer = self.buffer[end + 1:]
+                message = self.buffer[start + 1 : end]
+                self.buffer = self.buffer[end + 1 :]
                 self.parse_message(message)
             else:
                 break
@@ -243,7 +255,7 @@ class PortfolioMonitor:
                         print("Connection closed by server")
                         break
 
-                    self.buffer += data.decode('utf-8')
+                    self.buffer += data.decode("utf-8")
                     self.process_buffer()
                     self.draw_screen()
 
@@ -264,5 +276,17 @@ class PortfolioMonitor:
 
 
 if __name__ == "__main__":
-    monitor = PortfolioMonitor()
+    # 100.92.227.117
+    # Add arg parse for host and port
+    parser = argparse.ArgumentParser(
+        description="Monitor the account provider debug server",
+        add_help=True,
+    )
+    parser.add_argument("--host", default="localhost", help="Host to connect to")
+    parser.add_argument(
+        "-p", "--port", default=9973, type=int, help="Port to connect to"
+    )
+    args = parser.parse_args()
+
+    monitor = PortfolioMonitor(args.host, args.port)
     monitor.run()

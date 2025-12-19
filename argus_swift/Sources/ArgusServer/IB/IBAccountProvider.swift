@@ -1,7 +1,5 @@
 import Foundation
 
-/// Shortable shares data helper
-/// Simplified version for Swift (full FTP integration not needed)
 class ShortableSharesData {
     private var symbolToConidMap: [String: Int] = [:]
     private let lock = NSLock()
@@ -35,7 +33,7 @@ class AccountProvider {
     private var symbolsToConids: [String: Int] = [:]
     let shortableSharesData = ShortableSharesData()
 
-    private var fakeSocket: FakeSocket!
+    private var fakeSocket: FakeSocketForIBKR!
 
     // Debug socket for streaming position updates (port 9973)
     private var debugSocket: Int32 = -1
@@ -59,7 +57,8 @@ class AccountProvider {
         print(String(repeating: "*", count: 50))
 
         // Create FakeSocket for receiving market data
-        self.fakeSocket = FakeSocket { [weak self] data in
+        // See FakeSocketForIBKR why this will be of type Any and the prior issues
+        self.fakeSocket = FakeSocketForIBKR { [weak self] data in
             self?.onMarketData(data)
         }
 
@@ -208,6 +207,7 @@ class AccountProvider {
             // Could be a ping
             if let str = data as? String, str == "$" { return }
             if let bytes = data as? Data, bytes == "$".data(using: .utf8) { return }
+            print("WARNING: Unexpected data received within AccountProvider ==> \(data)")
             return
         }
 
@@ -244,7 +244,7 @@ class AccountProvider {
         ibWss.writeProtectedAssets(Array(portfolio.keys))
     }
 
-    var socket: FakeSocket {
+    var socket: FakeSocketForIBKR {
         return fakeSocket
     }
 

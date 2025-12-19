@@ -1,22 +1,46 @@
-import time
+import argparse
 import socket
+import time
 import traceback
+
 from argus.capital._svr_utils import Protocol2Parser
 
+parser = argparse.ArgumentParser(
+    description="Monitor the account provider debug server",
+    add_help=True,
+)
+parser.add_argument("--host", default="localhost", help="Host to connect to")
+parser.add_argument("-p", "--port", default=9972, type=int, help="Port to connect to")
+parser.add_argument("--symbol", default="QQQ", help="Symbol to add")
+args = parser.parse_args()
+
+
 s = socket.socket()
-s.connect(('localhost', 9972))
-s.sendall(b'add=QQQ')
+s.connect((args.host, args.port))
+s.sendall("add={}".format(args.symbol).encode())
 time.sleep(0.1)
 # s.sendall(b'add=SPY')
 # s.sendall(b'conid=796056051')
-parser = Protocol2Parser(['bid', 'bid_size', 'ask', 'ask_size', 'last', 'last_size', 'shortable_shares', 'timestamp', 'transmission_time'])
+parser = Protocol2Parser(
+    [
+        "bid",
+        "bid_size",
+        "ask",
+        "ask_size",
+        "last",
+        "last_size",
+        "shortable_shares",
+        "timestamp",
+        "transmission_time",
+    ]
+)
 
 print("Waiting for data...")
 try:
     while True:
         data = s.recv(4096)
         if len(data) == 1:
-            print('Pinged by server, continuing...')
+            print("Pinged by server, continuing...")
             continue
 
         # '$' is the ping character if there is a collision which would be data[0] == 36
@@ -28,11 +52,16 @@ try:
             break
         try:
             result = parser.parse(data)
-            result_time = result.get('transmission_time', None)
-            server_time = result.get('timestamp', None)
+            result_time = result.get("transmission_time", None)
+            server_time = result.get("timestamp", None)
             print(result)
-            print('Since Timestamp:', time.time() - result_time if result_time else 'N/A')
-            print('Since Server Time:', time.time() - server_time if server_time else 'N/A')
+            print(
+                "Since Timestamp:", time.time() - result_time if result_time else "N/A"
+            )
+            print(
+                "Since Server Time:",
+                time.time() - server_time if server_time else "N/A",
+            )
         except Exception as e:
             print(f"Error parsing data: {e}")
             traceback.print_exc()
@@ -42,5 +71,5 @@ except KeyboardInterrupt:
 
 s.close()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     pass

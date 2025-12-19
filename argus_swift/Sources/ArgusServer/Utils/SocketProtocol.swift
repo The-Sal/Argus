@@ -121,6 +121,52 @@ class FakeSocket: ArgusSocket {
     }
 }
 
+
+class FakeSocketForIBKR: ArgusSocket{
+    var idx: String = "fake.ibkr"
+
+    let callback: (Any) -> Void
+
+    init(callback: @escaping (Any) -> Void) {
+        self.callback = callback
+    }
+
+    func sendallObject(_ obj: Any){
+        callback(obj)
+    }
+
+    func sendall(_ data: Data) throws {
+        /*
+        Within Python we have the ability to send any type via .sendall but
+        within swfit we cannot do this, moreover we cannot change the protocol
+        because other modules rely on it and is tightly integrated. Therefore we
+        are creating IBKR–Specific fake socket which will be a drop in replacement
+        but fix the bug where the AccountProvider data doesnt update because
+
+        1. Swift MKTDispatcher sends raw Protocol 2 Data to ALL clients (including FakeSocket)
+        2. FakeSocket.sendall() receives this Data and calls the callback with it
+        3. AccountProvider.onMarketData() expects IBKR_CapitalComMKTDataLive but gets Data
+        4. The guard let marketData = data as? IBKR_CapitalComMKTDataLive always fails
+        5. Function returns early, so position P&L never updates
+        The Python difference:
+        - Python MKTDispatcher checks client.idx != 'real'
+        - For fake sockets: sends the IBKR_CapitalComMKTDataLive object directly
+        - For real sockets: sends Protocol 2 packet
+        - So Python AccountProvider receives the expected object type
+        The Swift constraint:
+        ArgusSocket.sendall(_ data: Data) demands Data type, so we can't just send objects directly through the socket interface.
+        The real issue is architectural: Swift needs the same distinction Python makes - send different data types to fake vs real clients.
+        The socket protocol constrains what goes through the socket, but the dispatcher can choose what to send before calling sendall().
+
+        */
+    }
+
+    func close() {
+        // Nothing to close for fake socket
+    }
+}
+
+
 /// Socket-related errors
 enum SocketError: Error {
     case socketClosed

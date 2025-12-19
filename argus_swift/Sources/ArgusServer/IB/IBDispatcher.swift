@@ -244,6 +244,14 @@ class IBMKTDispatcher {
                     print("Sending packet: \(String(data: packet, encoding: .ascii) ?? "")")
                 }
 
+
+                // very tight integration see why in
+                // SocketProtocol.swift ==> FakeSocketForIBKR.swift
+                if client.idx == "fake.ibkr"{
+                    let fakeSocket = client as! FakeSocketForIBKR
+                    fakeSocket.sendallObject(ibkrData)
+                }
+
                 try client.sendall(packet)
             } catch {
                 print("Failed to send data to client: \(error)")

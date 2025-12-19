@@ -1,14 +1,13 @@
 import Foundation
 
-/// Thread-safe HTTP session for IBKR REST API
+/// Thread-safe HTTP session for IBKR REST API using HTTPClient
 class IBLockedSession {
-    private let session: URLSession
+    private let client: HTTPClient
     private let lock = NSLock()
     private var headers: [String: String]
 
     init(headers: [String: String]) {
-        let config = URLSessionConfiguration.default
-        self.session = URLSession(configuration: config)
+        self.client = HTTPClient()
         self.headers = headers
     }
 
@@ -16,82 +15,42 @@ class IBLockedSession {
         lock.lock()
         defer { lock.unlock() }
 
-        var urlComponents = URLComponents(string: url)!
+        var urlWithParams = url
         if let params = params {
-            urlComponents.queryItems = params.map { URLQueryItem(name: $0.key, value: $0.value) }
+            let queryString = params.map { "\($0.key)=\($0.value)" }.joined(separator: "&")
+            urlWithParams += "?\(queryString)"
         }
 
-        var request = URLRequest(url: urlComponents.url!)
-        for (key, value) in headers {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: (Data, HTTPURLResponse)?
-        var error: Error?
-
-        session.dataTask(with: request) { data, response, err in
-            if let err = err {
-                error = err
-            } else if let data = data, let httpResponse = response as? HTTPURLResponse {
-                result = (data, httpResponse)
-            }
-            semaphore.signal()
-        }.resume()
-
-        semaphore.wait()
-
-        if let error = error {
-            throw error
-        }
-
-        guard let result = result else {
-            throw IBError.invalidResponse
-        }
-
-        return result
+        let responseString = try client.get(url: urlWithParams, headers: headers)
+        let responseData = Data(responseString.utf8)
+        
+        // Return a default HTTPURLResponse since HTTPClient doesn't provide it
+        let httpResponse = HTTPURLResponse(url: URL(string: url)!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+        
+        return (responseData, httpResponse)
     }
 
     func post(url: String, json: [String: Any]? = nil) throws -> (Data, HTTPURLResponse) {
         lock.lock()
         defer { lock.unlock() }
 
-        var request = URLRequest(url: URL(string: url)!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        for (key, value) in headers {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-
+        var body: String? = nil
         if let json = json {
-            request.httpBody = try JSONSerialization.data(withJSONObject: json)
+            body = try String(data: JSONSerialization.data(withJSONObject: json), encoding: .utf8)
         }
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var result: (Data, HTTPURLResponse)?
-        var error: Error?
-
-        session.dataTask(with: request) { data, response, err in
-            if let err = err {
-                error = err
-            } else if let data = data, let httpResponse = response as? HTTPURLResponse {
-                result = (data, httpResponse)
-            }
-            semaphore.signal()
-        }.resume()
-
-        semaphore.wait()
-
-        if let error = error {
-            throw error
-        }
-
-        guard let result = result else {
-            throw IBError.invalidResponse
-        }
-
-        return result
+        let responseString = try client.post(
+            url: url,
+            headers: headers,
+            contentType: "application/json",
+            body: body
+        )
+        let responseData = Data(responseString.utf8)
+        
+        // Return a default HTTPURLResponse since HTTPClient doesn't provide it
+        let httpResponse = HTTPURLResponse(url: URL(string: url)!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: headers)!
+        
+        return (responseData, httpResponse)
     }
 }
 
