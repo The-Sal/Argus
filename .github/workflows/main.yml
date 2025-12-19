@@ -27,10 +27,6 @@ jobs:
           echo "url=$COMMIT_URL" >> $GITHUB_OUTPUT
           echo "Using commit URL: $COMMIT_URL"
 
-      - name: Install jq for JSON parsing
-        run: |
-          sudo apt-get update && sudo apt-get install -y jq
-
       - name: Trigger CI/CD Pipeline (Long Webhook)
         run: |
           echo "=========================================="
@@ -49,10 +45,8 @@ jobs:
           echo "[$(date +'%Y-%m-%d %H:%M:%S')] 📤 Sending request to long-webhook endpoint..."
 
           # Use --max-time 0 to disable timeout (will use job timeout-minutes instead)
-          # Use -s to disable progress meter so we can cleanly separate JSON response from metadata
           RESPONSE=$(curl \
             --max-time 0 \
-            -s \
             -X POST "$ENDPOINT" \
             -H "Content-Type: application/json" \
             -w "\n\n=== CURL METADATA ===\nHTTP Status: %{http_code}\nTotal Time: %{time_total}s\nConnect Time: %{time_connect}s\n" \
@@ -81,19 +75,12 @@ jobs:
           if [ $CURL_EXIT -eq 0 ]; then
             echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✅ Request completed successfully"
 
-            # Separate body and the curl metadata that we appended with -w
-            BODY=$(printf '%s\n' "$RESPONSE" | awk '/^=== CURL METADATA ===/{exit} {print}')
-            METADATA=$(printf '%s\n' "$RESPONSE" | awk '/^=== CURL METADATA ===/{flag=1; next} flag{print}')
+            # Extract and parse the JSON response for status
+            HTTP_STATUS=$(echo "$RESPONSE" | grep "HTTP Status:" | awk '{print $3}')
+            PIPELINE_STATUS=$(echo "$RESPONSE" | grep -o '"status": "[^"]*' | cut -d'"' -f4)
 
-            # Extract HTTP status from metadata (if present)
-            HTTP_STATUS=$(printf '%s\n' "$METADATA" | grep "HTTP Status:" | awk '{print $3}')
-
-            # Parse pipeline status using jq with fallback for nested structures
-            # .status or .pipeline.status are common shapes; jq -r returns "null" if not present so we coerce to empty string
-            PIPELINE_STATUS=$(printf '%s\n' "$BODY" | jq -r '.status // .pipeline.status // ""' 2>/dev/null || true)
-
-            echo "[$(date +'%Y-%m-%d %H:%M:%S')] HTTP Status Code: ${HTTP_STATUS:-<none>}"
-            echo "[$(date +'%Y-%m-%d %H:%M:%S')] Pipeline Status: ${PIPELINE_STATUS:-<none>}"
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] HTTP Status Code: $HTTP_STATUS"
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] Pipeline Status: $PIPELINE_STATUS"
 
             # Determine final exit code based on pipeline status
             if [ "$PIPELINE_STATUS" = "passed" ]; then
@@ -104,13 +91,7 @@ jobs:
               exit 1
             else
               echo "[$(date +'%Y-%m-%d %H:%M:%S')] ⚠️  Unknown pipeline status: $PIPELINE_STATUS"
-              # If HTTP returned non-2xx treat as failure, otherwise treat as unknown and fail so it gets attention
-              if [ -n "$HTTP_STATUS" ] && [ "$HTTP_STATUS" -ge 200 ] && [ "$HTTP_STATUS" -lt 300 ]; then
-                echo "[$(date +'%Y-%m-%d %H:%M:%S')] HTTP 2xx but no status field in response body. Failing for safety."
-                exit 1
-              else
-                exit 1
-              fi
+              exit 1
             fi
           else
             echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ Curl request failed with exit code: $CURL_EXIT"
