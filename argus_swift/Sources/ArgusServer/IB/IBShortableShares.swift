@@ -38,7 +38,7 @@ struct ShortableShareEntry{
 
     init(_ fromString: String) throws {
         let components = fromString.split(separator: "|")
-        guard components.count >= 8 else {
+        guard components.count >= 9 else {
             throw ShortableSharesError.invalidFormat(
                 "Invalid format for ShortableShares. Found \(components.count) components\nRaw=\(fromString)")
         }
@@ -80,17 +80,28 @@ class ShortableSharesData {
 
     func downloadShortableShares() throws -> ShortableShareFastDB {
         print("Please wait while downloading shortable shares...")
-        let rawContent = try HTTPClient().ftp(url: self.ibkrFtp, username: self.username, password: self.password)
-        let rawData: [ShortableShareEntry] = rawContent.components(separatedBy: "\n").compactMap({
+        let rawContent = try HTTPClient().ftp(url: self.ibkrFtp, username: self.username, password: self.password).replacingOccurrences(of: "\r", with: "")
+        let rawData = rawContent.components(separatedBy: "\n")
+        let shares: [ShortableShareEntry] = rawData.compactMap({
             do{
                 return try ShortableShareEntry.init($0)
+
             } catch {
                 print("Error parsing ShortableShareEntry: \(error)")
                 return nil
             }
         })
-        print("Shortable shares downloaded successfully")
-        return ShortableShareFastDB(entries: rawData)
+
+        if rawData.count == 1{
+            print("WARNING: Edge case triggered, dumping logs")
+            print("RAW Data:")
+            print(rawData)
+            print("Raw Content:")
+            print(rawContent)
+        }
+
+        print("Shortable shares downloaded successfully. Total entries: \(rawData.count)")
+        return ShortableShareFastDB(entries: shares)
     }
 
     init(){

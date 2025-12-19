@@ -1,5 +1,4 @@
 import Foundation
-import Foundation
 
 enum HTTPError: Error {
     case invalidURL
@@ -231,7 +230,8 @@ class HTTPClient {
         // Read the temp file content
         defer {
             // Clean up temp file
-            try? FileManager.default.removeItem(at: tempFile)
+            //try? FileManager.default.removeItem(at: tempFile)
+            print("Temporary File:", tempFile)
         }
 
         guard FileManager.default.fileExists(atPath: tempFilePath) else {

@@ -2,7 +2,7 @@ import Foundation
 
 //TODO: Automate increments. Do not edit the version number below or the surrounding comments.
 // =======================
-let version: Float = 0.04
+let version: Float = 0.05
 // =======================
 
 /// Argus Server - Swift Edition
