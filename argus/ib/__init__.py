@@ -613,6 +613,7 @@ class AccountProvider:
         # Represents the current portfolio as a dictionary of conid to STK_Position
         # STK_Positions are lively updated via market data callbacks
         self._portfolio = {}
+        # noinspection all
         self._account_balances: AccountBalances = None
 
         self._symbols_to_conids = {}
@@ -725,6 +726,16 @@ class AccountProvider:
             pnl = (enforce_currency(data.last) - cost) * float(position.position)
             position.formatted_unrealized_pnl = f"{pnl:.2f}"
             position.unrealized_pnl = pnl
+
+            # Fix for bug #41 – Market Value is not updated only unrealised PnL is updated
+            # Distinction between market value and market price
+            # is based on a common consensus where
+            # market value = last price * position size
+            # market price = last price
+            position.mkt_value = float(data.last) * float(position.position)
+            position.mkt_price = float(data.last)
+
+
             self._transmit(position)
 
     def required_assets(self) -> list[int]:
