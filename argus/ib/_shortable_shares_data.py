@@ -4,16 +4,38 @@ import logging
 import subprocess
 import urllib.request
 import tempfile
+from typing import Dict, List, Optional
 from argus.capital import DomainCache
 
 _cache = DomainCache('ib.short')
 
+
+class ShortableShareEntry:
+    def __init__(self, data: str):
+        parts = data.split('|')
+        if len(parts) != 10:
+            raise ValueError(f'Unexpected data format: {data}')
+        self.symbol = parts[0].strip()
+        self.conid = int(parts[3])
+        self.shares = parts[7].strip()
+        # Additional fields can be added here if needed
+
+class ShortableShareFastDB:
+    def __init__(self, entries: List[ShortableShareEntry]):
+        self.entries = entries
+        self.symbol_to_entry: Dict[str, int] = {}
+        self.conid_to_entry: Dict[int, int] = {}
+        
+        for idx, entry in enumerate(entries):
+            self.symbol_to_entry[entry.symbol] = idx
+            self.conid_to_entry[entry.conid] = idx
 
 class ShortableSharesData:
     def __init__(self):
         # URL of the FTP file containing shortable shares data
         self._ftp_url = 'ftp://shortstock:@ftp2.interactivebrokers.com/usa.txt'
         self._server_path = '/Volumes/ftp2.interactivebrokers.com/usa.txt'
+        self._fast_db: Optional[ShortableShareFastDB] = None
         self._check_and_connect()
 
     def _check_and_connect(self, timeout=60):
@@ -51,7 +73,7 @@ class ShortableSharesData:
             raise
         return cache_file
 
-    def _raw_get_shortable_shares(self, symbol):
+    def _raw_get_shortable_shares(self, symbol: str) -> str:
         """Fetches shortable shares data from the local cached file.
         The file is downloaded via HTTP if not already present."""
         # Ensure local cache
@@ -65,78 +87,81 @@ class ShortableSharesData:
                 if line.startswith(f'{symbol.upper()}|'):
                     return line.strip()
         raise subprocess.CalledProcessError(1, 'grep', f'Symbol {symbol} not found')
+        
+    def _build_fast_db(self, content: str) -> ShortableShareFastDB:
+        """Builds a fast lookup database from the shortable shares data."""
+        entries = []
+        with open(content, 'r') as f:
+            for line in f:
+                if not line.startswith('#'):  # Skip comments
+                    entries.append(ShortableShareEntry(line))
+        return ShortableShareFastDB(entries)
 
     @_cache.cache_decorator('get_shortable_shares', expiration=60 * 60 * 48)  # Cache for 48 hours
-    def get_shortable_shares(self, symbol):
+    def get_shortable_shares(self, symbol: str) -> float:
         """Fetches shortable shares data for a given symbol.
         For symbols >10 Million shares caps at 10 Million. for shares <X returns X-1."""
+        if self._fast_db is None:
+            content = self._download_file()
+            self._fast_db = self._build_fast_db(content)
+        
         try:
-            raw_data = self._raw_get_shortable_shares(symbol)
-            parts = raw_data.split('|')
-            if len(parts) != 10:
-                raise ValueError(f'Unexpected data format: {raw_data}')
-            found_symbol = parts[0].strip()
-            shares = parts[7]
+            idx = self._fast_db.symbol_to_entry.get(symbol.upper())
+            if idx is None:
+                raise subprocess.CalledProcessError(1, 'grep', f'Symbol {symbol} not found')
+            
+            entry = self._fast_db.entries[idx]
+            shares = entry.shares
             if '>' in shares:
-                shares = float(shares.split('>')[1].strip())
+                return float(shares.split('>')[1].strip())
             elif '<' in shares:
-                shares = float(shares.split('<')[0].strip()) - 1
-
-            if found_symbol != symbol.upper():
-                raise ValueError(f'Symbol mismatch: {found_symbol} != {symbol.upper()}')
-
-            return shares
-        except subprocess.CalledProcessError:
+                return float(shares.split('<')[0].strip()) - 1
+            else:
+                return float(shares)
+        except (subprocess.CalledProcessError, ValueError) as e:
             logging.error('No shortable shares data found for symbol: %s', symbol)
             return 0.0
 
-    @_cache.cache_decorator('get_shortable_shares')
-    def get_shortable_shares_by_conid(self, conid):
+    @_cache.cache_decorator('get_shortable_shares_by_conid', expiration=60 * 60 * 48)
+    def get_shortable_shares_by_conid(self, conid: int) -> float:
         """Fetches shortable shares data for a given conid.
         For symbols >10 Million shares caps at 10 Million. for shares <X returns X-1."""
-        try:
-            # Use cached file and search for conid
+        if self._fast_db is None:
             content = self._download_file()
-            with open(content, 'r') as f:
-                for line in f:
-                    if f'|{conid}|' in line:
-                        raw_data = line.strip()
-                        break
-                else:
-                    raise subprocess.CalledProcessError(1, 'grep', f'Conid {conid} not found')
-            parts = raw_data.split('|')
-            if len(parts) != 10:
-                raise ValueError(f'Unexpected data format: {raw_data}')
-            found_conid = parts[3].strip()
-            shares = parts[7]
-            if '>' in shares:
-                shares = float(shares.split('>')[1].strip())
-            elif '<' in shares:
-                shares = float(shares.split('<')[0].strip()) - 1
-
-            if found_conid != str(conid):
-                raise ValueError(f'Conid mismatch: {found_conid} != {conid}')
-
-            return shares
-        except subprocess.CalledProcessError:
+            self._fast_db = self._build_fast_db(content)
+        
+        try:
+            idx = self._fast_db.conid_to_entry.get(conid)
+            if idx is None:
+                raise subprocess.CalledProcessError(1, 'grep', f'Conid {conid} not found')
+            
+            entry = self._fast_db.entries[idx]
+            shares_str = entry.shares
+            if '>' in shares_str:
+                return float(shares_str.split('>')[1].strip())
+            elif '<' in shares_str:
+                return float(shares_str.split('<')[0].strip()) - 1
+            else:
+                return float(shares_str)
+        except (subprocess.CalledProcessError, ValueError) as e:
             logging.error('No shortable shares data found for conid: %s', conid)
             return 0.0
 
     @_cache.cache_decorator('translate_symbol_to_conid', should_cache_function=lambda x: x is not None)
-    def translate_symbol_to_conid(self, symbol):
+    def translate_symbol_to_conid(self, symbol: str) -> Optional[int]:
         """Translates a symbol to its corresponding conid using the shortable shares data."""
+        if self._fast_db is None:
+            content = self._download_file()
+            self._fast_db = self._build_fast_db(content)
+        
         try:
-            raw_data = self._raw_get_shortable_shares(symbol)
-            parts = raw_data.split('|')
-            if len(parts) != 10:
-                raise ValueError(f'Unexpected data format: {raw_data}')
-            found_symbol = parts[0].strip()
-            conid = parts[3].strip()
-            if found_symbol != symbol.upper():
-                raise ValueError(f'Symbol mismatch: {found_symbol} != {symbol.upper()}')
-
-            return int(conid)
-        except subprocess.CalledProcessError:
+            idx = self._fast_db.symbol_to_entry.get(symbol.upper())
+            if idx is None:
+                raise subprocess.CalledProcessError(1, 'grep', f'Symbol {symbol} not found')
+            
+            entry = self._fast_db.entries[idx]
+            return entry.conid
+        except (subprocess.CalledProcessError, ValueError) as e:
             logging.error('No shortable shares data found for symbol: %s', symbol)
             return None
 
