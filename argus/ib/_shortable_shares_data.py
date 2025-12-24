@@ -2,6 +2,8 @@ import os
 import time
 import logging
 import subprocess
+import urllib.request
+import tempfile
 from argus.capital import DomainCache
 
 _cache = DomainCache('ib.short')
@@ -9,34 +11,60 @@ _cache = DomainCache('ib.short')
 
 class ShortableSharesData:
     def __init__(self):
-        self._server_addr = 'ftp://shortstock:@ftp2.interactivebrokers.com'
+        # URL of the FTP file containing shortable shares data
+        self._ftp_url = 'ftp://shortstock:@ftp2.interactivebrokers.com/usa.txt'
         self._server_path = '/Volumes/ftp2.interactivebrokers.com/usa.txt'
         self._check_and_connect()
 
     def _check_and_connect(self, timeout=60):
-        if 'ftp2.interactivebrokers.com' in os.listdir('/Volumes'):
-            logging.info('Shortable shares FTP server is already mounted.')
-            return
-        logging.info('Mounting shortable shares FTP server...')
-        subprocess.check_call(['open', '-a', 'Finder', self._server_addr])
-        for _ in range(timeout * 100):
-            time.sleep(1 / 100)
-            if 'ftp2.interactivebrokers.com' in os.listdir('/Volumes'):
-                try:
-                    _ = self._raw_get_shortable_shares('AAPL')
-                except subprocess.CalledProcessError:
-                    continue
-                break
+        """Ensure the shortable shares data is available.
+        For cross‑platform support we simply attempt to download the file via HTTP
+        and cache it locally. If the download fails we log a warning.
+        """
+        try:
+            self._download_file()
+        except Exception as e:
+            logging.warning(f'Could not access shortable shares data: {e}')
+        # No further action needed; subsequent calls will download as required.
+
+
+    def _download_file(self):
+        """Download the shortable shares file via HTTP and cache it locally.
+
+        Returns the file path to the cached copy.  The function is idempotent – if the
+        file already exists and is fresh (less than 48 h old) it will be reused.
+        """
+        cache_dir = os.path.join(tempfile.gettempdir(), 'argus_shortable')
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_file = os.path.join(cache_dir, 'usa.txt')
+
+        # If cached file is recent, use it.
+        if os.path.exists(cache_file):
+            age = time.time() - os.path.getmtime(cache_file)
+            if age < 48 * 3600:  # 48 hours
+                return cache_file
+        try:
+            logging.info('Downloading shortable shares data from FTP…')
+            urllib.request.urlretrieve(self._ftp_url, cache_file)
+        except Exception as e:
+            logging.error(f'Failed to download shortable shares: {e}')
+            raise
+        return cache_file
 
     def _raw_get_shortable_shares(self, symbol):
-        """Fetches shortable shares data directly from the FTP server.
-        Does not parse the data. INTERNAL USE ONLY."""
-        logging.debug(f'Fetching shortable shares for {symbol.upper()} from {self._server_path}')
-        return subprocess.check_output([
-            'grep',
-            f'^{symbol.upper()}|',
-            self._server_path
-        ], stderr=subprocess.DEVNULL).decode('utf-8').strip()
+        """Fetches shortable shares data from the local cached file.
+        The file is downloaded via HTTP if not already present."""
+        # Ensure local cache
+        try:
+            content = self._download_file()
+        except Exception as e:
+            raise subprocess.CalledProcessError(1, 'download', str(e))
+        # Search for the symbol line
+        with open(content, 'r') as f:
+            for line in f:
+                if line.startswith(f'{symbol.upper()}|'):
+                    return line.strip()
+        raise subprocess.CalledProcessError(1, 'grep', f'Symbol {symbol} not found')
 
     @_cache.cache_decorator('get_shortable_shares', expiration=60 * 60 * 48)  # Cache for 48 hours
     def get_shortable_shares(self, symbol):
@@ -67,11 +95,15 @@ class ShortableSharesData:
         """Fetches shortable shares data for a given conid.
         For symbols >10 Million shares caps at 10 Million. for shares <X returns X-1."""
         try:
-            raw_data = subprocess.check_output([
-                'grep',
-                f'|{conid}|',
-                self._server_path
-            ], stderr=subprocess.DEVNULL).decode('utf-8').strip()
+            # Use cached file and search for conid
+            content = self._download_file()
+            with open(content, 'r') as f:
+                for line in f:
+                    if f'|{conid}|' in line:
+                        raw_data = line.strip()
+                        break
+                else:
+                    raise subprocess.CalledProcessError(1, 'grep', f'Conid {conid} not found')
             parts = raw_data.split('|')
             if len(parts) != 10:
                 raise ValueError(f'Unexpected data format: {raw_data}')
