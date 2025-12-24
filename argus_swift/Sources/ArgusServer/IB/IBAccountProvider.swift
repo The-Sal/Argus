@@ -205,11 +205,13 @@ class AccountProvider {
         }
 
         let cost = enforceCurrency(position.avgCost)
-        if marketData.last != 0 {
-            let pnl = (enforceCurrency(marketData.last) - cost) * position.position
-            position.formattedUnrealizedPnl = String(format: "%.2f", pnl)
-            position.unrealizedPnl = pnl
-            transmit(position: position)
+if marketData.last != 0 {
+             let pnl = (enforceCurrency(marketData.last) - cost) * position.position
+             position.formattedUnrealizedPnl = String(format: "%.2f", pnl)
+             position.unrealizedPnl = pnl
+             position.mktPrice = marketData.last
+             position.mktValue = marketData.last * position.position
+             transmit(position: position)
         }
     }
 
