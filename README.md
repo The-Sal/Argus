@@ -86,54 +86,8 @@ A **Dispatcher** is a server that:
 | `capital.com` | Capital.com | Unix Socket | `/tmp/argus_capital.sock` | [CAPITAL.md](docs/CAPITAL.md) |
 | `binance` | Binance | TCP | 9982 | [BINANCE.md](docs/BINANCE.md) |
 
-### Dispatcher Lifecycle
-
-```
-┌─────────────────┐
-│ Client connects │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ Client: add=AAPL        │
-└────────┬────────────────┘
-         │
-         ▼
-┌──────────────────────────────────┐
-│ Dispatcher subscribes to AAPL    │
-│ (if not already subscribed)      │
-└────────┬─────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────┐
-│ Market data flows to client      │
-│ in Protocol 2 format             │
-└────────┬─────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────┐
-│ Client disconnects               │
-└────────┬─────────────────────────┘
-         │
-         ▼
-┌──────────────────────────────────┐
-│ Dispatcher auto-unsubscribes     │
-│ (if no other clients need AAPL)  │
-└──────────────────────────────────┘
-```
 
 ## Protocol 2 (P2): The Universal Data Format
-
-### Why Protocol 2?
-
-Protocol 2 is a **custom binary protocol** designed for efficient, standardized market data transmission. It solves a critical problem: each financial data source provides data in different formats (JSON, CSV, binary), making it difficult to build unified systems.
-
-**P2 provides:**
-- **Unified format** across all dispatcher-based sources (IB, Binance, Capital.com)
-- **Minimal overhead** (binary encoding, single-pass parsing)
-- **Extensibility** (add new fields without breaking clients)
-- **Type safety** (well-defined field ordering and validation)
-- **Performance** (O(n) time complexity, no JSON parsing)
 
 ### Protocol 2 Packet Format
 
@@ -442,58 +396,12 @@ with NASDAQDataDownloader(headless=True) as downloader:
 - **Dependencies**: See `requirements.txt`
 - **Optional**: Firefox + geckodriver (for NASDAQ module)
 
-## Project Structure
-
-```
-Argus/
-├── argus/                      # Main package directory
-│   ├── ib/                     # Interactive Brokers module
-│   │   ├── __init__.py         # IBWss, MKTDispatcher
-│   │   ├── forecast.py         # FXCDispatcher for forecasting contracts
-│   │   ├── _ib_utils.py        # Utilities, FakeSocket pattern
-│   │   └── fields.py           # IBKR field definitions
-│   ├── capital/                # Capital.com module
-│   │   ├── __init__.py         # MKTDispatcher (UDS)
-│   │   ├── client.py           # CapitalComClient
-│   │   └── _svr_utils.py       # Protocol 2 parser
-│   ├── binance/                # Binance cryptocurrency module
-│   │   ├── __init__.py         # BinanceWss, BinanceMKTDispatcher
-│   │   └── _classes.py         # Data classes
-│   ├── polymarket/             # Polymarket (stub)
-│   ├── polymarket_direct/      # Direct Polymarket integration
-│   │   ├── __init__.py         # EnhancedPM client
-│   │   └── _types.py           # Event, Market data models
-│   ├── nasdaq/                 # NASDAQ data downloader
-│   │   └── __init__.py         # NASDAQDataDownloader (Selenium)
-│   ├── tv/                     # TradingView integration
-│   │   ├── __init__.py         # QuoteSession, ChartSession
-│   │   └── multisymbol.py      # Multi-symbol support
-│   ├── cache_utils/            # Caching infrastructure
-│   │   └── __init__.py         # CacheInspector, transparent cache
-│   └── _argus_utils.py         # Notifications, Introspective base
-├── tests/                      # Test files
-├── docs/                       # Module documentation
-│   ├── IB.md                   # Interactive Brokers docs
-│   ├── CAPITAL.md              # Capital.com docs
-│   ├── BINANCE.md              # Binance docs
-│   ├── POLYMARKET.md           # Polymarket docs
-│   ├── TV.md                   # TradingView docs
-│   ├── NASDAQ.md               # NASDAQ docs
-│   └── CACHE.md                # Cache system docs
-├── runtime.py                  # Main dispatcher launcher
-├── setup.py                    # Package setup
-└── requirements.txt            # Dependencies
-```
 
 ## Contributing
 
 Argus is under active development. Current efforts:
 
 **Swift Transcompilation**: There is an ongoing transcompilation effort from Python to Swift in the `argus-swift` branch. Python remains the primary source code - all patches and updates are applied to Python first, with Swift playing catchup through manual transcompilation. Python is not going anywhere.
-
-## License
-
-See `LICENSE` file for details.
 
 ## Support
 
