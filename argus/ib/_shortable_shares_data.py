@@ -1,15 +1,14 @@
-import logging
 import os
-import subprocess
-import tempfile
 import time
+import logging
+import tempfile
+import subprocess
 import urllib.request
+from argus.capital import DomainCache
 from typing import Dict, List, Optional
 
-from argus.capital import DomainCache
 
 _cache = DomainCache("ib.short")
-
 
 class ShortableShareEntry:
     def __init__(self, data: str):
@@ -90,7 +89,8 @@ class ShortableSharesData:
                     return line.strip()
         raise subprocess.CalledProcessError(1, "grep", f"Symbol {symbol} not found")
 
-    def _build_fast_db(self, content: str) -> ShortableShareFastDB:
+    @staticmethod
+    def _build_fast_db(content: str) -> ShortableShareFastDB:
         """Builds a fast lookup database from the shortable shares data."""
         entries = []
         with open(content, "r") as f:
