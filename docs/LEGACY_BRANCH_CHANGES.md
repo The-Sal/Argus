@@ -254,7 +254,7 @@ People on the legacy branch are missing out on over a month of active developmen
 2. **Security updates** that protect against known vulnerabilities
 3. **Memory leak fix** prevents inevitable crashes
 4. **Performance improvements** reduce resource usage by 30x
-5. **46 commits** of improvements and fixes
+5. **100+ commits** of improvements and fixes
 
 ### Migration Path
 
