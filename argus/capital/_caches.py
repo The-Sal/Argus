@@ -177,6 +177,7 @@ class DomainCache:
                 # remove args that have 'object at' in them these are dynamic objects that should not be cached
                 key = self.generate_key(func_uuid, *args, **kwargs)
                 try:
+                    logging.info("Cache hit for key: {}".format(key))
                     return self.get(key)
                 except NotKey:
                     result = func(*args, **kwargs)
