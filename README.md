@@ -2,6 +2,8 @@
 
 ![CI/CD Status](https://github.com/The-Sal/Argus/workflows/Manual%20CI%2FCD%20Trigger/badge.svg)
 
+> **⚠️ IMPORTANT:** If you're on the `legacy/polymarket-dispatcher` branch, please read the [Legacy Branch Analysis](docs/LEGACY_BRANCH_CHANGES.md) which documents critical bug fixes, security updates, and features you're missing. **Migration strongly recommended.**
+
 **Argus** aims to be a high-performance financial market data aggregation system built around a server-client architecture. It provides unified access to multiple financial data sources through a custom Protocol 2 (P2) binary protocol for efficient, standardized data transmission.
 
 ----
