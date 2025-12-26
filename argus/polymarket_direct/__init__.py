@@ -60,21 +60,22 @@ class EnhancedPM:
         _ = (private_key, proxy_funder,  host, chain_id, dry_mode)
 
         # if not dry_mode:
-            # super().__init__(
-            #     host,
-            #     key=private_key,
-            #     chain_id=chain_id,
-            #     signature_type=1,
-            #     funder=proxy_funder,
-            # )
-            # self.set_api_creds(self.create_or_derive_api_creds())
+        #     super().__init__(
+        #         host,
+        #         key=private_key,
+        #         chain_id=chain_id,
+        #         signature_type=1,
+        #         funder=proxy_funder,
+        #     )
+        #     self.set_api_creds(self.create_or_derive_api_creds())
+
         self.max_socket_retries = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', max_socket_retries))
         self.bd = order_book_depth
         self.user_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/user')
         self.session = requests.Session()
         self.idx_to_callback = {}
         self.ws_messages = []
-        
+
         # Rolling mechanism configuration
         # Addresses issue #20: Unbounded memory growth due to lack of rolling mechanism
         # See commit e518e24 for initial rolling implementation
@@ -84,7 +85,7 @@ class EnhancedPM:
         self._write_interval = int(os.environ.get('POLYMARKET_WRITE_INTERVAL', '30'))
         self.uuid = str(uuid.uuid4())
         self.message_seg_id = 0
-        
+
         self._write_messages_to_file()
         self.ws_errors = 0
         # noinspection PyTypeChecker
@@ -209,16 +210,16 @@ class EnhancedPM:
         """
         while self._enable_rolling:
             time.sleep(self._write_interval)
-            
+
             # Check if rolling is enabled and we've exceeded the message count
             if len(self.ws_messages) > self._max_message_count:
                 print(f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
                 self.rollover_message_segment()
-            
+
             # Only write if we have messages
             if not self.ws_messages:
                 continue
-                
+
             # Generate filename based on rolling mechanism
             current_filename = self.unique_file_name('ws_messages', 'fk')
             with open(current_filename, 'w') as f:
