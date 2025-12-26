@@ -4,7 +4,7 @@
 
 ## TL;DR
 
-The `legacy/polymarket-dispatcher` branch is **36 days behind** main and missing **critical bug fixes**.
+The `legacy/polymarket-dispatcher` branch is **36 days behind** main (100+ commits) and missing **critical bug fixes**.
 
 ### 🔴 CRITICAL Issues You're Missing:
 
@@ -14,7 +14,7 @@ The `legacy/polymarket-dispatcher` branch is **36 days behind** main and missing
 4. **Crashes** - SIGPIPE bug #36 causes disconnection crashes
 
 ### Statistics:
-- **46 commits behind**
+- **100+ commits behind**
 - **10 critical/high bugs fixed**
 - **30x performance improvement** (I/O)
 - **1 security update**

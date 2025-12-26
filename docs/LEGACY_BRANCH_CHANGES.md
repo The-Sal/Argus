@@ -7,7 +7,7 @@
 ## Executive Summary
 
 The `legacy/polymarket-dispatcher` branch diverged from the main development line on **November 20, 2025** (commit `01cbe348`). Since then, the main branch has received **significant updates** including:
-- **46 commits** worth of changes
+- **100+ commits** worth of changes
 - Multiple critical bug fixes
 - New features and improvements
 - Security updates
@@ -298,7 +298,7 @@ People on the legacy branch are missing out on over a month of active developmen
 
 ## Statistics
 
-- **Total commits on main since divergence:** 46
+- **Total commits on main since divergence:** 100+
 - **Critical bugs fixed:** 4
 - **High-priority bugs fixed:** 6
 - **New features added:** 5+
