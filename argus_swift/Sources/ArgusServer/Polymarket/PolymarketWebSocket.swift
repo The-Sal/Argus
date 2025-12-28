@@ -1,8 +1,4 @@
 import Foundation
-#if canImport(FoundationNetworking)
-import FoundationNetworking
-#endif
-
 // MARK: - Polymarket Direct WebSocket & API
 // Transcompiled from argus/polymarket_direct/__init__.py
 

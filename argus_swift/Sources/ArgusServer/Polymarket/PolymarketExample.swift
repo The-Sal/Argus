@@ -4,6 +4,45 @@ import Foundation
 // Simplified transcompilation of argus/polymarket_direct/_example.py
 // Demonstrates basic usage of EnhancedPM without full streaming infrastructure
 
+
+func fetchAllHourlyBtcMarkets(enhancedPM: EnhancedPM) -> [PolymarketEvent] {
+    var allBitcoinHourly: [PolymarketEvent] = []
+    var totalFetched = 0
+    let offsetStep = 150
+
+    for offset in stride(from: 0, to: 5000, by: offsetStep) {
+        do {
+            let events = try enhancedPM.fetchEvents(offset: offset, limit: offsetStep)
+            totalFetched += events.count
+
+            if events.isEmpty {
+                break
+            }
+
+            // Filter for bitcoin hourly markets
+            for event in events {
+                if let ticker = event.ticker,
+                   ticker.contains("bitcoin-up-or-down") && ticker.contains("-et") {
+                    allBitcoinHourly.append(event)
+                }
+            }
+
+            print("Fetched \(totalFetched) markets, total bitcoin hourly: \(allBitcoinHourly.count)")
+            if allBitcoinHourly.count >= 50{
+                print("Found \(allBitcoinHourly.count) bitcoin hourly markets, exiting early...")
+                return allBitcoinHourly
+            }
+
+        } catch {
+            print("Error fetching events: \(error)")
+            break
+        }
+    }
+
+    return allBitcoinHourly
+}
+
+
 func polymarketExampleUsage() {
     print("=== Polymarket Direct Example ===\n")
 
@@ -23,34 +62,7 @@ func polymarketExampleUsage() {
 
     // Fetch bitcoin hourly markets
     print("Fetching bitcoin hourly markets...")
-    var allBitcoinHourly: [PolymarketEvent] = []
-    var totalFetched = 0
-    let offsetStep = 150
-
-    for offset in stride(from: 0, to: 1000, by: offsetStep) {
-        do {
-            let events = try enhancedPM.fetchEvents(offset: offset, limit: offsetStep)
-            totalFetched += events.count
-
-            if events.isEmpty {
-                break
-            }
-
-            // Filter for bitcoin hourly markets
-            for event in events {
-                if let ticker = event.ticker,
-                   ticker.contains("bitcoin-up-or-down") && ticker.contains("-et") {
-                    allBitcoinHourly.append(event)
-                }
-            }
-
-            print("Fetched \(totalFetched) markets, total bitcoin hourly: \(allBitcoinHourly.count)")
-
-        } catch {
-            print("Error fetching events: \(error)")
-            break
-        }
-    }
+    let allBitcoinHourly = fetchAllHourlyBtcMarkets(enhancedPM: enhancedPM)
 
     print("\nFound \(allBitcoinHourly.count) bitcoin hourly markets")
 
