@@ -29,6 +29,7 @@ from argus.capital import DomainCache
 from websocket import WebSocketApp
 # from py_clob_client.client import ClobClient
 from argus.polymarket_direct._types import PolymarketEvent
+from argus.wireproxy.wrapper import start_proxy_aware_ws, update_request_session_proxy
 
 dCache = DomainCache('polymarket_direct')
 
@@ -73,6 +74,10 @@ class EnhancedPM:
         self.bd = order_book_depth
         self.user_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/user')
         self.session = requests.Session()
+        update_request_session_proxy(
+            'POLYMARKET',
+            self.session
+        )
         self.idx_to_callback = {}
         self.ws_messages = []
 
@@ -289,7 +294,8 @@ class EnhancedPM:
 
     @runAsThread
     def start_market_ws(self):
-        self.market_ws.run_forever()
+        # self.market_ws.run_forever()
+        start_proxy_aware_ws('POLYMARKET', self.market_ws)
 
 
 if __name__ == '__main__':

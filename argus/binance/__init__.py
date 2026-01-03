@@ -1,5 +1,4 @@
 import json
-import pprint
 import uuid
 import time
 import socket
@@ -8,6 +7,7 @@ import threading
 import traceback
 from utils3 import runAsThread
 from websocket import WebSocketApp
+from argus.wireproxy.wrapper import start_proxy_aware_ws
 from argus._argus_utils import throw_fuss, Introspective
 from argus.capital import transmit_mkt_data_with_protocol_2
 from argus.binance._classes import (DepthUpdate, DepthStreamMessage, AggTradeMessage,
@@ -100,14 +100,15 @@ class BinanceWss:
 
     @staticmethod
     def _craft_msg(symbol: str, auto_dump=True, method="SUBSCRIBE", idx=1) -> dict | str:
+        _ = idx  # idx is unused but kept for compatibility
         symbol = symbol.lower()
         msg = {
             "method": method,
             "params": [
-                symbol+"@aggTrade",
-                symbol+"@depth@100ms",
-                symbol+"@kline_1s",
-                symbol+"@bookTicker"
+                symbol + "@aggTrade",
+                symbol + "@depth@100ms",
+                symbol + "@kline_1s",
+                symbol + "@bookTicker"
             ],
             "id": method
         }
@@ -185,7 +186,6 @@ class BinanceWss:
             print("Error processing WebSocket message:", e)
             traceback.print_exc()
 
-
     # noinspection PyUnusedLocal
     def _on_error(self, ws, error):
         print("WebSocket error:", error)
@@ -225,7 +225,10 @@ class BinanceWss:
 
     @runAsThread
     def run_ws_forever(self):
-        self.ws.run_forever()
+        start_proxy_aware_ws(
+            idx='BINANCE',
+            websocket=self.ws
+        )
 
     @runAsThread
     def auto_message_dumper(self):
