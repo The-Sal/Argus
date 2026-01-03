@@ -1,12 +1,13 @@
 # Polymarket DISPATCHER
 
 * [Pull Request](https://github.com/The-Sal/Argus/pull/52)
-* [polymarket_direct](docs/POLYMARKET.md)
+* [polymarket_direct](../docs/POLYMARKET.md)
+
 
 # Overview
 This dispatcher is the re-write of the original Polymarket Dispatcher that's been appreciated way back in `01cbe34`, and now only available on
 `legacy/polymarket-dispatcher` branch. Unlike the old dispatcher which was built on top of `py_clob_client` and it's APIs, this
-new one is built completely on top of `polymarket_direct` module and actually [works](argus/polymarket_direct/__init__.py).
+new one is built completely on top of `polymarket_direct` module and actually [works](../argus/polymarket_direct/__init__.py).
 
 # API
 ## Features
