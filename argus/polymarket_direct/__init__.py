@@ -28,6 +28,7 @@ from utils3 import runAsThread
 from argus.capital import DomainCache
 from websocket import WebSocketApp
 # from py_clob_client.client import ClobClient
+from argus.wireproxy.wrapper import start_proxy_aware_ws
 from argus.polymarket_direct._types import PolymarketEvent
 
 dCache = DomainCache('polymarket_direct')
@@ -288,7 +289,8 @@ class EnhancedPM:
 
     @runAsThread
     def start_market_ws(self):
-        self.market_ws.run_forever()
+        # self.market_ws.run_forever()
+        start_proxy_aware_ws('POLYMARKET', self.market_ws)
 
 
 if __name__ == '__main__':

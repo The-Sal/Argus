@@ -39,11 +39,11 @@ In addition, the following utilities will also be available via py -m argus.wire
 """
 
 import os
+import time
 import json
 import socket
 import platform
 import subprocess
-import time
 from datetime import datetime
 from utils3 import Container, runAsThread
 from argus.wireproxy._utils import download
