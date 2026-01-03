@@ -116,6 +116,9 @@ Components:
 8. `timestamp` - Data source timestamp (Unix epoch)
 9. `transmission_time` - Argus transmission timestamp (Unix epoch)
 
+_This is not consistent with every data source, some may use different ordering or omissions. See each
+ dispatcher's documents for details._
+
 ### Example Packet
 
 ```
@@ -149,6 +152,8 @@ parser = Protocol2Parser([
 # Parse a packet
 result = parser.parse(data)
 # Returns: {'symbol': 'AAPL', 'bid': 150.25, 'bid_size': 1000, ...}
+# The array [...] defines the expected fields and their order should be
+# consistent with the dispatcher's output
 ```
 
 ### Why Not JSON?
@@ -163,25 +168,6 @@ result = parser.parse(data)
 
 For high-frequency trading and real-time analytics, Protocol 2's efficiency is critical.
 
-### P2 Design Philosophy
-
-Protocol 2 was designed with three goals:
-
-1. **Efficiency** - Minimal bandwidth and parsing overhead for high-frequency data
-2. **Standardization** - Unified format across disparate data sources
-3. **Simplicity** - Easy to implement in any programming language
-
-The result is a protocol that's:
-- **Fast** - Single-pass O(n) parsing
-- **Compact** - ~70 bytes vs. ~200 bytes for JSON
-- **Extensible** - Can add fields without breaking existing clients
-- **Universal** - Same format for stocks (IB), crypto (Binance), forex (Capital.com)
-
-This standardization enables:
-- Writing once, consuming from multiple sources
-- Building polyglot systems (Python server, C++ client)
-- Efficient network utilization for real-time trading
-- Simplified client implementation (no source-specific parsing)
 
 ## Module Documentation
 
@@ -204,7 +190,7 @@ Argus consists of several specialized modules, each providing access to differen
 
 - **[Binance](docs/BINANCE.md)** - Cryptocurrency market data
   - `BinanceMKTDispatcher` - WebSocket-based crypto data with Protocol 2
-  - Order book depth (@100ms), aggregate trades, k-line data, BookTrade, etc...
+  - Top of book data (bid/ask/last) for multiple trading pairs
   - Auto-dump to JSON files for historical analysis
   - Statistics tracking (messages per second)
 
@@ -235,6 +221,16 @@ Argus consists of several specialized modules, each providing access to differen
   - Polymarket has a separate cache file (`~/.argus/polymarket_cache.pkl`) to prevent bloat
   - Automatic backups, CLI for inspection/manipulation, transparent cache generation
   - Environment variable to disable: `ARGUS_CACHES_DISABLED=1`
+- **[WIREPROXY](docs/WIREPROXY.md)** - Proxy Dispatchers through Wireguard tunnels
+  - Securely route dispatcher traffic through Wireguard via WireProxy
+  - No sudo/root required
+  - No changes to networking configuration all user-space
+  - Works with command `python3 -m argus.wireproxy`
+  - Automatically works with regular Wireguard Configs
+  - Downloading/installing WireProxy binary is handled automatically
+  
+  _Note: WireProxy is experimental and may have limitations._
+  
 
 ## Getting Started
 
@@ -387,17 +383,15 @@ with NASDAQDataDownloader(headless=True) as downloader:
 - **Python**: 3.10+
 - **Operating Systems**:
   - **macOS**: Full support (all modules)
-  - **Linux**: Partial support
-    - IB modules currently not supported (ShortableShares requires macOS Finder)
+  - **Linux**: 
     - No desktop notifications (powered by AppleScript)
     - All other modules work fully
-    - IB module Linux support is in the pipeline
   - **Windows**: Not tested, not a target platform
 - **Dependencies**: See `requirements.txt`
 - **Optional**: Firefox + geckodriver (for NASDAQ module)
 
 
-## Contributing
+## Development
 
 Argus is under active development. Current efforts:
 
@@ -407,7 +401,7 @@ Argus is under active development. Current efforts:
 
 For questions, issues, or feature requests:
 - **GitHub Issues**: https://github.com/The-Sal/Argus/issues
-- **Documentation**: `/docs` directory
+- **Documentation**: `/docs` directory (docs are branch-specific and differes between `main` and `argus-swift`)
 
 ---
 
