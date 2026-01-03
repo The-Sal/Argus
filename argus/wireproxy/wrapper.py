@@ -82,7 +82,7 @@ def start_proxy_aware_ws(idx, websocket: WebSocketApp, *args, **kwargs):
         print(__name__, f'No WireProxy mapping found for dispatcher {idx}, starting normal WebSocketApp')
         websocket.run_forever(*args, **kwargs)
 
-def update_request_session_proxy(session, idx):
+def update_request_session_proxy(idx, session):
     setup_proxy_for_dispatcher(idx)
     session.proxies.update({
         'http': f'socks5h://{BIND_ADDRESS}',
