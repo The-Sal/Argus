@@ -2,6 +2,7 @@
 
 Supported Dispatchers:
     – Polymarket, IDX=POLYMARKET
+    – Binance, IDX=BINANCE
 
 """
 
