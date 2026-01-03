@@ -18,6 +18,7 @@ supports real-time market data subscriptions via WebSocket. The keys are usually
 
 """
 import json
+import logging
 import os
 import time
 import uuid
@@ -288,9 +289,20 @@ class EnhancedPM:
         :param asset_id: The asset IDs to unsubscribe from.
         :return:
         """
-        for idx in asset_id:
-            if idx in self.idx_to_callback:
-                self.idx_to_callback[idx] = lambda x: None
+        if os.environ.get('POLYMARKET_ENABLE_UNSUB_PATCH') != 'true':
+            for idx in asset_id:
+                if idx in self.idx_to_callback:
+                    self.idx_to_callback[idx] = lambda x: None
+        else:
+            for idx in asset_id:
+                if idx in self.idx_to_callback:
+                    self.idx_to_callback[idx] = lambda x: logging.warning('Received data for unsubscribed asset id %s: %s', idx, x)
+
+            # Unsure about this requires testing, but this endpoint may work:
+            self.market_ws.send(json.dumps({
+                'assets_ids': [asset_id],
+                'operation': 'unsubscribe',
+            }))
 
     @runAsThread
     def start_market_ws(self):
