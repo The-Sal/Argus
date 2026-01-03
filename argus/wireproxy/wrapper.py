@@ -7,6 +7,7 @@ Supported Dispatchers:
 
 import os
 import time
+import copy
 import logging
 from dotenv import load_dotenv
 from websocket import WebSocketApp
@@ -16,8 +17,10 @@ if not load_dotenv():
     print('WARNING: .env was not loaded, wireproxy REQUIRED env vars may be missing!')
 
 BIND_ADDRESS = os.environ.get('WIREPROXY_BIND_ADDRESS', '127.0.0.1:25344')
+old_name = copy.copy(__name__)
+__name__ = '[{}]'.format(old_name)
 
-def load_all_proxy_mappings():
+def _load_all_proxy_mappings():
     """
     Load all the Dispatcher ==> WireProxy server mappings from environment variables.
     Each mapping is defined like so `WIREPROXY_MAPPING_<DISPATCHER_NAME>=<CONFIG_NAME>`.
@@ -34,8 +37,8 @@ def load_all_proxy_mappings():
     return mappings
 
 
-def setup_proxy_for_dispatcher(idx):
-    mappings = load_all_proxy_mappings()
+def _setup_proxy_for_dispatcher(idx):
+    mappings = _load_all_proxy_mappings()
     if str(idx) in mappings:
         print(__name__, f'Found WireProxy mapping for dispatcher {idx}, ensuring WireProxy daemon is running...')
         ensure_daemon_running()
@@ -69,7 +72,7 @@ def setup_proxy_for_dispatcher(idx):
 
 
 def start_proxy_aware_ws(idx, websocket: WebSocketApp, *args, **kwargs):
-    if setup_proxy_for_dispatcher(idx):
+    if _setup_proxy_for_dispatcher(idx):
         print(__name__, f'Starting proxy-aware WebSocketApp for dispatcher {idx} via WireProxy at {BIND_ADDRESS}')
         websocket.run_forever(
             proxy_type="socks5",
@@ -83,7 +86,7 @@ def start_proxy_aware_ws(idx, websocket: WebSocketApp, *args, **kwargs):
         websocket.run_forever(*args, **kwargs)
 
 def update_request_session_proxy(idx, session):
-    setup_proxy_for_dispatcher(idx)
+    _setup_proxy_for_dispatcher(idx)
     session.proxies.update({
         'http': f'socks5h://{BIND_ADDRESS}',
         'https': f'socks5h://{BIND_ADDRESS}',
@@ -91,5 +94,5 @@ def update_request_session_proxy(idx, session):
 
 
 if __name__ == '__main__':
-    print(load_all_proxy_mappings())
+    print(_load_all_proxy_mappings())
     start_proxy_aware_ws('POLYMARKET', WebSocketApp('wss://ws.polymarket.com/'))
