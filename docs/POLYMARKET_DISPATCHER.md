@@ -33,7 +33,7 @@ will be ordered within the multiplexer array at position 0, meaning it will alwa
 arrives. This is an EXPENSIVE process (depending on how many clients there are), and during this process the entire
 dispatcher will be thread locked to avoid race conditions. It's some-what intentional design to avoid rapid login/logout
 attempts as each attempt locks the entire dispatcher for a brief moment. This dispatcher is also fully integrated with
-[WIREPROXY](docs/WIREPROXY.md). 
+[WIREPROXY](../docs/WIREPROXY.md). 
 
 
 _WORK IN PROGRESS DOCUMENTATION_
