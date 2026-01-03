@@ -59,8 +59,8 @@ import base64
 import pickle
 
 
-
-cache_path = os.path.join(os.path.expanduser("~"), ".argus", 'capital_cache.pkl')
+ARGUS_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".argus")
+cache_path = os.path.join(ARGUS_CACHE_DIR, 'capital_cache.pkl')
 
 
 def generate_transparent_cache(cached_obj: dict):
