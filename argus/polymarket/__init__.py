@@ -1,6 +1,13 @@
 """
 Refreshed Polymarket Dispatcher based on the polymarket_direct module. For the old version
 see https://github.com/The-Sal/Argus/tree/legacy/polymarket-dispatcher
+
+
+==============================================
+ACTIVELY BEING WORKED ON: https://github.com/The-Sal/Argus/pull/52
+==============================================
+
+
 """
 import logging
 
