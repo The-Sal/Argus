@@ -16,6 +16,7 @@ termcolor = "*"
 utils3 = {git = "https://github.com/the-sal/utils3"}
 python-socks = "*"
 py-clob-client = "*"
+httpx = {extras = ["socks"], version = "*"}
 
 [dev-packages]
 

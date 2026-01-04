@@ -1,12 +1,10 @@
 import os
 import sys
 import time
-import json
 import pickle
 import signal
 import datetime
 import threading
-import websocket
 from termcolor import colored
 from dotenv import load_dotenv
 from argus.polymarket_direct import EnhancedPM, PolymarketEvent
@@ -317,8 +315,8 @@ def example_usage():
         if 'bitcoin-up-or-down' in raw['ticker']:
             cleaned_raw_dump.append(raw)
 
-    with open('all_bitcoin_hourly.json', 'w') as f:
-        f.write(json.dumps(cleaned_raw_dump, indent=4))
+    # with open('all_bitcoin_hourly.json', 'w') as f:
+    #     f.write(json.dumps(cleaned_raw_dump, indent=4))
 
 
     def _sorted_by_time_key(sorting_event: PolymarketEvent):
@@ -541,5 +539,5 @@ def example_usage():
             print(f"[CLEANUP] Error during cleanup: {e}")
 
 if __name__ == '__main__':
-    websocket.enableTrace(True)
+    # websocket.enableTrace(True)
     example_usage()

@@ -93,6 +93,14 @@ def update_request_session_proxy(idx, session):
         'https': f'socks5h://{BIND_ADDRESS}',
     })
 
+def start_proxy_and_return_bind(idx):
+    if _setup_proxy_for_dispatcher(idx):
+        print(__name__, f'Returning WireProxy bind address for dispatcher {idx}: {BIND_ADDRESS}')
+        return BIND_ADDRESS
+    else:
+        print(__name__, f'No WireProxy mapping found for dispatcher {idx}, returning None')
+        return None
+
 
 if __name__ == '__main__':
     print(_load_all_proxy_mappings())
