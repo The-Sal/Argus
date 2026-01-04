@@ -10,13 +10,11 @@ Argus runtime entrypoint.
 - DO NOT PASS AUTH CREDENTIALS VIA COMMAND LINE ARGS, use environment variables or .env file instead.
 - Automatically loads .env file if present in working directory.
 """
-import os
 import sys
 import argus
 import platform
 import argparse
 from dotenv import load_dotenv
-from argus.polymarket import PolyDispatcher
 from argus.ib.forecast import FXCDispatcher
 from argus.ib import MKTDispatcher, IBKRModes
 from argus.binance import BinanceMKTDispatcher
@@ -57,17 +55,7 @@ def main(argv=None):
         dispatcher.select_account_interactive()
         dispatcher.ws.interactive_mode()
     elif args.target == 'polymarket':
-        poly_kwargs = dict(
-            private_key=os.environ['POLYMARKET_PRIVATE_KEY'],
-            proxy_funder=os.environ['POLYMARKET_PROXY_FUNDER']
-        )
-        # Only forward host/port if explicitly provided by user, mapping to PolyDispatcher's kwargs
-        if args.host:
-            poly_kwargs['listen_host'] = args.host
-        if args.port is not None:
-            poly_kwargs['listen_port'] = args.port
-        dispatcher = PolyDispatcher(**poly_kwargs)
-        dispatcher.interactive_mode()
+        raise NotImplementedError('Polymarket dispatcher is not yet implemented')
     elif args.target == 'capital.com':
         print('Warning: capital.com uses Unix domain socket, --host/--port are ignored')
         if args.capital_env == 'demo':
