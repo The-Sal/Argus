@@ -69,6 +69,20 @@ This document lists all environment variables used throughout the Argus project 
 - **Required**: No
 - **Used in**: `polymarket_direct/__init__.py`
 
+### `POLYMARKET_PARANOID`
+- **Purpose**: Enable immediate termination if IP is in known geo-blocked regions
+- **Default**: `false`
+- **Required**: No
+- **Used in**: `polymarket_direct/rest.py`
+- **Behavior**: When `true`, terminates immediately on Stage 1 IP check failure
+
+### `POLYMARKET_PROTECTION`
+- **Purpose**: Enable/disable Polymarket geo-block protection checks
+- **Default**: `true`
+- **Required**: No
+- **Used in**: `polymarket_direct/rest.py`
+- **Behavior**: When `false`, skips Stage 2 direct Polymarket geo-block verification (DANGEROUS)
+
 ## Interactive Brokers Integration
 
 ### `IB_COOKIE`

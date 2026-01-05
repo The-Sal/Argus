@@ -100,8 +100,7 @@ class PolyRestAPI:
         else:
             ip_info['ip'] = 'REDACTED'
             print(qw, f"IP info: {ip_info}")
-            print(qw,
-                  "The current IP is NOT in a well known geo-blocked region, Proceeding to Polymarket geo-block check...")
+            print(qw, "Proceeding to Polymarket geo-block check...")
 
         if os.environ.get('POLYMARKET_PROTECTION', 'true') == 'true':
             if self.check_geo_blocked():
