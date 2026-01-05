@@ -50,6 +50,62 @@ from argus.wireproxy._utils import download
 from utils3.networking.sockets import Server
 from argus.cache_utils import ARGUS_CACHE_DIR
 
+# fix for bug 53
+def get_wireproxy_filename():
+    """
+    Returns the appropriate wireproxy filename based on the current platform.
+
+    Returns:
+        str: The wireproxy filename for the current platform
+
+    Raises:
+        RuntimeError: If the current platform is not supported
+    """
+
+    current_platform = platform.system()
+    arch = platform.machine()
+
+
+    # Map platform.machine() to wireproxy architecture naming
+    # Note: Linux uses 'aarch64' but wireproxy uses 'arm'
+    # macOS uses 'arm64' and wireproxy also uses 'arm64'
+    arch_map = {
+        'x86_64': 'amd64',
+        'AMD64': 'amd64',
+        'arm64': 'arm64',
+        'aarch64': 'arm'
+    }
+
+    # Get mapped values
+    os_name = current_platform.lower()
+    arch_name = arch_map.get(arch)
+
+    # Check if a platform is supported
+    if os_name is None or arch_name is None:
+        raise RuntimeError(
+            f"Unsupported platform: {current_platform} {arch}. "
+            f"Supported platforms are: Linux (amd64, arm64), macOS (amd64, arm64)"
+        )
+
+    # Construct filename
+    filename = f"wireproxy_{os_name}_{arch_name}.tar.gz"
+
+    # Verify it's one of the valid filenames
+    valid_filenames = {
+        'wireproxy_darwin_amd64.tar.gz',
+        'wireproxy_darwin_arm64.tar.gz',
+        'wireproxy_linux_amd64.tar.gz',
+        'wireproxy_linux_arm.tar.gz'
+    }
+
+    if filename not in valid_filenames:
+        raise RuntimeError(
+            f"Unsupported platform: {current_platform} {arch}. "
+            f"Supported platforms are: Linux (amd64, arm64), macOS (amd64, arm64)"
+        )
+
+    return filename
+
 
 class WireProxyManagement:
     """
@@ -58,7 +114,7 @@ class WireProxyManagement:
 
     def __init__(self):
         # OS, Architecture
-        self._repo_url = "https://github.com/whyvl/wireproxy/releases/latest/download/wireproxy_{}_{}.tar.gz"
+        self._repo_url = "https://github.com/whyvl/wireproxy/releases/latest/download/{}"
         self._wp_instance_dir = os.path.join(ARGUS_CACHE_DIR, "wireproxy")
         self.wg_confs_dir = os.path.join(ARGUS_CACHE_DIR, "wireproxy_confs")
         self.logs_dir = os.path.join(ARGUS_CACHE_DIR, "wp-server-logs")
@@ -76,10 +132,9 @@ class WireProxyManagement:
             self.update_wireproxy()
 
     def find_correct_wp_version(self):
-        current_platform = platform.system()
-        arch = platform.machine()
-        download_url = self._repo_url.format(current_platform, arch)
-        return download_url
+        filename = get_wireproxy_filename()
+        url = self._repo_url.format(filename)
+        return url
 
     def update_wireproxy(self):
         print('Checking OS information...')
