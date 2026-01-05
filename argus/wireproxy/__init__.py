@@ -77,9 +77,30 @@ class WireProxyManagement:
 
     def find_correct_wp_version(self):
         current_platform = platform.system()
-        arch = platform.machine()
-        download_url = self._repo_url.format(current_platform, arch)
-        return download_url
+        arch = platform.machine().lower()
+
+        # Supported platforms and architectures
+        supported_platforms = {
+            'darwin': ['amd64', 'arm64'],
+            'linux': ['amd64', 'arm']
+        }
+
+        # Check if the current platform and architecture are supported
+        if current_platform not in supported_platforms:
+            raise RuntimeError(f"Unsupported platform: {current_platform}")
+
+        if arch not in supported_platforms[current_platform]:
+            raise RuntimeError(f"Unsupported architecture for {current_platform}: {arch}")
+
+        # Map the architecture to the correct filename suffix
+        arch_suffix = {
+            'amd64': 'amd64',
+            'arm64': 'arm64',
+            'arm': 'arm'
+        }[arch]
+
+        # Construct the download URL with the correct filename suffix
+        return self._repo_url.format(current_platform, arch_suffix)
 
     def update_wireproxy(self):
         print('Checking OS information...')
