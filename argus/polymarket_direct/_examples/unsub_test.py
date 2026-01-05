@@ -8,6 +8,7 @@ from argus.polymarket_direct import EnhancedPM, PolymarketEvent
 class VeryUglyCache:
     def __init__(self):
         self.store = {}
+        self.load_cache()
 
     def get(self, key: str):
         value = self.store.get(key, None)
@@ -92,7 +93,7 @@ def all_btc_hourly_events():
 
     return all_bitcoin_hourly
 
-def main():
+def get_all_btc_live_events():
     all_btcoin_hourly = wrapped_btc_fetch()
 
     print('*' * 100)
@@ -123,6 +124,11 @@ def main():
             live_markets.append(market)
     print('\n' + '=' * 100 + '\n')
 
+    return live_markets
+
+def main():
+
+    live_markets = get_all_btc_live_events()
     last_map = {}
 
     def print_market_update(data):
