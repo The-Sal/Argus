@@ -75,8 +75,8 @@ class WireProxyManagement:
         if not self.wp_exists:
             self.update_wireproxy()
 
-    def find_correct_wp_version(self):
-        current_platform = platform.system()
+def find_correct_wp_version(self):
+        current_platform = platform.system().lower()
         arch = platform.machine().lower()
 
         # Supported platforms and architectures
@@ -85,22 +85,28 @@ class WireProxyManagement:
             'linux': ['amd64', 'arm']
         }
 
-        # Check if the current platform and architecture are supported
+        # Check if the current platform is supported
         if current_platform not in supported_platforms:
             raise RuntimeError(f"Unsupported platform: {current_platform}")
 
-        if arch not in supported_platforms[current_platform]:
-            raise RuntimeError(f"Unsupported architecture for {current_platform}: {arch}")
-
-        # Map the architecture to the correct filename suffix
-        arch_suffix = {
-            'amd64': 'amd64',
-            'arm64': 'arm64',
-            'arm': 'arm'
-        }[arch]
+        # Map architectures to their supported equivalents
+        if current_platform == 'darwin':
+            if arch in ['x86_64', 'i386']:
+                arch = 'amd64'
+            elif arch == 'arm64':
+                pass  # Already supported
+            else:
+                raise RuntimeError(f"Unsupported architecture for {current_platform}: {arch}")
+        elif current_platform == 'linux':
+            if arch in ['x86_64', 'i386']:
+                arch = 'amd64'
+            elif arch == 'arm':
+                pass  # Already supported
+            else:
+                raise RuntimeError(f"Unsupported architecture for {current_platform}: {arch}")
 
         # Construct the download URL with the correct filename suffix
-        return self._repo_url.format(current_platform, arch_suffix)
+        return self._repo_url.format(current_platform, arch)
 
     def update_wireproxy(self):
         print('Checking OS information...')
