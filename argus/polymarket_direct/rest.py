@@ -3,14 +3,13 @@ import time
 import logging
 import requests
 from termcolor import colored
-from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from argus.capital import DomainCache
 from py_clob_client import BalanceAllowanceParams
 from argus.wireproxy import wrapper as wp_wrappers
 from argus.polymarket_direct import _types as pm_types
 from py_clob_client.order_builder.constants import BUY, SELL
 from argus.polymarket_direct._order_types import OrderException
-
+from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
 
 REST_CACHE = DomainCache('polymarket_direct.rest')
