@@ -315,6 +315,21 @@ class PolyRestAPI:
             print(qw, colored(f"Failed to cancel order {order_id}.", 'red', attrs=['bold']))
         return result
 
+    def get_orders(self, use_cache=False) -> list:
+        """
+        Get the list of orders.
+        :param use_cache: If True, return cached orders; otherwise, fetch live data.
+        :return: A list of orders.
+        """
+        raise NotImplementedError("get_orders method is not implemented yet.")
+
+    def get_order_status(self, order_id: str) -> dict:
+        """
+        Get the status of a specific order.
+        :param order_id: The ID of the order.
+        :return: A dictionary containing the order status.
+        """
+        raise NotImplementedError("get_order_status method is not implemented yet.")
 
     def get_balance(self) -> float:
         """
@@ -324,7 +339,6 @@ class PolyRestAPI:
         balance = float(self.clob.get_balance_allowance(BalanceAllowanceParams(asset_type='COLLATERAL'))['balance'])
         return balance / self._div
 
-
     @property
     def order_cache(self):
         """
@@ -333,6 +347,29 @@ class PolyRestAPI:
         """
         return self._order_cache
 
+
+class PolyMarketAccountEventWss:
+    """
+    A WebSocket that exists just to listen to account events from the Polymarket CLOB.
+    This is an authorised WSS connection to Polymarket and CLOB it is SEPARATE from `EnhancedPM`
+    """
+    def __init__(self):
+        raise NotImplementedError("PolyMarketAccountEventWss is not implemented yet.")
+
+class PolyMarketTrader:
+    """
+
+    The highest level class for trading on Polymarket mixing REST and WebSocket functionality.
+    Supports:
+        * Placing Orders via REST
+        * Canceling Orders via REST
+        * Order Updates via WebSocket
+        * Portfolio Asset(s) Tracking via REST + WebSocket
+        * Semaphore Locks for Safe Multi-Threaded Trading
+        * Locks for order fill .*_and_wait functions
+    """
+    def __init__(self):
+        raise NotImplementedError("PolyMarketTrader is not implemented yet.")
 
 
 if __name__ == '__main__':
