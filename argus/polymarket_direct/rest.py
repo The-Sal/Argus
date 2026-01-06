@@ -2,14 +2,15 @@ import os
 import time
 import logging
 import requests
+import traceback
 from termcolor import colored
 from argus.capital import DomainCache
 from py_clob_client import BalanceAllowanceParams
 from argus.wireproxy import wrapper as wp_wrappers
 from argus.polymarket_direct import _types as pm_types
 from py_clob_client.order_builder.constants import BUY, SELL
-from argus.polymarket_direct._order_types import OrderException
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
+from argus.polymarket_direct._order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
 
 REST_CACHE = DomainCache('polymarket_direct.rest')
@@ -53,6 +54,30 @@ class IPSafety:
         return country in self.KNOWN_BAD_REGIONS
 
 
+# MUST be used on methods within PolyRestAPI that are critical
+def fatal_decorator(func_idx):
+    def decorator(func):
+        def wrapper(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:
+                traceback.print_exc()
+                if self.fatal_callback:
+                    self.fatal_callback({
+                        'self': self,
+                        'function': func_idx,
+                        'args': args,
+                        'kwargs': kwargs,
+                        'exception': e,
+                        'traceback': traceback.format_exc()
+                    })
+                raise
+
+        return wrapper
+
+    return decorator
+
+
 class PolyRestAPI:
     """
     A REST API client for interacting with Polymarket's CLOB via py_clob_client and other endpoints.
@@ -66,21 +91,33 @@ class PolyRestAPI:
 
     Note: All orders routed through `PolyRestAPI` are stored and persistently cached
     within this class using the `DomainCache` system. Ergo, the 'return' from the orders(s)
-    function can be specified to only use 'cached' orders by default they fetch live data and
+    function can be specified to only use 'cached' orders, by default, they fetch live data and
     sync with the cache.
 
 
     """
 
-    def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com', chain_id=137, divisor=1_000_000):
+    def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com',
+                 chain_id=137, divisor=1_000_000, fatal_callback=None):
         """
         Initialize the Polymarket REST API client.
         :param private_key: This is the private key of the Polymarket account to use for signing requests.
-        :param proxy_funder: This is the address which holds the actual funds
+        :param proxy_funder: This is the address that holds the actual funds
         :param host: the host URL for the Polymarket CLOB API. (leave default)
         :param chain_id: leave default unless Polymarket changes chain
         :param divisor: TL;DR Polymarket uses 6 decimal places for account balances and other things, this
                         divisor helps convert to/from 'real' amounts.
+        :param fatal_callback: In the event of an exception that is fatal when using any of the decorated
+            methods, this callback will be called. It will be passed a single dictionary as an argument.
+            This will update version-version and not guaranteed to be stable. Always use .get() on the dict.
+            As of now the dict contains:
+                - 'self': The instance of PolyRestAPI
+                - 'function': The name of the function where the exception occurred
+                - 'args': The positional arguments passed to the function
+                - 'kwargs': The keyword arguments passed to the function
+                - 'exception': The exception object that was raised
+                - 'traceback': The traceback string of the exception
+
         """
         self.private_key = private_key
         self.proxy_funder = proxy_funder
@@ -97,6 +134,14 @@ class PolyRestAPI:
         self._order_cache = {
             'orders': []
         }
+
+        self.fatal_callback = fatal_callback
+        if self.fatal_callback is None:
+            def default_fatal_callback(info: dict):
+                print(colored(f"[{__name__}] FATAL ERROR in Polymarket REST API client: {info}", 'red',
+                              attrs=['bold', 'blink']))
+
+            self.fatal_callback = default_fatal_callback
 
     ###########################################
     # Utility Methods
@@ -227,6 +272,7 @@ class PolyRestAPI:
         tick_size = self.clob.get_tick_size(token_id)
         return tick_size
 
+    @fatal_decorator('place_order')
     def place_order(self, token_id: str, market: pm_types.PolymarketEvent,
                     price: float, size: float, side: str, order_type: OrderType = OrderType.GTC) -> dict:
         """
@@ -270,13 +316,14 @@ class PolyRestAPI:
 
         return result
 
+    @fatal_decorator('build_order')
     def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str):
         tick_size = self.get_tick_size(token_id)
-        maped = {
+        mapped = {
             'buy': BUY,
             'sell': SELL
         }
-        type_side = maped.get(side.lower())
+        type_side = mapped.get(side.lower())
         if type_side is None:
             raise ValueError("side must be either 'buy' or 'sell'")
         order = self.clob.create_order(
@@ -294,6 +341,7 @@ class PolyRestAPI:
 
         return order
 
+    @fatal_decorator('cancel_order')
     def cancel_order(self, order_id: str) -> dict:
         """
         Cancel an existing order on the Polymarket CLOB.
@@ -315,22 +363,36 @@ class PolyRestAPI:
             print(qw, colored(f"Failed to cancel order {order_id}.", 'red', attrs=['bold']))
         return result
 
-    def get_orders(self, use_cache=False) -> list:
+    @fatal_decorator('get_orders')
+    def get_orders(self) -> list[PolyMarketOrder]:
         """
         Get the list of orders.
-        :param use_cache: If True, return cached orders; otherwise, fetch live data.
         :return: A list of orders.
         """
-        raise NotImplementedError("get_orders method is not implemented yet.")
+        orders = map(lambda x: PolyMarketOrder(**x), self.clob.get_orders())
+        return list(orders)
 
-    def get_order_status(self, order_id: str) -> dict:
+    @fatal_decorator('get_trades')
+    def get_trades(self) -> TradeData:
+        """
+        Get the list of trades.
+        :return: A TradeData object containing the list of trades.
+        """
+        trades = self.clob.get_trades()
+        return TradeData.from_list(trades)
+
+    @fatal_decorator('get_order_status')
+    def get_order_status(self, order_id: str) -> PolyMarketOrder:
         """
         Get the status of a specific order.
         :param order_id: The ID of the order.
-        :return: A dictionary containing the order status.
+        :return: A PolyMarketOrder object containing the order status.
         """
-        raise NotImplementedError("get_order_status method is not implemented yet.")
+        logging.info('Getting order status: %s', order_id)
+        order_status = self.clob.get_order(order_id)
+        return PolyMarketOrder(**order_status)
 
+    @fatal_decorator('get_balance')
     def get_balance(self) -> float:
         """
         Get the balance of the account.
@@ -348,14 +410,18 @@ class PolyRestAPI:
         return self._order_cache
 
 
+# TODO: Implement PolyMarketAccountEventWss
 class PolyMarketAccountEventWss:
     """
     A WebSocket that exists just to listen to account events from the Polymarket CLOB.
     This is an authorised WSS connection to Polymarket and CLOB it is SEPARATE from `EnhancedPM`
     """
+
     def __init__(self):
         raise NotImplementedError("PolyMarketAccountEventWss is not implemented yet.")
 
+
+# TODO: Implement PolyMarketTrader
 class PolyMarketTrader:
     """
 
@@ -368,32 +434,55 @@ class PolyMarketTrader:
         * Semaphore Locks for Safe Multi-Threaded Trading
         * Locks for order fill .*_and_wait functions
     """
+
     def __init__(self):
         raise NotImplementedError("PolyMarketTrader is not implemented yet.")
 
 
 if __name__ == '__main__':
-    # from dotenv import load_dotenv
-    # from argus.polymarket_direct._examples.unsub_test import get_all_btc_live_events
-    #
-    # load_dotenv()
-    # os.environ['POLYMARKET_NO_SAFETY_CHECK'] = 'true'
-    # rest = PolyRestAPI(
-    #     private_key=os.environ['POLYMARKET_PRIVATE_KEY'],
-    #     proxy_funder=os.environ['POLYMARKET_PROXY_FUNDER']
-    # )
-    #
-    # event: pm_types.PolymarketEvent = get_all_btc_live_events()[0]
-    # print('Testing with event:', event.ticker)
-    # tkn_id = event.markets[0].clobTokenIds[0]
-    # print('tkn_id:', tkn_id)
-    # print(rest.get_balance())
-    # print(rest.place_order(token_id=tkn_id, price=float(rest.get_tick_size(tkn_id)), size=5, side='buy', market=event))
-    # time.sleep(1)
-    # order_property = rest.order_cache['orders']
-    # print('Order property:', order_property)
-    # print('Canceling order...')
-    # order_id = order_property[-1]['orderID']
-    # rest.cancel_order(order_id=order_id)
-    # time.sleep(1)
-    pass
+    def a_test_function():
+        from dotenv import load_dotenv
+        # noinspection PyProtectedMember
+        from argus.polymarket_direct._examples.unsub_test import get_all_btc_live_events
+
+        load_dotenv()
+        os.environ['POLYMARKET_NO_SAFETY_CHECK'] = 'true'
+
+        def fatal_handler(info: dict):
+            print(colored(f"[{__name__}] FATAL ERROR HANDLER TRIGGERED. CANCELLING ALL ORDERS.", 'red',
+                          attrs=['bold', 'blink']))
+            classx: PolyRestAPI = info.get('self')
+            if classx:
+                for order in classx.order_cache['orders']:
+                    classx.cancel_order(order_id=order['orderID'])
+
+        rest = PolyRestAPI(
+            private_key=os.environ['POLYMARKET_PRIVATE_KEY'],
+            proxy_funder=os.environ['POLYMARKET_PROXY_FUNDER'],
+            fatal_callback=fatal_handler
+        )
+
+        event: pm_types.PolymarketEvent = get_all_btc_live_events()[0]
+        print('Testing with event:', event.ticker)
+        tkn_id = event.markets[0].clobTokenIds[0]
+        print('tkn_id:', tkn_id)
+        print(rest.get_balance())
+        ordddr = rest.place_order(token_id=tkn_id, price=float(rest.get_tick_size(tkn_id)), size=5, side='buy',
+                                  market=event)
+        time.sleep(1)
+        order_property = rest.order_cache['orders']
+        print('Canceling order...')
+        order_id = order_property[-1]['orderID']
+
+        # noinspection PyBroadException
+        try:
+            print('Cancelling order:', ordddr['orderID'])
+            rest.get_order_status(ordddr['orderID'])
+        except:
+            traceback.print_exc()
+
+        rest.cancel_order(order_id=order_id)
+        time.sleep(1)
+        # print(rest.get_trades())
+
+    a_test_function()

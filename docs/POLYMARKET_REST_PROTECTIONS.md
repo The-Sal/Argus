@@ -4,7 +4,10 @@ This document outlines the multi-layered protection system implemented in the Po
 
 ## Overview
 
-The `PolyRestAPI` class implements a **four-stage protection system** that safeguards both the user and Polymarket from geo-blocked access, compliance violations, and orphaned/floating orders. These protections are designed to prevent orders from being placed or API credentials from being exposed from restricted jurisdictions, and crucially, to allow graceful cleanup of active orders when critical failures occur.
+The `PolyRestAPI` class implements protections that safeguard the user from geo-blocked access, compliance violations, and orphaned/floating orders. 
+These protections are designed to prevent orders from being placed or API credentials from being exposed from restricted jurisdictions, 
+and crucially, to allow graceful cleanup of active orders when critical failures occur. Critical as this class will handle
+**real** funds on Polymarket which does not have a testnet environment.
 
 All connections are WireProxy-aware with the ID `POLYMARKET`, ensuring traffic routes through your configured proxy when enabled.
 
@@ -17,10 +20,11 @@ Before any protection stages, all HTTP/WebSocket traffic is configured to route 
 3. **WebSocket Proxy Awareness**: `start_proxy_aware_ws('POLYMARKET', websocket)` routes WebSocket connections through proxy
 
 This ensures that **your actual IP address is never exposed to Polymarket** if you're using WireProxy for location protection.
+HIGHLY RECOMMENDED TO integrate WireProxy see [WIREPROXY Documentation](../docs/WIREPROXY.md).
 
-## Protection Stages
+## Protections
 
-### Stage 1: Pre-Connection IP Safety Check
+### Pre-Connection IP Safety Check
 
 **Location**: `IPSafety` class, lines 34-50
 
@@ -44,9 +48,10 @@ KNOWN_BAD_REGIONS = ["US", "GB", "FR", "DE", "IT", "BE", "PL", "AU", "SG", "TW",
 - **When `true`**: If IP is in bad region, immediately terminates with RuntimeError
 - **When `false`**: Shows warning but proceeds to Stage 2 for verification
 
-**Why this exists**: This provides an early warning system without exposing your IP address to Polymarket's systems, maintaining privacy while checking against known restrictions.
+**Why this exists**: This provides an early warning system without exposing your IP address to Polymarket's systems, 
+maintaining privacy while checking against known restrictions. It also prevents leaking polymarket DNS to ISPs in blocked regions.
 
-### Stage 2: Direct Polymarket Geo-Block Verification
+### Direct Polymarket Geo-Block Verification
 
 **Location**: `check_geo_blocked()` method, lines 146-155
 
@@ -68,25 +73,8 @@ KNOWN_BAD_REGIONS = ["US", "GB", "FR", "DE", "IT", "BE", "PL", "AU", "SG", "TW",
 is blocked here, YOU CANNOT TRADE IT WILL BE REJECTED FROM POLYMARKET. The only reason `POLYMARKET_PROTECTION` allows you to continue is if you are only accessing market data
 whicgh _MAY_ be allowed from blocked regions. All order placement attempts will fail and raise errors.
 
-### Stage 3: Cache Layer Protection
 
-**Location**: `DomainCache` usage, lines 12 and 157-164
-
-**Purpose**: Reduces unnecessary API calls and provides an additional layer of rate limiting.
-
-**How it works**:
-1. Uses the `DomainCache` system with 1-hour expiration for API credentials
-2. Caches responses to minimize repeated exposure to Polymarket
-3. Only hits Polymarket API when cache is expired or empty
-
-**Cache Details**:
-- **Function**: `_create_or_derive_api_creds`
-- **Expiration**: 60 minutes (3600 seconds)
-- **Condition**: Only caches successful responses (`should_cache_function=lambda x: x is not None`)
-
-**Why this exists**: This minimizes the frequency of API calls, reducing both the risk of triggering rate limits and the exposure of your IP address to Polymarket's monitoring systems.
-
-### Stage 4: Fatal Callback System (Order Cleanup)
+### Fatal Callback System (Order Cleanup)
 
 **Location**: `fatal_decorator` decorator (lines 58-77) and `fatal_callback` parameter (line 99)
 
@@ -115,9 +103,18 @@ whicgh _MAY_ be allowed from blocked regions. All order placement attempts will 
 def fatal_handler(info: dict):
     print("[FATAL] Cancelling all orders...")
     api_instance = info.get('self')
-    if api_instance:
+    if api_instance:  # Ensure we have the API instance (see class docs why we use .get)
+        # Note: order_cache is a `safe` dictionary since it does not make API calls,
+        # you should design your callbacks to avoid using API calls within them or volatile functions
         for order in api_instance.order_cache['orders']:
-            api_instance.cancel_order(order_id=order['orderID'])
+            # this is an API call, be cautious and make sure to wrap in try-except and double check
+            # these functions are being constructed properly in this case it's cancelling orders
+            # known to have been opened given the order cache
+            try:
+                api_instance.cancel_order(order_id=order['orderID'])
+            except Exception as e:
+                print('Failed to cancel order {}: {}'.format(order['orderID'], e))
+    
 
 rest = PolyRestAPI(
     private_key=...,
@@ -145,48 +142,13 @@ rest = PolyRestAPI(
 
 The key design: **callback executes BEFORE exception propagates**, allowing cleanup before the program terminates.
 
-## Protection Flow Summary
 
-```
-Initialization Start
-         ↓
-WireProxy Setup (if enabled)
-         ↓
-Stage 1: IP Info Check (ipinfo.io) 
-         ↓
-If bad region + PARANOID=true → TERMINATE
-         ↓
-Show warning if bad region + PARANOID=false
-         ↓
-Stage 2: Polymarket Geo-Block Check
-         ↓
-If blocked → TERMINATE (unless PROTECTION=false)
-         ↓
-Stage 3: Cache Layer (minimize API calls)
-         ↓
-API Credentials Derivation (cached)
-         ↓
-Safe Trading Enabled
-         ↓
-Stage 4: Fatal Callback Wraps All Critical Methods
-(place_order, cancel_order, get_orders, etc.)
-         ↓
-On any exception: fatal_callback() → re-raise
-```
-
-## Security Features
-
-### IP Privacy Protection
-- **Stage 1**: IP only exposed to ipinfo.io, not Polymarket
-- **Stage 2**: Only proceeds to Polymarket if Stage 1 indicates potential safety
-- **Stage 3**: Minimizes repeated API calls through caching
-
-### Fail-Safe Mechanisms
+## Fail-Safe Mechanisms
 - **Hard Termination**: Immediate exit when definite blocks are detected
 - **Warning Systems**: Visual and audible warnings when bypassing protections
 - **Graceful Countdowns**: 30-second warning period when dangerous configurations are detected
 
-### Environmental Controls
+## Environmental Controls
 - **Fine-grained Control**: Separate controls for paranoia level and protection bypassing
 - **Default-Safe**: All protections enabled by default
 - **Explicit Bypass**: Requires explicit action to disable safety measures
