@@ -1,7 +1,7 @@
 import time
 import tempfile
-from pathlib import Path
 from tqdm import tqdm
+from pathlib import Path
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options

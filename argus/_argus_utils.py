@@ -1,6 +1,6 @@
 """Utilities for the Argus package."""
-import inspect
 import os
+import inspect
 import platform
 import traceback
 import subprocess

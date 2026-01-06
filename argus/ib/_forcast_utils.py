@@ -57,10 +57,10 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from utils3 import assertTypes
-
-from argus import expand_exception_decorator
 from argus.ib.fields import IBKRFields
+from argus import expand_exception_decorator
 from argus.ib._ib_utils import MarketData, IBError
+
 
 
 def enforce_type(value, expected_type):

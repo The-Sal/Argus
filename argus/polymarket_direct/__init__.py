@@ -17,11 +17,11 @@ to provide results. This module also supports a 'dry' mode where you do NOT need
 supports real-time market data subscriptions via WebSocket. The keys are usually only for order placement.
 
 """
-import json
-import logging
 import os
+import json
 import time
 import uuid
+import logging
 import requests
 import threading
 from argus import throw_fuss

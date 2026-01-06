@@ -1,12 +1,16 @@
 """A client for the MKTDispatcher class in the Argus/Capital module. This module only supports protocol version 2."""
+import os
 import json
+import time
 import socket
 import logging
+import argparse
+import threading
 from utils3 import runAsThread
-from typing import Any, Dict, List, Optional
-
-from argus.capital import CapitalComMKTDataLive
 from argus.capital import encode_packet
+from typing import Any, Dict, List, Optional
+from argus.capital import CapitalComMKTDataLive
+
 
 
 class CapitalComClient:
@@ -199,10 +203,6 @@ class CapitalComClient:
             self.logger.error(f"symbol_callback error for {tick.symbol}: {e}")
 
 
-import argparse
-import threading
-import time
-import os
 
 
 def _format_tick(t: CapitalComMKTDataLive) -> str:

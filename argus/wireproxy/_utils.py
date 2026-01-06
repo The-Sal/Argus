@@ -1,8 +1,8 @@
+import os
+import re
 import requests
 from tqdm import tqdm
-import os
 from urllib.parse import urlsplit
-import re
 
 
 def get_filename_from_cd(cd):
