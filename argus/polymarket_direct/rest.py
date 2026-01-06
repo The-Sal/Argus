@@ -89,12 +89,6 @@ class PolyRestAPI:
     – Cancel Orders
     – Order history
 
-    Note: All orders routed through `PolyRestAPI` are stored and persistently cached
-    within this class using the `DomainCache` system. Ergo, the 'return' from the orders(s)
-    function can be specified to only use 'cached' orders, by default, they fetch live data and
-    sync with the cache.
-
-
     """
 
     def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com',
