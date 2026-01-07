@@ -213,7 +213,11 @@ class Introspective:
 
 def throw_fuss(msg: str, boarder="*", notify=True, title="Argus IBKR Alert") -> None:
     """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
-    environment_size = os.get_terminal_size().columns
+    try:
+        environment_size = os.get_terminal_size().columns
+    except OSError:
+        environment_size = 80
+
     if environment_size < 80:
         environment_size = 80
     opening_line = boarder * environment_size

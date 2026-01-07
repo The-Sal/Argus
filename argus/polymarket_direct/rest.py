@@ -428,12 +428,24 @@ class PolyMarketAccountEventWss:
             Can be obtained from CLOB API.
         """
         self._auth = auth
+
+        # auth dict validation
+        keys_needed = ["apiKey", "secret", "passphrase"]
+        for key in keys_needed:
+            if key not in self._auth:
+                raise ValueError(f"Auth dictionary must contain the key: {key}")
+
         self.user_ws: WebSocketApp = None
         self._max_reconnect_attempts = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', '50'))
         self._reconnect_attempts = 0
         self._internally_closed = False
         self._allow_ping = True
         self._reset_threading_events()
+
+
+        self._ping_pong_lock = threading.Lock()
+        self._ping_pongs = (0, 0)  # (sent, received)
+        self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
 
         self._start_ws()
 
@@ -455,6 +467,8 @@ class PolyMarketAccountEventWss:
         Initialize the WebSocket connection to Polymarket account events.
         :return:
         """
+        with self._ping_pong_lock:
+            self._ping_pongs = (0, 0)
         self.user_ws = WebSocketApp(
             url='wss://ws-subscriptions-clob.polymarket.com/ws/user',
             on_open=self._on_open,
@@ -471,6 +485,8 @@ class PolyMarketAccountEventWss:
         _ = ws
         if message == "PONG":
             logging.debug('Polymarket Account Event WebSocket received PONG.')
+            with self._ping_pong_lock:
+                self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
             self.wait_till_first_pong.clear()
             return
 
@@ -514,8 +530,20 @@ class PolyMarketAccountEventWss:
         while True:
             try:
                 if self._allow_ping:
-                    logging.info('Sending PING to Polymarket Account Event WebSocket...')
                     self.user_ws.send("PING")
+                    with self._ping_pong_lock:
+                        self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
+                        pings = self._ping_pongs[0]
+                        pongs = self._ping_pongs[1]
+                        logging.info('Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d', pings, pongs)
+                        if pings - pongs > 3:
+                            logging.warning('No PONG received for last 3 PINGs....')
+
+                        if (pings - pongs) >= self._max_ping_pong_failures:
+                            logging.error(
+                                'Maximum PING-PONG failures reached. Reconnecting Polymarket Account Event WebSocket...'
+                            )
+                            self.user_ws.close()
                 else:
                     logging.info('Ping to Polymarket Account Event WebSocket is currently disabled.')
             except Exception as e:

@@ -55,3 +55,6 @@ def do_the_test():
 
     a_test_function()
     input('Press Enter to exit...\n')
+
+if __name__ == '__main__':
+    do_the_test()
