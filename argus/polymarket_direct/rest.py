@@ -539,7 +539,7 @@ class PolyMarketAccountEventWss:
                         if pings - pongs > 3:
                             logging.warning('No PONG received for last 3 PINGs....')
 
-                        if (pings - pongs) >= self._max_ping_pong_failures:
+                        if abs((pings - pongs)) >= self._max_ping_pong_failures:
                             logging.error(
                                 'Maximum PING-PONG failures reached. Reconnecting Polymarket Account Event WebSocket...'
                             )
