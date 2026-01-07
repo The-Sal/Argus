@@ -417,7 +417,8 @@ class PolyMarketAccountEventWss:
     """
     A WebSocket that exists just to listen to account events from the Polymarket CLOB.
     This is an authorised WSS connection to Polymarket and CLOB it is SEPARATE from `EnhancedPM`
-    and does NOT provide any market data or order placement functionality.
+    and does NOT provide any market data or order placement functionality. It does NOT hold
+    any state information.
     """
 
     def __init__(self, auth: dict):
@@ -431,9 +432,10 @@ class PolyMarketAccountEventWss:
         self._max_reconnect_attempts = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', '50'))
         self._reconnect_attempts = 0
         self._internally_closed = False
-        self._last_disconnect = time.time() * 1000  # far in the future
+        self._allow_ping = True
         self._reset_threading_events()
-        self.start_ws()
+
+        self._start_ws()
 
     def _reset_threading_events(self):
         """
@@ -466,6 +468,7 @@ class PolyMarketAccountEventWss:
     ############################################
 
     def _on_message(self, ws, message):
+        _ = ws
         if message == "PONG":
             logging.debug('Polymarket Account Event WebSocket received PONG.')
             self.wait_till_first_pong.clear()
@@ -480,11 +483,22 @@ class PolyMarketAccountEventWss:
         )
 
     def _on_close(self, ws, close_status_code, close_msg):
+        self._allow_ping = False
+        _ = ws
         logging.warning('Polymarket Account Event WebSocket closed. Code: %s, Message: %s', close_status_code, close_msg)
-        raise RuntimeError("Polymarket Account Event WebSocket closed unexpectedly.")
+        print("Attempting to reconnect Polymarket Account Event WebSocket...")
+        if not self._internally_closed:
+            self._reconnect_attempts += 1
+            if self._reconnect_attempts > self._max_reconnect_attempts:
+                logging.error('Maximum reconnect attempts reached for Polymarket Account Event WebSocket. Giving up.')
+                return
+            time.sleep(1)
+            self._start_ws()
+        self._allow_ping = True
 
     @staticmethod
     def _on_error(ws, error):
+        _ = ws
         throw_fuss(
             msg="POLYMARKET USER ACCOUNT WEBSOCKET ERROR:\n{}".format(traceback.format_exc()),
             notify=False
@@ -499,14 +513,18 @@ class PolyMarketAccountEventWss:
     def ping(self):
         while True:
             try:
-                logging.info('Sending PING to Polymarket Account Event WebSocket...')
-                self.user_ws.send("PING")
+                if self._allow_ping:
+                    logging.info('Sending PING to Polymarket Account Event WebSocket...')
+                    self.user_ws.send("PING")
+                else:
+                    logging.info('Ping to Polymarket Account Event WebSocket is currently disabled.')
             except Exception as e:
                 logging.error("User WebSocket ping failed: %s", e)
                 pass
             time.sleep(10)
 
     def _on_open(self, ws):
+        _ = ws
         logging.info('Polymarket Account Event WebSocket opened.')
         self.authenticate_ws_for_asset_ids()
         self.ping()
@@ -515,7 +533,6 @@ class PolyMarketAccountEventWss:
     def authenticate_ws_for_asset_ids(self):
         """
         Authenticate the WebSocket connection.
-        :param asset_ids: List of asset IDs to subscribe to.
         :return:
         """
         logging.info('Authenticating Polymarket Account Event WebSocket...')
@@ -526,7 +543,7 @@ class PolyMarketAccountEventWss:
         }))
 
     @runAsThread
-    def start_ws(self):
+    def _start_ws(self):
         """
         Start the WebSocket connection.
         :return:
@@ -558,56 +575,4 @@ class PolyMarketTrader:
 
 
 if __name__ == '__main__':
-    from dotenv import load_dotenv
-    # noinspection PyProtectedMember
-    from argus.polymarket_direct._examples.unsub_test import get_all_btc_live_events
-
-    load_dotenv()
-    os.environ['POLYMARKET_NO_SAFETY_CHECK'] = 'true'
-
-
-    def fatal_handler(info: dict):
-        print(colored(f"[{__name__}] FATAL ERROR HANDLER TRIGGERED. CANCELLING ALL ORDERS.", 'red',
-                      attrs=['bold', 'blink']))
-        classx: PolyRestAPI = info.get('self')
-        if classx:
-            for order in classx.order_cache['orders']:
-                classx.cancel_order(order_id=order['orderID'])
-
-
-    rest = PolyRestAPI(
-        private_key=os.environ['POLYMARKET_PRIVATE_KEY'],
-        proxy_funder=os.environ['POLYMARKET_PROXY_FUNDER'],
-        fatal_callback=fatal_handler
-    )
-
-    wss = PolyMarketAccountEventWss(rest.credentials)
-    wss.wait_till_socket_open.wait()
-    print('WebSocket is open and running. Listening for account events...')
-
-    def a_test_function():
-        event: pm_types.PolymarketEvent = get_all_btc_live_events()[0]
-        print('Testing with event:', event.ticker)
-        tkn_id = event.markets[0].clobTokenIds[0]
-        print('tkn_id:', tkn_id)
-        print(rest.get_balance())
-        ordddr = rest.place_order(token_id=tkn_id, price=float(rest.get_tick_size(tkn_id)), size=5, side='buy',
-                                  market=event)
-        order_property = rest.order_cache['orders']
-        order_id = order_property[-1]['orderID']
-
-        # noinspection PyBroadException
-        try:
-            rest.get_order_status(ordddr['orderID'])
-        except:
-            traceback.print_exc()
-
-        throw_fuss("Order placed, waiting to cancel...", notify=False)
-        input('Press Enter to cancel order...\n')
-        print('Canceling order...')
-        rest.cancel_order(order_id=order_id)
-        time.sleep(1)
-        # print(rest.get_trades())
-
-    a_test_function()
-    input('Press Enter to exit...\n')
+    pass
