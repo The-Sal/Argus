@@ -85,14 +85,6 @@ def fatal_decorator(func_idx):
 class PolyRestAPI:
     """
     A REST API client for interacting with Polymarket's CLOB via py_clob_client and other endpoints.
-
-    Available Endpoints and Features:
-    – Fetch Events: Retrieve a list of events from Polymarket.
-    – Execute Orders
-    – Get Order Status
-    – Cancel Orders
-    – Order history
-
     """
 
     def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com',
@@ -421,11 +413,11 @@ class PolyRestAPI:
         }
 
 
-# TODO: Implement PolyMarketAccountEventWss
 class PolyMarketAccountEventWss:
     """
     A WebSocket that exists just to listen to account events from the Polymarket CLOB.
     This is an authorised WSS connection to Polymarket and CLOB it is SEPARATE from `EnhancedPM`
+    and does NOT provide any market data or order placement functionality.
     """
 
     def __init__(self, auth: dict):
@@ -440,9 +432,6 @@ class PolyMarketAccountEventWss:
         self._reconnect_attempts = 0
         self._internally_closed = False
         self._last_disconnect = time.time() * 1000  # far in the future
-
-
-        # Start a semaphores on lock (0) to wait till socket is open
         self._reset_threading_events()
         self.start_ws()
 
@@ -517,14 +506,11 @@ class PolyMarketAccountEventWss:
                 pass
             time.sleep(10)
 
-
     def _on_open(self, ws):
         logging.info('Polymarket Account Event WebSocket opened.')
         self.authenticate_ws_for_asset_ids()
         self.ping()
         self.wait_till_socket_open.clear()
-
-
 
     def authenticate_ws_for_asset_ids(self):
         """
@@ -551,7 +537,6 @@ class PolyMarketAccountEventWss:
             idx='POLYMARKET',
             websocket=self.user_ws,
         )
-
 
 
 # TODO: Implement PolyMarketTrader
