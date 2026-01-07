@@ -412,7 +412,6 @@ class PolyRestAPI:
             "passphrase": creds.api_passphrase,
         }
 
-
 class PolyMarketAccountEventWss:
     """
     A WebSocket that exists just to listen to account events from the Polymarket CLOB.
@@ -587,23 +586,203 @@ class PolyMarketAccountEventWss:
             websocket=self.user_ws,
         )
 
-
-# TODO: Implement PolyMarketTrader
-class PolyMarketTrader:
+class PolyMarketOrderBookWss:
     """
-
-    The highest level class for trading on Polymarket mixing REST and WebSocket functionality.
-    Supports:
-        * Placing Orders via REST
-        * Canceling Orders via REST
-        * Order Updates via WebSocket
-        * Portfolio Asset(s) Tracking via REST + WebSocket
-        * Semaphore Locks for Safe Multi-Threaded Trading
-        * Locks for order fill .*_and_wait functions
+    A level 2 order book WebSocket for Polymarket markets.
     """
+    def __init__(self, order_book_update_callback=None):
+        self._asset_id_to_order_book = {}
 
-    def __init__(self):
-        raise NotImplementedError("PolyMarketTrader is not implemented yet.")
+        self._market_ws: WebSocketApp = None
+        self._reconnect_attempts = 0
+        self._max_reconnect_attempts = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', '50'))
+        self._ping_pong_lock = threading.Lock()
+        self._ping_pongs = (0, 0)  # (sent, received)
+        self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
+        self._internally_closed = False
+        self._allow_ping = True
+        self._reset_threading_events()
+        self._order_book_update_callback = order_book_update_callback
+
+    #############################################
+    # WebSocket Event Handlers  & Utilities
+    #############################################
+
+    def _reset_threading_events(self):
+        """
+        Reset threading events for socket open and first pong.
+        The 'default' state is 'set' meaning the socket/ping is not ready.
+        :return:
+        """
+        self.wait_till_socket_open = threading.Event()
+        self.wait_till_first_pong = threading.Event()
+
+        self.wait_till_socket_open.set()
+        self.wait_till_first_pong.set()
+
+    def _init_ws(self):
+        """
+        Initialize the WebSocket connection to Polymarket order book events.
+        :return:
+        """
+        with self._ping_pong_lock:
+            self._ping_pongs = (0, 0)
+        self._market_ws = WebSocketApp(
+            url='wss://ws-subscriptions-clob.polymarket.com/ws/market',
+            on_open=self._on_open,
+            on_close=self._on_close,
+            on_error=self._on_error,
+            on_message=self._on_message
+        )
+
+    @runAsThread
+    def ping(self):
+        while True:
+            try:
+                if self._allow_ping:
+                    self._market_ws.send("PING")
+                    with self._ping_pong_lock:
+                        self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
+                        pings = self._ping_pongs[0]
+                        pongs = self._ping_pongs[1]
+                        logging.info(
+                            'Sending PING to Polymarket Order Book WebSocket. Total PINGs: %d, Total PONGs: %d',
+                            pings, pongs
+                        )
+
+                        ping_delta = abs(pings - pongs)
+                        if ping_delta > 3:
+                            logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(self._max_ping_pong_failures))
+
+                        if ping_delta >= self._max_ping_pong_failures:
+                            logging.error(
+                                'Maximum PING-PONG failures reached. Reconnecting Polymarket Order Book WebSocket...'
+                            )
+                            self._market_ws.close()
+                else:
+                    logging.info('Ping to Polymarket Order Book WebSocket is currently disabled.')
+            except Exception as e:
+                logging.error("Market WebSocket ping failed: %s", e)
+                pass
+            time.sleep(10)
+
+    def _on_message(self, ws, message):
+        _ = ws
+        if message == "PONG":
+            logging.debug('Polymarket Order Book WebSocket received PONG.')
+            with self._ping_pong_lock:
+                self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
+            self.wait_till_first_pong.clear()
+            return
+
+        content = json.loads(message)
+        logging.info('Polymarket Order Book WebSocket message received: %s', content)
+        self._handle_order_book_message(content)
+
+    def _on_close(self, ws, close_status_code, close_msg):
+        self._defer_restore_state()
+        self._allow_ping = False
+        _ = ws
+        logging.warning('Polymarket Order Book WebSocket closed. Code: %s, Message: %s', close_status_code,
+                        close_msg)
+        print("Attempting to reconnect Polymarket Order Book WebSocket...")
+        if not self._internally_closed:
+            self._reconnect_attempts += 1
+            if self._reconnect_attempts > self._max_reconnect_attempts:
+                logging.error('Maximum reconnect attempts reached for Polymarket Order Book WebSocket. Giving up.')
+                return
+            time.sleep(1)
+            self._start_ws()
+        self._allow_ping = True
+
+    def _on_open(self, ws):
+        _ = ws
+        logging.info('Polymarket Order Book WebSocket opened.')
+        self.ping()
+        self.wait_till_socket_open.clear()
+
+    @staticmethod
+    def _on_error(ws, error):
+        _ = ws
+        throw_fuss(
+            msg="POLYMARKET ORDER BOOK WEBSOCKET ERROR:\n{}".format(traceback.format_exc()),
+            notify=False
+        )
+        macos_notification_with_custom_sound(
+            title="POLYMARKET ORDER BOOK WEBSOCKET ERROR",
+            message=str(error),
+            sound_name="Basso"
+        )
+
+    @runAsThread
+    def _start_ws(self):
+        """
+        Start the WebSocket connection.
+        :return:
+        """
+        logging.info('Starting Polymarket Order Book WebSocket...')
+        self._init_ws()
+        wp_wrappers.start_proxy_aware_ws(
+            idx='POLYMARKET',
+            websocket=self._market_ws,
+        )
+
+    ##############################################
+    # Message Handlers & Logic
+    ##############################################
+
+    def _handle_order_book_message(self, message: dict) -> None:
+        """
+        Handle incoming order book messages. To form the full state of the order book
+        once updated will call `self._order_book_update_callback` if provided.
+        :param message: A dictionary containing the order book message.
+        :return: None
+        """
+        pass
+
+    def subscribe_to_asset_id(self, asset_id: str):
+        """
+        Subscribe to order book updates for a specific asset ID.
+        :param asset_id: The asset ID to subscribe to.
+        :return: None
+        """
+        pass
+
+    def unsubscribe_from_asset_id(self, asset_id: str):
+        """
+        Unsubscribe from order book updates for a specific asset ID.
+        This will remove the order book from the internal state. It will no
+        longer be tracked.
+
+        :param asset_id: The asset ID to unsubscribe from.
+        :return:
+        """
+        pass
+
+    @runAsThread
+    def _defer_restore_state(self):
+        """
+        Waits for `wait_till_first_pong` to be cleared, then restores WebSocket subscriptions
+        to previously subscribed asset IDs. Should only be called internally after a disconnect.
+        :return:
+        """
+        pass
+
+    def order_book_for_asset_id(self, asset_id: str):
+        """
+        Get the order book for a specific asset ID.
+        :param asset_id: Asset ID to get an order book for.
+        :return:
+        """
+        return self._asset_id_to_order_book.get(asset_id, None)
+
+    @property
+    def order_books(self):
+        return self._asset_id_to_order_book
+
+    @property
+    def asset_ids(self):
+        return list(self._asset_id_to_order_book.keys())
 
 
 if __name__ == '__main__':
