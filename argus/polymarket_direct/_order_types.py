@@ -301,3 +301,118 @@ class TradeData:
 
     def __getitem__(self, index: int) -> Trade:
         return self.trades[index]
+
+
+@dataclass
+class OrderEvent:
+    """Represents an order lifecycle event from the Polymarket CLOB WebSocket or event stream.
+
+    OrderEvent captures real-time updates about order state changes, including placements,
+    cancellations, fills, and other lifecycle transitions. Unlike PolyMarketOrder which
+    represents the current state from REST API queries, OrderEvent represents a temporal
+    event with both the action taken (type) and the resulting order state.
+
+    This data class is typically populated from WebSocket feeds or event-driven APIs
+    and is used for:
+    - Real-time order monitoring and lifecycle tracking
+    - Event-driven trading workflows (reacting to placements/cancellations)
+    - Audit trails and order history reconstruction
+    - Latency measurement (comparing created_at vs timestamp)
+
+    Attributes:
+        id: Unique identifier for the order on the CLOB.
+        owner: Address of the account that owns/created the order.
+        market: Market identifier from Polymarket for the prediction market.
+        asset_id: Token ID representing the specific outcome being traded.
+        side: Direction of the order ('BUY' or 'SELL').
+        order_owner: Owner identifier (may differ from owner address in some contexts).
+        original_size: Original number of shares/contracts specified in the order.
+        size_matched: Amount of the original_size that has been filled via trades.
+        price: Price per share in USDC (0-1 for binary markets).
+        associate_trades: List of trade IDs or Trade objects associated with this order.
+        outcome: Description of the outcome this order is betting on.
+        type: Event action type ('PLACEMENT', 'CANCELLATION', 'MATCH', etc).
+        created_at: Unix timestamp indicating when the order was originally placed.
+        expiration: Timestamp or expiration policy for order validity.
+        order_type: Type of order placement (e.g., 'GTC' = Good-Till-Cancelled).
+        status: Current status of the order ('LIVE', 'CANCELED', 'FILLED', etc).
+        maker_address: Address of the market maker (or proxy funder) for order settlement.
+        timestamp: Unix timestamp (with milliseconds) when this event occurred.
+        event_type: Category of event (e.g., 'order', 'trade', 'book').
+    """
+    id: str
+    owner: str
+    market: str
+    asset_id: str
+    side: str
+    order_owner: str
+    original_size: str
+    size_matched: str
+    price: str
+    associate_trades: List
+    outcome: str
+    type: str
+    created_at: str
+    expiration: str
+    order_type: str
+    status: str
+    maker_address: str
+    timestamp: str
+    event_type: str
+
+    def __repr__(self):
+        return (
+            f"OrderEvent(id={self.id}, type={self.type}, status={self.status}, "
+            f"event_type={self.event_type}, side={self.side}, outcome={self.outcome}, "
+            f"original_size={self.original_size}, size_matched={self.size_matched}, "
+            f"price={self.price}, timestamp={self.timestamp})"
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'OrderEvent':
+        """Create an OrderEvent from a dictionary (e.g., parsed JSON from WebSocket)."""
+        return cls(
+            id=data['id'],
+            owner=data['owner'],
+            market=data['market'],
+            asset_id=data['asset_id'],
+            side=data['side'],
+            order_owner=data['order_owner'],
+            original_size=data['original_size'],
+            size_matched=data['size_matched'],
+            price=data['price'],
+            associate_trades=data.get('associate_trades', []),
+            outcome=data['outcome'],
+            type=data['type'],
+            created_at=data['created_at'],
+            expiration=data['expiration'],
+            order_type=data['order_type'],
+            status=data['status'],
+            maker_address=data['maker_address'],
+            timestamp=data['timestamp'],
+            event_type=data['event_type']
+        )
+
+    def to_dict(self) -> dict:
+        """Convert the OrderEvent to a dictionary for serialization."""
+        return {
+            'id': self.id,
+            'owner': self.owner,
+            'market': self.market,
+            'asset_id': self.asset_id,
+            'side': self.side,
+            'order_owner': self.order_owner,
+            'original_size': self.original_size,
+            'size_matched': self.size_matched,
+            'price': self.price,
+            'associate_trades': self.associate_trades,
+            'outcome': self.outcome,
+            'type': self.type,
+            'created_at': self.created_at,
+            'expiration': self.expiration,
+            'order_type': self.order_type,
+            'status': self.status,
+            'maker_address': self.maker_address,
+            'timestamp': self.timestamp,
+            'event_type': self.event_type
+        }
