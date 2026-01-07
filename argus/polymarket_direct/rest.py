@@ -442,7 +442,6 @@ class PolyMarketAccountEventWss:
         self._allow_ping = True
         self._reset_threading_events()
 
-
         self._ping_pong_lock = threading.Lock()
         self._ping_pongs = (0, 0)  # (sent, received)
         self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
@@ -457,7 +456,6 @@ class PolyMarketAccountEventWss:
         """
         self.wait_till_socket_open = threading.Event()
         self.wait_till_first_pong = threading.Event()
-
 
         self.wait_till_socket_open.set()
         self.wait_till_first_pong.set()
@@ -501,7 +499,8 @@ class PolyMarketAccountEventWss:
     def _on_close(self, ws, close_status_code, close_msg):
         self._allow_ping = False
         _ = ws
-        logging.warning('Polymarket Account Event WebSocket closed. Code: %s, Message: %s', close_status_code, close_msg)
+        logging.warning('Polymarket Account Event WebSocket closed. Code: %s, Message: %s', close_status_code,
+                        close_msg)
         print("Attempting to reconnect Polymarket Account Event WebSocket...")
         if not self._internally_closed:
             self._reconnect_attempts += 1
@@ -535,11 +534,16 @@ class PolyMarketAccountEventWss:
                         self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
                         pings = self._ping_pongs[0]
                         pongs = self._ping_pongs[1]
-                        logging.info('Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d', pings, pongs)
-                        if pings - pongs > 3:
-                            logging.warning('No PONG received for last 3 PINGs....')
+                        logging.info(
+                            'Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d',
+                            pings, pongs
+                        )
 
-                        if abs((pings - pongs)) >= self._max_ping_pong_failures:
+                        ping_delta = abs(pings - pongs)
+                        if ping_delta > 3:
+                            logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(self._max_ping_pong_failures))
+
+                        if ping_delta >= self._max_ping_pong_failures:
                             logging.error(
                                 'Maximum PING-PONG failures reached. Reconnecting Polymarket Account Event WebSocket...'
                             )
