@@ -325,8 +325,6 @@ def example_usage():
     # to prevent memory growth over 24+ hour runtime (Issue: memory growth)
     del raw_data_dump
     del cleaned_raw_dump
-    raw_data_dump = None
-    cleaned_raw_dump = None
 
 
     def _sorted_by_time_key(sorting_event: PolymarketEvent):
@@ -365,7 +363,6 @@ def example_usage():
     
     # Free memory: live_markets list is only used for display
     del live_markets
-    live_markets = None
 
     # here's the idea because markets in bitcoin hourly start one after the other, we want a continuous stream of data
     # that follows the current live market and when it ends, switches to the next one. We do that
