@@ -221,19 +221,20 @@ class EnhancedPM:
         while self._enable_rolling:
             time.sleep(self._write_interval)
             
-            # Take a snapshot of current messages and check if rollover is needed
-            # Use lock to ensure thread-safety
+            # Take a snapshot of current messages with thread-safety
             with self._ws_messages_lock:
-                if len(self.ws_messages) > self._max_message_count:
-                    print(f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
-                    self.message_seg_id += 1
-                    # Don't clear here - we'll write first, then clear below
-                
-                # Skip if no messages
+                # Skip if no messages to write
                 if not self.ws_messages:
                     continue
                 
-                # Take snapshot and clear the list atomically
+                # Check if we should rollover to a new segment file
+                # Rollover creates a new file by incrementing segment ID
+                if len(self.ws_messages) > self._max_message_count:
+                    print(f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
+                    self.message_seg_id += 1
+                
+                # Take snapshot and clear atomically to prevent memory growth
+                # Messages are cleared on every write cycle, not just on rollover
                 messages_snapshot = self.ws_messages[:]
                 self.ws_messages = []
             
@@ -245,8 +246,6 @@ class EnhancedPM:
                         f.write(str(msg) + '\n')
             except Exception as e:
                 print(f"[Polymarket] Error writing messages to file: {e}")
-            
-            # Messages are now cleared (happened in the locked section above)
 
     ############################################
     # PUBLIC METHODS
