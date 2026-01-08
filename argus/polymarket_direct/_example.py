@@ -80,7 +80,7 @@ class StreamRecorder:
                     except EOFError:
                         break
         except Exception as e:
-            print(f"Error reading {filepath}: {e}")
+            print(f"Error reading records from {filepath}: {e}")
         return records
 
     def load_if_exists(self):
@@ -188,10 +188,18 @@ class StreamRecorder:
         """
         Merge all hourly pickle files into one mega file with start-end time in filename.
         Returns the path to the merged file, or None if no files to merge.
+        
+        Note: Currently disabled. Merging would need to be updated to use the new
+        append-only format (read_records_from_file() helper).
         """
         print("[Recorder] Merging hourly files no longer supported in this environment.")
-        sys.exit(0)
+        return None
 
+        # NOTE: The code below is commented out and would need to be updated
+        # to use the new append-only format. Replace pickle.load(f) with:
+        #   for record in StreamRecorder.read_records_from_file(hourly_file):
+        #       all_records.append(record)
+        #
         # try:
         #     import glob
         #
