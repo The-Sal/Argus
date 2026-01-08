@@ -79,6 +79,7 @@ class EnhancedPM:
         )
         self.idx_to_callback = {}
         self.ws_messages = []
+        self._ws_messages_lock = threading.Lock()  # Protect ws_messages list
         
         # Rolling mechanism configuration
         # Addresses issue #20: Unbounded memory growth due to lack of rolling mechanism
@@ -122,8 +123,9 @@ class EnhancedPM:
         2. Clearing in-memory message list (saw-tooth pattern)
         3. Creating new file segment for subsequent messages
         """
-        self.message_seg_id += 1
-        self.ws_messages = []
+        with self._ws_messages_lock:
+            self.message_seg_id += 1
+            self.ws_messages = []
 
     def init_market_ws(self):
         self.market_open_semaphore = threading.Semaphore(0)
@@ -178,11 +180,13 @@ class EnhancedPM:
         _ = ws
         try:
             data = json.loads(message)
-            self.ws_messages.append(data)
+            with self._ws_messages_lock:
+                self.ws_messages.append(data)
         except Exception as e:
             print("Error parsing WebSocket message:", e)
             data = message
-            self.ws_messages.append(data)
+            with self._ws_messages_lock:
+                self.ws_messages.append(data)
             print(data, len(data), type(data))
             return
 
@@ -194,8 +198,10 @@ class EnhancedPM:
         for change in changes:
             asset_id = change.get('asset_id')
             callback = self.idx_to_callback.get(asset_id)
+            # Skip if no callback found (asset was unsubscribed)
+            # WebSocket may still send messages for unsubscribed assets
             if callback is None:
-                raise ValueError(f"No callback found for asset_id: {asset_id}")
+                continue
             callback(change)
 
     @runAsThread
@@ -215,20 +221,32 @@ class EnhancedPM:
         while self._enable_rolling:
             time.sleep(self._write_interval)
             
-            # Check if rolling is enabled and we've exceeded the message count
-            if len(self.ws_messages) > self._max_message_count:
-                print(f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
-                self.rollover_message_segment()
-            
-            # Only write if we have messages
-            if not self.ws_messages:
-                continue
+            # Take a snapshot of current messages and check if rollover is needed
+            # Use lock to ensure thread-safety
+            with self._ws_messages_lock:
+                if len(self.ws_messages) > self._max_message_count:
+                    print(f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
+                    self.message_seg_id += 1
+                    # Don't clear here - we'll write first, then clear below
                 
-            # Generate filename based on rolling mechanism
-            current_filename = self.unique_file_name('ws_messages', 'fk')
-            with open(current_filename, 'w') as f:
-                for msg in self.ws_messages:
-                    f.write(str(msg) + '\n')
+                # Skip if no messages
+                if not self.ws_messages:
+                    continue
+                
+                # Take snapshot and clear the list atomically
+                messages_snapshot = self.ws_messages[:]
+                self.ws_messages = []
+            
+            # Write outside the lock to avoid blocking message appends
+            try:
+                current_filename = self.unique_file_name('ws_messages', 'fk')
+                with open(current_filename, 'w') as f:
+                    for msg in messages_snapshot:
+                        f.write(str(msg) + '\n')
+            except Exception as e:
+                print(f"[Polymarket] Error writing messages to file: {e}")
+            
+            # Messages are now cleared (happened in the locked section above)
 
     ############################################
     # PUBLIC METHODS
@@ -281,15 +299,16 @@ class EnhancedPM:
     def unsubscribe_from_market_data(self, asset_id):
         """
         Unsubscribe from real-time market data for the given market IDs.
-        Due to how polymarket's ws works, there is no actual unsubscribing; instead
-        we set the callback to a no-op lambda function.
-
+        Removes callbacks from the dictionary to prevent memory growth.
+        
         :param asset_id: The asset IDs to unsubscribe from.
         :return:
         """
         for idx in asset_id:
+            # Remove the callback entirely instead of setting to no-op
+            # This prevents dictionary growth and potential memory leaks from lambda references
             if idx in self.idx_to_callback:
-                self.idx_to_callback[idx] = lambda x: None
+                del self.idx_to_callback[idx]
 
     @runAsThread
     def start_market_ws(self):

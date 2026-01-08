@@ -319,6 +319,14 @@ def example_usage():
 
     with open('all_bitcoin_hourly.json', 'w') as f:
         f.write(json.dumps(cleaned_raw_dump, indent=4))
+    
+    # Free memory: clear temporary lists that are no longer needed
+    # These lists can grow large during initialization and should be released
+    # to prevent memory growth over 24+ hour runtime (Issue: memory growth)
+    del raw_data_dump
+    del cleaned_raw_dump
+    raw_data_dump = None
+    cleaned_raw_dump = None
 
 
     def _sorted_by_time_key(sorting_event: PolymarketEvent):
@@ -354,6 +362,10 @@ def example_usage():
             )
             live_markets.append(market)
     print('\n' + '=' * 100 + '\n')
+    
+    # Free memory: live_markets list is only used for display
+    del live_markets
+    live_markets = None
 
     # here's the idea because markets in bitcoin hourly start one after the other, we want a continuous stream of data
     # that follows the current live market and when it ends, switches to the next one. We do that
