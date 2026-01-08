@@ -15,7 +15,21 @@ from argus.polymarket_direct import EnhancedPM, PolymarketEvent
 class StreamRecorder:
     """
     Thread-safe recorder that accumulates market updates in-memory and persists them to disk via pickle
-    at a fixed interval using hourly rotation. On exit, merges all hourly files into one mega file.
+    at a fixed interval using hourly rotation. 
+    
+    File Format (changed to fix memory growth):
+    - Each hourly .pkl file contains multiple pickled records appended sequentially
+    - Records are NOT stored as a single list, but as individual pickled objects
+    - This allows append-only writes without loading the entire file into memory
+    - To read: use pickle.load() in a loop until EOFError
+    
+    Memory Fix:
+    - Previous implementation loaded entire hourly file (up to 35MB) every 60 seconds
+    - This caused memory fragmentation with 11,763 VM_ALLOCATE regions over 24 hours
+    - New implementation appends records without loading existing data
+    - Eliminates temporary lists (existing_records, combined_records) that caused memory growth
+    
+    On exit, merges all hourly files into one mega file.
     """
     def __init__(self, pickle_dir: str = '.', file_prefix: str = 'polymarket_stream', save_interval_sec: int = 60):
         self.pickle_dir = pickle_dir
@@ -41,6 +55,33 @@ class StreamRecorder:
     def _get_current_hour_key(self) -> str:
         """Get the current hour key based on UTC time"""
         return self._get_hour_key(datetime.datetime.now(datetime.UTC))
+    
+    @staticmethod
+    def read_records_from_file(filepath: str) -> list[dict]:
+        """Read all records from a pickle file in the new append-only format.
+        
+        Args:
+            filepath: Path to the .pkl file
+            
+        Returns:
+            List of all records in the file
+            
+        Note:
+            This helper method loads all records into memory and should only be used
+            for analysis/debugging, not during normal operation.
+        """
+        records = []
+        try:
+            with open(filepath, 'rb') as f:
+                while True:
+                    try:
+                        record = pickle.load(f)
+                        records.append(record)
+                    except EOFError:
+                        break
+        except Exception as e:
+            print(f"Error reading {filepath}: {e}")
+        return records
 
     def load_if_exists(self):
         """Load existing hourly pickle files if any exist (for continuity after restart)"""
@@ -65,7 +106,13 @@ class StreamRecorder:
             self.records.append(rec)
 
     def _atomic_save(self):
-        """Save current records to hourly file and clear buffer. Thread-safe."""
+        """Save current records to hourly file and clear buffer. Thread-safe.
+        
+        Uses append-only writes to avoid loading entire file into memory.
+        This fixes the memory growth issue where loading existing_records
+        and creating combined_records caused unbounded memory fragmentation
+        over 24+ hour runs.
+        """
         try:
             with self._lock:
                 if not self.records:
@@ -82,42 +129,24 @@ class StreamRecorder:
                     print(f"[Recorder] Hour rotation: {self.current_hour_key} -> {current_hour}")
                     self.current_hour_key = current_hour
 
-                # Get filename for current hour
+                # Get filename for current hour (now using .pkl extension)
                 hour_file = self._get_hourly_filename(self.current_hour_key)
-                tmp_path = hour_file + '.tmp'
 
-                # Load existing records from this hour file if it exists
-                existing_records = []
-                if os.path.exists(hour_file):
-                    try:
-                        with open(hour_file, 'rb') as f:
-                            data = pickle.load(f)
-                            if isinstance(data, list):
-                                existing_records = data
-                    except Exception as e:
-                        print(f"Warning: Could not load existing {hour_file}: {e}")
-
-                # Combine existing with new records
+                # Take snapshot and clear buffer atomically
                 snapshot = list(self.records)
-                combined_records = existing_records + snapshot
                 record_count = len(snapshot)
-
-                # Clear the buffer NOW (before writing to avoid holding lock during I/O)
                 self.records.clear()
 
-            # Write atomically (outside lock to avoid holding during I/O)
-            with open(tmp_path, 'wb') as f:
-                pickle.dump(combined_records, f, protocol=pickle.HIGHEST_PROTOCOL)
-            os.replace(tmp_path, hour_file)
+            # Append to file using pickle protocol (outside lock)
+            # Write each record as a separate pickled object to enable append-only mode
+            # This avoids loading the entire file into memory
+            with open(hour_file, 'ab') as f:  # append binary mode
+                for record in snapshot:
+                    pickle.dump(record, f, protocol=pickle.HIGHEST_PROTOCOL)
 
             return True, record_count
 
         except Exception as e:
-            try:
-                if 'tmp_path' in locals() and os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
             print(f"Failed to save hourly pickle: {e}")
             return False, 0
 
