@@ -8,6 +8,7 @@ import traceback
 import subprocess
 
 MODULE_NAME = 'argus'
+os.environ['ARGUS_CACHES_DISABLED'] = '1'
 
 print("Running Argus CI/CD Pipeline Tests...")
 print('Python Version:', sys.version)
