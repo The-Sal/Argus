@@ -91,18 +91,35 @@ A **Dispatcher** is a server that:
 
 ### Protocol 2 Packet Format
 
+Protocol 2 supports versioning to enable backward-compatible protocol evolution.
+
+**Version 1 (Default):**
 ```
 ~<packet-length><symbol-length>|<symbol><market-data>L
+```
 
-Components:
+**Version 2+ (with versioning):**
+```
+~<packet-length><symbol-length>|<symbol><market-data>|V=<version>L
+```
+
+**Components:**
+```
   ~                  Start marker (1 byte)
   <packet-length>    4-byte ASCII integer (total packet size excluding header)
   <symbol-length>    4-byte ASCII integer (symbol/ticker length)
   |                  Delimiter (1 byte)
   <symbol>           ASCII-encoded ticker symbol (variable length)
-  <market-data>      CSV format with 9 fields (see below)
+  <market-data>      CSV format with 8+ fields (see below)
+  |V=<version>       Optional version field (v2+)
   L                  Terminator (1 byte)
 ```
+
+**Version Compatibility:**
+- **Version 1 packets:** No version field, backward compatible with all parsers
+- **Version 2+ packets:** Include `|V=<version>` field before terminator
+- **Parser behavior:** Automatically detects version, defaults to 1 if not present
+- **Parsed result:** Includes `_p2_version` field indicating protocol version
 
 ### Market Data Fields (in order)
 
@@ -119,14 +136,20 @@ Components:
 _This is not consistent with every data source, some may use different ordering or omissions. See each
  dispatcher's documents for details._
 
-### Example Packet
+### Example Packets
 
+**Version 1 (no version field):**
 ```
 ~00710004|AAPL150.25,1000,150.30,800,150.28,100,50000,1732275600.123,1732275600.456L
 ```
 
-**Decoded:**
-- Packet length: 71 bytes
+**Version 2 (with version field):**
+```
+~00750004|AAPL150.25,1000,150.30,800,150.28,100,50000,1732275600.123,1732275600.456|V=2L
+```
+
+**Decoded (both versions):**
+- Packet length: 71 bytes (v1) or 75 bytes (v2)
 - Symbol length: 4 bytes
 - Symbol: `AAPL`
 - Bid: $150.25 × 1000
@@ -135,6 +158,7 @@ _This is not consistent with every data source, some may use different ordering 
 - Shortable shares: 50,000
 - Source timestamp: 1732275600.123
 - Transmission timestamp: 1732275600.456
+- Protocol version: 1 (v1 packet) or 2 (v2 packet)
 
 ### Parsing Protocol 2
 
@@ -149,11 +173,32 @@ parser = Protocol2Parser([
     'timestamp', 'transmission_time'
 ])
 
-# Parse a packet
+# Parse a packet (automatically detects version)
 result = parser.parse(data)
-# Returns: {'symbol': 'AAPL', 'bid': 150.25, 'bid_size': 1000, ...}
-# The array [...] defines the expected fields and their order should be
-# consistent with the dispatcher's output
+# Returns: {
+#   'symbol': 'AAPL', 
+#   '_p2_version': 1,  # or 2+ if versioned packet
+#   'bid': 150.25, 
+#   'bid_size': 1000, 
+#   ...
+# }
+
+# Check protocol version
+if result['_p2_version'] >= 2:
+    # Handle version 2+ specific features
+    pass
+```
+
+### Creating Versioned Packets
+
+```python
+from argus.capital._svr_utils import transmit_mkt_data_with_protocol_2
+
+# Create version 1 packet (default, backward compatible)
+packet_v1 = transmit_mkt_data_with_protocol_2(mkt_data)
+
+# Create version 2 packet (includes version field)
+packet_v2 = transmit_mkt_data_with_protocol_2(mkt_data, version=2)
 ```
 
 ### Why Not JSON?
@@ -163,7 +208,7 @@ result = parser.parse(data)
 | **Size** | ~70 bytes | ~200 bytes |
 | **Parse time** | O(n) single-pass | O(n) with object allocation |
 | **Type safety** | Enforced by parser | Client-side validation needed |
-| **Extensibility** | Backward compatible | Versioning required |
+| **Versioning** | Built-in, backward compatible | Manual versioning required |
 | **Bandwidth** | Minimal | 3x larger |
 
 For high-frequency trading and real-time analytics, Protocol 2's efficiency is critical.

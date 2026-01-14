@@ -460,7 +460,7 @@ data = decode_packet(packet)  # Returns bytes
 
 **Purpose:** Server → Client real-time market updates
 
-**Format:**
+**Format (Version 1 - default):**
 ```
 ~<packet-length><symbol-length>|<symbol><csv-data>L
 
@@ -474,6 +474,14 @@ Where:
   L: Terminator
 ```
 
+**Format (Version 2+ - with versioning):**
+```
+~<packet-length><symbol-length>|<symbol><csv-data>|V=<version>L
+
+Additional field:
+  |V=<version>: Version identifier (e.g., |V=2)
+```
+
 **CSV Fields (in order):**
 1. `bid`
 2. `bid_size`
@@ -484,9 +492,14 @@ Where:
 7. `timestamp` (Capital.com server timestamp in milliseconds)
 8. `transmission_time` (Argus transmission timestamp)
 
-**Example:**
+**Example (Version 1):**
 ```
 ~00710006|BTCUSD105099.85,0.2,105149.85,0.2,0.0,0.0,1750217540462,1750217540500L
+```
+
+**Example (Version 2):**
+```
+~00750006|BTCUSD105099.85,0.2,105149.85,0.2,0.0,0.0,1750217540462,1750217540500|V=2L
 ```
 
 **Parsing:**
@@ -499,8 +512,18 @@ parser = Protocol2Parser([
 ])
 
 result = parser.parse(packet)
-# {'symbol': 'BTCUSD', 'bid': 105099.85, 'bid_size': 0.2, ...}
+# {'symbol': 'BTCUSD', '_p2_version': 1, 'bid': 105099.85, 'bid_size': 0.2, ...}
+
+# Check protocol version
+if result['_p2_version'] >= 2:
+    # Handle version 2+ specific features
+    pass
 ```
+
+**Versioning Benefits:**
+- **Backward compatible:** Version 1 packets work with all parsers
+- **Forward compatible:** New parsers auto-detect version
+- **Extensible:** Future versions can add new fields without breaking old clients
 
 ### Why Dual Protocols?
 
@@ -512,10 +535,12 @@ result = parser.parse(packet)
 | **Frequency** | Low (on-demand) | High (continuous) |
 | **Parsing** | `json.loads()` | O(n) single-pass |
 | **Flexibility** | High (arbitrary fields) | Low (fixed schema) |
+| **Versioning** | N/A | Built-in (v2+) |
 
 **Design Rationale:**
 - **Protocol 1** provides flexibility for control messages (new actions can be added)
 - **Protocol 2** provides efficiency for high-frequency market data
+- **P2 Versioning** enables protocol evolution without breaking existing clients
 - Clients automatically differentiate by inspecting byte position 5 (`|` = P1, else P2)
 
 ## Limitations
