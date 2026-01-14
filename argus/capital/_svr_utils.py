@@ -10,10 +10,16 @@ It provides two main protocols:
 
 Protocol Formats:
 - Basic: ~<data-length>|{data}
-- Protocol 2: ~<packet-length><symbol-length>|<symbol><market-data>L
+- Protocol 2 (v1): ~<packet-length><symbol-length>|<symbol><market-data>L
+- Protocol 2 (v2+): ~<packet-length><symbol-length>|<symbol><market-data>|V=<version>L
+
+Versioning:
+- Version 1 (default): No version field present in packet
+- Version 2+: Optional |V=<version> field before terminator 'L'
+- Backward compatible: Old parsers ignore version field, new parsers detect it
 
 Author: [Your Name]
-Version: 1.0
+Version: 2.0
 """
 
 from typing import List, Dict, Union, Any
@@ -158,20 +164,24 @@ def decode_multiple_packets(data: bytes) -> List[bytes]:
 # Protocol 2: Market Data Protocol
 # =============================================================================
 
-def transmit_mkt_data_with_protocol_2(mkt_data) -> bytes:
+def transmit_mkt_data_with_protocol_2(mkt_data, version: int = 1) -> bytes:
     """
-    Transmit market data using Protocol 2 format.
+    Transmit market data using Protocol 2 format with optional versioning.
 
-    Format: ~<packet-length><symbol-length>|<symbol><market-data>L
+    Format (v1): ~<packet-length><symbol-length>|<symbol><market-data>L
+    Format (v2+): ~<packet-length><symbol-length>|<symbol><market-data>|V=<version>L
+    
     Where:
         - packet-length: 4-byte integer for total packet length (excluding header)
         - symbol-length: 4-byte integer for symbol length
         - symbol: ASCII-encoded symbol
         - market-data: CSV-formatted market data from transferable_2() method
+        - V=<version>: Optional version field (only included if version > 1)
         - L: Terminator byte
 
     Args:
         mkt_data: Market data object with symbol attribute and transferable_2() method
+        version: Protocol version number (default: 1 for backward compatibility)
 
     Returns:
         bytes: Encoded Protocol 2 packet
@@ -182,7 +192,8 @@ def transmit_mkt_data_with_protocol_2(mkt_data) -> bytes:
 
     Example:
         >>> # Assuming mkt_data is a CapitalComMKTDataLive object
-        >>> packet = transmit_mkt_data_with_protocol_2(mkt_data)
+        >>> packet = transmit_mkt_data_with_protocol_2(mkt_data)  # Version 1 (no version field)
+        >>> packet_v2 = transmit_mkt_data_with_protocol_2(mkt_data, version=2)  # Version 2
     """
     # Validate input (commented out original isinstance check as it requires specific import)
     if not hasattr(mkt_data, 'symbol') or not hasattr(mkt_data, 'transferable_2'):
@@ -195,7 +206,13 @@ def transmit_mkt_data_with_protocol_2(mkt_data) -> bytes:
     # Build packet without header
     symbol_bytes = symbol.encode('ascii')
     symbol_length_header = f'{len(symbol_bytes):04d}|'.encode('ascii')
-    packet_without_heading = symbol_length_header + symbol_bytes + packet_data + b'L'
+    
+    # Add version field only if version > 1
+    if version > 1:
+        version_field = f'|V={version}'.encode('ascii')
+        packet_without_heading = symbol_length_header + symbol_bytes + packet_data + version_field + b'L'
+    else:
+        packet_without_heading = symbol_length_header + symbol_bytes + packet_data + b'L'
 
     # Add main header
     packet_length_header = f"~{len(packet_without_heading):04d}".encode('ascii')
@@ -256,11 +273,12 @@ class Protocol2Parser:
             position += total_packet_length
         return packets
 
-    def parse(self, packet_bytes: bytes) -> Dict[str, Union[str, float]]:
+    def parse(self, packet_bytes: bytes) -> Dict[str, Union[str, float, int]]:
         """
-        Parse Protocol 2 packet in O(n) time complexity.
+        Parse Protocol 2 packet in O(n) time complexity with version detection.
 
-        Packet Format: ~<packet-length><symbol-length>|<symbol><market-data>L
+        Packet Format (v1): ~<packet-length><symbol-length>|<symbol><market-data>L
+        Packet Format (v2+): ~<packet-length><symbol-length>|<symbol><market-data>|V=<version>L
 
         Args:
             packet_bytes: Raw packet bytes to parse
@@ -268,6 +286,7 @@ class Protocol2Parser:
         Returns:
             Dict containing:
                 - 'symbol': String symbol identifier
+                - '_p2_version': Protocol version (int, default 1 if not present)
                 - Field values as specified in decoding_order (as floats)
 
         Raises:
@@ -279,7 +298,7 @@ class Protocol2Parser:
             >>> packet = b'~0025|0006|BTCUSD50000.0,50001.0,50000.5L'
             >>> result = parser.parse(packet)
             >>> result
-            {'symbol': 'BTCUSD', 'bid': 50000.0, 'ask': 50001.0, 'last': 50000.5}
+            {'symbol': 'BTCUSD', '_p2_version': 1, 'bid': 50000.0, 'ask': 50001.0, 'last': 50000.5}
         """
         # Validate minimum packet size
         if len(packet_bytes) < 11:  # Minimum: ~0000|0000|L
@@ -336,6 +355,18 @@ class Protocol2Parser:
         except UnicodeDecodeError:
             raise ValueError("Invalid ASCII encoding in market data")
 
+        # Check for version field: |V=<version>
+        version = 1  # Default to version 1 if not present
+        if '|V=' in market_data_str:
+            # Split on |V= to extract version
+            parts = market_data_str.rsplit('|V=', 1)
+            if len(parts) == 2:
+                market_data_str = parts[0]
+                try:
+                    version = int(parts[1])
+                except ValueError:
+                    raise ValueError(f"Invalid version format in packet: {parts[1]}")
+
         # Parse CSV values in single pass
         values = self._parse_csv_values(market_data_str)
 
@@ -351,7 +382,7 @@ class Protocol2Parser:
 
 
         # Build result dictionary
-        result = {'symbol': symbol}
+        result = {'symbol': symbol, '_p2_version': version}
         for i, field_name in enumerate(self.decoding_order):
             result[field_name] = values[i]
 
