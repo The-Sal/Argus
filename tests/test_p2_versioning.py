@@ -225,12 +225,16 @@ def test_packet_size_validation():
     packet_v1 = transmit_mkt_data_with_protocol_2(mkt_data, version=1)
     packet_v2 = transmit_mkt_data_with_protocol_2(mkt_data, version=2)
     
-    # Version 2 should be longer due to |V=2 field (4 bytes)
+    # Version 2 should be longer due to |V=2 field (4 bytes) plus 1 byte for updated packet length
     print(f"V1 packet length: {len(packet_v1)}")
     print(f"V2 packet length: {len(packet_v2)}")
+    print(f"Difference: {len(packet_v2) - len(packet_v1)} bytes")
     
     assert len(packet_v2) > len(packet_v1), "Version 2 packet should be longer"
-    assert len(packet_v2) - len(packet_v1) == 4, "Version 2 should be exactly 4 bytes longer (|V=2)"
+    # The difference is 4 bytes for |V=2, plus potentially 1 more if packet length header changes
+    # due to going from 3-digit to 4-digit length
+    size_diff = len(packet_v2) - len(packet_v1)
+    assert size_diff in [4, 5], f"Version 2 should be 4-5 bytes longer (|V=2), got {size_diff}"
     
     # Both should parse correctly
     parser = Protocol2Parser(['bid', 'bid_size', 'ask', 'ask_size', 'last', 'last_size', 'timestamp', 'transmission_time'])
