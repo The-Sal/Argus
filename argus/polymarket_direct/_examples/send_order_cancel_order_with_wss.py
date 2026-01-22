@@ -10,7 +10,13 @@ def do_the_test():
     # noinspection PyProtectedMember
     from argus.polymarket_direct._examples.unsub_test import get_all_btc_live_events
     load_dotenv()
-    os.environ['POLYMARKET_NO_SAFETY_CHECK'] = 'true'
+
+    #########################################################################################################
+    # WARNING: Be VERY careful when disabling safety checks! Only disable during tight-development loops.
+    # where safety checks have been completed at least once and you are SURE of what you are doing.
+    #########################################################################################################
+    # os.environ['POLYMARKET_NO_SAFETY_CHECK'] = 'true'
+    #########################################################################################################
 
     def fatal_handler(info: dict):
         print(colored(f"[{__name__}] FATAL ERROR HANDLER TRIGGERED. CANCELLING ALL ORDERS.", 'red',
