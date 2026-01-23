@@ -13,9 +13,13 @@ from argus.polymarket_direct import rest, EnhancedPM
 
 
 class PolymarketDispatcher(Server, Introspective):
-    def __init__(self, private_key: str = os.environ['POLYMARKET_PRIVATE_KEY'],
-                 proxy_funder: str = os.environ['POLYMARKET_PROXY_FUNDER'],
-                 host="localhost", port=8765):
+    def __init__(self, private_key: str = None, proxy_funder: str = None, host="localhost", port=8765):
+        if private_key is None:
+            private_key = os.environ['POLYMARKET_PRIVATE_KEY']
+
+        if proxy_funder is None:
+            proxy_funder = os.environ['POLYMARKET_PROXY_FUNDER']
+
         super().__init__(
             on_recv=self._on_recv,
             on_disconnect=lambda *args: print("PolymarketDispatcher: Disconnected from client.", args),
