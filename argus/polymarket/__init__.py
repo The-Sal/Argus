@@ -7,9 +7,9 @@ In a future version this documentation referencing the old dispatcher will be re
 """
 import os
 import socket
+from argus.polymarket_direct import rest
 from utils3.networking.sockets import Server
 from argus._argus_utils import Introspective
-from argus.polymarket_direct import rest, EnhancedPM
 
 
 class PolymarketDispatcher(Server, Introspective):
@@ -29,7 +29,7 @@ class PolymarketDispatcher(Server, Introspective):
         Introspective.__init__(self)
 
         # All the below are already registered with WireProxy system
-        self.epm = EnhancedPM()
+        self.market_data = rest.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
         self.rest_api = rest.PolyRestAPI(private_key=private_key, proxy_funder=proxy_funder,
                                          fatal_callback=self._on_fatal_error)
         self.account_updates = rest.PolyMarketAccountEventWss(auth=self.rest_api.credentials)
@@ -41,4 +41,7 @@ class PolymarketDispatcher(Server, Introspective):
         pass
 
     def _on_fatal_error(self, error: dict):
+        pass
+
+    def _order_book_update_callback(self, update):
         pass
