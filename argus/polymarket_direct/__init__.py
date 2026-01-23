@@ -28,7 +28,6 @@ from argus import throw_fuss
 from utils3 import runAsThread
 from websocket import WebSocketApp
 from argus.capital import DomainCache
-from py_clob_client.client import ClobClient
 from argus.polymarket_direct._types import PolymarketEvent
 from argus.wireproxy.wrapper import start_proxy_aware_ws, update_request_session_proxy, start_proxy_and_return_bind
 
@@ -64,7 +63,7 @@ class EnhancedPM:
     """
 
     def __init__(self,
-                 private_key, proxy_funder,
+                 private_key = None, proxy_funder = None,
                  host='https://clob.polymarket.com',
                  chain_id=137, order_book_depth=1, dry_mode='XXX',
                  max_socket_retries=100):
@@ -74,19 +73,7 @@ class EnhancedPM:
                    " set it to a non-default value, but it is currently unused. Please remove it from your code.")
             logging.warning(msg)
 
-        # IDE Stop complaining about unused variables
-        self.clob: ClobClient = None
-        if os.environ.get('POLYMARKET_ENABLE_CLOB') == 'true':
-            _make_httpx_clob_client()
-            logging.info("Initializing ClobClient for Polymarket")
-            self.clob = ClobClient(
-                host,
-                key=private_key,
-                chain_id=chain_id,
-                signature_type=1,
-                funder=proxy_funder,
-            )
-            self.clob.set_api_creds(self._create_or_derive_api_creds())
+        _ = (private_key, proxy_funder, dry_mode, host, chain_id)
 
         self.max_socket_retries = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', max_socket_retries))
         self.bd = order_book_depth
@@ -123,24 +110,11 @@ class EnhancedPM:
         self._ping()
 
     ############################################
-    # PY_CLOB_CLIENT Related Methods
-    ############################################
-
-    @dCache.cache_decorator(
-        func_uuid='_create_or_derive_api_creds',
-        expiration=60 * 60,
-        should_cache_function=lambda x: x is not None
-    )
-    def _create_or_derive_api_creds(self):
-        response = self.clob.create_or_derive_api_creds()
-        return response
-
-    ############################################
     # NON-PUBLIC METHODS
     ############################################
 
     def unique_file_name(self, file_name, file_type):
-        """Generate unique filename with UUID and segment ID
+        """Generate a unique filename with UUID and segment ID
 
         Part of issue #20 fix - creates segmented filenames for rolling mechanism
         Pattern: {filename}_{uuid}-{segment_id}.{file_type}
@@ -153,7 +127,7 @@ class EnhancedPM:
         Core fix for issue #20 - prevents unbounded memory growth by:
         1. Incrementing segment ID for new file naming
         2. Clearing in-memory message list (saw-tooth pattern)
-        3. Creating new file segment for subsequent messages
+        3. Creating a new file segment for later messages
         """
         self.message_seg_id += 1
         self.ws_messages = []

@@ -591,6 +591,13 @@ class PolyMarketOrderBookWss:
     A level 2 order book WebSocket for Polymarket markets.
     """
     def __init__(self, order_book_update_callback=None):
+
+        # Where a singular order book is stored as:
+        # {
+        #   'bids': [(price1, size1), (price2, size
+        #   'asks': [(price1, size1), (price2, size2), ...]
+        # }
+        # asset ID then indexes the above in the main dict below
         self._asset_id_to_order_book = {}
 
         self._market_ws: WebSocketApp = None
