@@ -9,112 +9,13 @@ import os
 import json
 import socket
 import logging
-import threading
+from utils3 import runAsThread
 from argus.polymarket_direct import rest
-from utils3 import runAsThread, assertTypes
 from utils3.networking.sockets import Server
 from argus._argus_utils import Introspective
 from argus.capital import decode_multiple_packets, encode_packet
-
-
-class PolyMarketDispatcherError(Exception):
-    pass
-
-
-class InvalidArgumentError(PolyMarketDispatcherError):
-    pass
-
-
-class UnRegisteredClientError(PolyMarketDispatcherError):
-    pass
-
-
-class SocketWrapper:
-    """
-    A simple wrapper around a socket that adds an identifier.
-    """
-
-    def __init__(self, sock: socket.socket, idx: str):
-        self.socket = sock
-        self.id = idx
-
-    def sendall(self, data: bytes):
-        self.socket.sendall(data)
-
-    def recv(self, bufsize: int) -> bytes:
-        return self.socket.recv(bufsize)
-
-
-class DoubleSocketWrapper:
-    """
-    A wrapper around a pair of sockets: control and market data.
-    """
-
-    @assertTypes([SocketWrapper, SocketWrapper], class_method=True, auto_convert=False)
-    def __init__(self, control_socket: SocketWrapper, market_socket: SocketWrapper):
-        self.control_socket = control_socket
-        self.market_socket = market_socket
-        self.idx = control_socket.id
-
-    def __eq__(self, other):
-        if not isinstance(other, DoubleSocketWrapper):
-            return False
-        return self.idx == other.idx
-
-    def __hash__(self):
-        return hash(self.idx)
-
-    def send_control(self, data: bytes):
-        self.control_socket.sendall(data)
-
-    def recv_control(self, bufsize: int) -> bytes:
-        return self.control_socket.recv(bufsize)
-
-    def send_market(self, data: bytes):
-        self.market_socket.sendall(data)
-
-
-class SocketsRegistry:
-    """
-    This class maintains a mapping between control sockets and market data sockets.
-    It allows registering pairs of sockets so that given a control socket, one can
-    retrieve the corresponding market data socket.
-
-    """
-
-    def __init__(self):
-        self._thread_lock = threading.Lock()
-
-        self._orphaned_ids = {}
-        self.double_sockets: set[DoubleSocketWrapper] = set()
-
-    def register_pair(self, control_socket: SocketWrapper, market_socket: SocketWrapper):
-        with self._thread_lock:
-            if control_socket is None and market_socket is not None:
-                # orphaned market socket
-                market_socket_id = market_socket.id
-                if market_socket_id not in self._orphaned_ids:
-                    self._orphaned_ids[market_socket_id] = market_socket
-                else:
-                    # this id already exists, meaning the control socket must have already been registered
-                    existing_market_socket = self._orphaned_ids[market_socket_id]
-                    self.double_sockets.add(
-                        DoubleSocketWrapper(control_socket=existing_market_socket, market_socket=market_socket))
-                    del self._orphaned_ids[market_socket_id]
-            elif market_socket is None and control_socket is not None:
-                # orphaned control socket
-                control_socket_id = control_socket.id
-                if control_socket_id not in self._orphaned_ids:
-                    self._orphaned_ids[control_socket_id] = control_socket
-                else:
-                    # this id already exists, meaning the market socket must have already been registered
-                    existing_control_socket = self._orphaned_ids[control_socket_id]
-                    self.double_sockets.add(
-                        DoubleSocketWrapper(control_socket=control_socket, market_socket=existing_control_socket))
-                    del self._orphaned_ids[control_socket_id]
-            else:
-                # both sockets are provided
-                self.double_sockets[control_socket] = market_socket
+from argus.polymarket._classes import (SocketsRegistry, SocketWrapper, DoubleSocketWrapper,
+                                       PolyMarketDispatcherError, InvalidArgumentError, UnRegisteredClientError)
 
 
 class PolymarketDispatcher(Introspective):
@@ -151,7 +52,8 @@ class PolymarketDispatcher(Introspective):
         self.market_data = rest.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
         self.rest_api = rest.PolyRestAPI(private_key=private_key, proxy_funder=proxy_funder,
                                          fatal_callback=self._on_fatal_error)
-        self.account_updates = rest.PolyMarketAccountEventWss(auth=self.rest_api.credentials)
+        self.account_updates = rest.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
+                                                              update_callback=self._account_update_callback)
 
     #######################################
     # Callbacks
@@ -203,6 +105,9 @@ class PolymarketDispatcher(Introspective):
         print(f"PolymarketDispatcher: Market data socket connected with id {mkt_socket_id} from {address}")
         self.sockets_registry.register_pair(control_socket=None,
                                             market_socket=SocketWrapper(client_socket, mkt_socket_id))
+
+        # this is the end of the thread, from this point forward the market data socket's writes
+        # will literally never be read. Only data will be sent to it from the dispatcher when needed.
 
     def run_all(self):
         runAsThread(self.control_server.start)()

@@ -83,6 +83,13 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket_direct/rest.py`
 - **Behavior**: When `false`, skips Stage 2 direct Polymarket geo-block verification (DANGEROUS)
 
+### `POLYMARKET_USER_EVENTS_FUSS`
+- **Purpose**: Enable/disable fuss notifications for user account events
+- **Default**: `false`
+- **Required**: No
+- **Used in**: `polymarket_direct/rest.py`
+- **Behavior**: When `true`, triggers fuss notifications and macOS notifications for user account events received via WebSocket
+
 ## Interactive Brokers Integration
 
 ### `IB_COOKIE`

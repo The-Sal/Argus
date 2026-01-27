@@ -420,13 +420,16 @@ class PolyMarketAccountEventWss:
     any state information.
     """
 
-    def __init__(self, auth: dict):
+    def __init__(self, auth: dict, update_callback=None):
         """
         Initialize the Polymarket Account Event WebSocket.
         :param auth: {"apiKey": api_key, "secret": api_secret, "passphrase": api_passphrase}
             Can be obtained from CLOB API.
+
+        :param update_callback: A callback function that will be called with each OrderEvent received.
         """
         self._auth = auth
+        self._update_callback = update_callback
 
         # auth dict validation
         keys_needed = ["apiKey", "secret", "passphrase"]
@@ -444,6 +447,8 @@ class PolyMarketAccountEventWss:
         self._ping_pong_lock = threading.Lock()
         self._ping_pongs = (0, 0)  # (sent, received)
         self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
+
+        self._throw_fuss_on_user_events = os.environ.get('POLYMARKET_USER_EVENTS_FUSS', 'false').lower() == 'true'
 
         self._start_ws()
 
@@ -489,11 +494,17 @@ class PolyMarketAccountEventWss:
 
         content = json.loads(message)
         update = OrderEvent.from_dict(content)
-        throw_fuss(update.__repr__(), notify=False)
-        macos_notification_with_custom_sound(
-            title="POLYMARKET USER ACCOUNT EVENT",
-            message="A new account event occurred."
-        )
+
+        if self._throw_fuss_on_user_events:
+            throw_fuss(update.__repr__(), notify=False)
+            macos_notification_with_custom_sound(
+                title="POLYMARKET USER ACCOUNT EVENT",
+                message="A new account event occurred."
+            )
+
+        logging.info('Polymarket Account Event WebSocket message received: %s', content)
+        if self._update_callback:
+            self._update_callback(update)
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._allow_ping = False
