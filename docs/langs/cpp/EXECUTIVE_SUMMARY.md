@@ -57,7 +57,7 @@
 
 ## Detailed Analysis Documents
 
-### 📄 [Full Analysis](./CPP_CONVERSION_ANALYSIS.md)
+### 📄 [Full Analysis](./CONVERSION_ANALYSIS.md)
 **60+ pages covering:**
 - Complete dependency analysis
 - Module-by-module breakdown
@@ -75,7 +75,7 @@
 6. Recommendations (incremental vs full conversion)
 7. Action items (week-by-week checklist)
 
-### 📄 [Polymarket Quick Start](./POLYMARKET_CPP_QUICKSTART.md)
+### 📄 [Polymarket Quick Start](./POLYMARKET_QUICKSTART.md)
 **20+ pages focused on polymarket dispatcher:**
 - TL;DR summary (2-4 weeks, low risk)
 - Implementation checklist (week-by-week)
@@ -323,7 +323,7 @@ Fetched 5 events
   ...
 ```
 
-**Next:** Follow week-by-week checklist in [POLYMARKET_CPP_QUICKSTART.md](./POLYMARKET_CPP_QUICKSTART.md)
+**Next:** Follow week-by-week checklist in [POLYMARKET_QUICKSTART.md](./POLYMARKET_QUICKSTART.md)
 
 ---
 
@@ -361,8 +361,8 @@ Fetched 5 events
 ## Support & Resources
 
 ### Documentation
-- [Full Analysis](./CPP_CONVERSION_ANALYSIS.md) - 60+ pages, comprehensive
-- [Quick Start Guide](./POLYMARKET_CPP_QUICKSTART.md) - 20+ pages, polymarket focus
+- [Full Analysis](./CONVERSION_ANALYSIS.md) - 60+ pages, comprehensive
+- [Quick Start Guide](./POLYMARKET_QUICKSTART.md) - 20+ pages, polymarket focus
 
 ### Questions?
 - Open issue: https://github.com/The-Sal/Argus/issues

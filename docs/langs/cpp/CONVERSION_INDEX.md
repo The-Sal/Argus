@@ -15,7 +15,7 @@ This directory contains comprehensive analysis and guides for converting Argus (
 - Getting started in 1 day (quick prototype)
 
 ### 📊 Detailed Analysis
-**[CPP_CONVERSION_ANALYSIS.md](./CPP_CONVERSION_ANALYSIS.md)** - 60+ pages, 1-2 hour read
+**[CONVERSION_ANALYSIS.md](./CONVERSION_ANALYSIS.md)** - 60+ pages, 1-2 hour read
 - Complete repository analysis (~12,000 LOC Python)
 - Module-by-module breakdown (11 modules)
 - Dependency mapping (Python → C++)
@@ -26,7 +26,7 @@ This directory contains comprehensive analysis and guides for converting Argus (
 - Hybrid approach recommendations
 
 ### 🛠️ Implementation Guide
-**[POLYMARKET_CPP_QUICKSTART.md](./POLYMARKET_CPP_QUICKSTART.md)** - 20+ pages, practical guide
+**[POLYMARKET_QUICKSTART.md](./POLYMARKET_QUICKSTART.md)** - 20+ pages, practical guide
 - Week-by-week implementation checklist
 - CMake template + Conan dependencies
 - Code samples (HTTP, WebSocket, types, callbacks)
@@ -47,19 +47,19 @@ This directory contains comprehensive analysis and guides for converting Argus (
 
 ### I'm a Developer (Considering Conversion)
 1. Skim **EXECUTIVE_SUMMARY.md** (5 min)
-2. Read **CPP_CONVERSION_ANALYSIS.md** sections 1-4 (30 min)
+2. Read **CONVERSION_ANALYSIS.md** sections 1-4 (30 min)
 3. Review dependency analysis and architecture patterns
 4. Check module complexity table
 
 ### I'm Ready to Implement (Polymarket)
 1. Quick review **EXECUTIVE_SUMMARY.md** (5 min)
-2. Study **POLYMARKET_CPP_QUICKSTART.md** in detail (1 hour)
+2. Study **POLYMARKET_QUICKSTART.md** in detail (1 hour)
 3. Follow "Getting Started" prototype (1 day)
 4. Use week-by-week checklist for full implementation
 
 ### I Want Full Argus-CPP
 1. Read **EXECUTIVE_SUMMARY.md** (10 min)
-2. Study **CPP_CONVERSION_ANALYSIS.md** completely (2 hours)
+2. Study **CONVERSION_ANALYSIS.md** completely (2 hours)
 3. Review "Phase 1-6" breakdown (section 4.1)
 4. Check risk factors and mitigation strategies
 5. Start with polymarket dispatcher as proof-of-concept
@@ -115,21 +115,21 @@ This directory contains comprehensive analysis and guides for converting Argus (
 
 ### Dependency Analysis
 - **EXECUTIVE_SUMMARY:** "Repository Context" section
-- **CPP_CONVERSION_ANALYSIS:** Section 2 (Dependency Analysis)
-- **POLYMARKET_CPP_QUICKSTART:** "Dependencies" section
+- **CONVERSION_ANALYSIS:** Section 2 (Dependency Analysis)
+- **POLYMARKET_QUICKSTART:** "Dependencies" section
 
 ### Architecture Patterns
-- **CPP_CONVERSION_ANALYSIS:** Section 3 (Architecture & Patterns)
+- **CONVERSION_ANALYSIS:** Section 3 (Architecture & Patterns)
   - Dispatcher pattern (3.1)
   - Protocol 2 format (3.2)
   - WebSocket handling (3.3)
 
 ### Cost-Benefit Analysis
 - **EXECUTIVE_SUMMARY:** "Cost-Benefit Analysis" section
-- **CPP_CONVERSION_ANALYSIS:** Section 4.2 (Risk Factors)
+- **CONVERSION_ANALYSIS:** Section 4.2 (Risk Factors)
 
 ### Implementation Details
-- **POLYMARKET_CPP_QUICKSTART:** All sections
+- **POLYMARKET_QUICKSTART:** All sections
   - Week-by-week checklist
   - CMake template
   - Code samples
@@ -137,10 +137,10 @@ This directory contains comprehensive analysis and guides for converting Argus (
 
 ### Performance Expectations
 - **EXECUTIVE_SUMMARY:** "Expected Performance Gains"
-- **POLYMARKET_CPP_QUICKSTART:** "Performance Expectations"
+- **POLYMARKET_QUICKSTART:** "Performance Expectations"
 
 ### Troubleshooting
-- **POLYMARKET_CPP_QUICKSTART:** "Common Pitfalls & Solutions"
+- **POLYMARKET_QUICKSTART:** "Common Pitfalls & Solutions"
 
 ---
 
@@ -190,7 +190,7 @@ This directory contains comprehensive analysis and guides for converting Argus (
 ## 🤔 FAQ
 
 ### Q: Should I convert to C++ or Swift?
-**A:** See CPP_CONVERSION_ANALYSIS.md section 6 for detailed comparison. TL;DR:
+**A:** See CONVERSION_ANALYSIS.md section 6 for detailed comparison. TL;DR:
 - C++ for cross-platform production systems (Linux/macOS/Windows)
 - Swift for Apple ecosystem development (iOS/macOS)
 - Python remains best for rapid iteration
@@ -234,7 +234,7 @@ Add 1-2 weeks buffer for unexpected issues.
 
 ### Implementation Questions
 - GitHub Discussions (if enabled)
-- Reference POLYMARKET_CPP_QUICKSTART.md "Resources" section
+- Reference POLYMARKET_QUICKSTART.md "Resources" section
 
 ### Need C++ Contractor?
 Consider hiring for first module (polymarket) if:
@@ -267,8 +267,8 @@ Consider hiring for first module (polymarket) if:
 ## ✅ Next Steps
 
 1. **Read EXECUTIVE_SUMMARY.md** (10 min) → Make decision
-2. **If yes, polymarket:** Read POLYMARKET_CPP_QUICKSTART.md (1 hour) → Start implementation
-3. **If yes, full conversion:** Read CPP_CONVERSION_ANALYSIS.md (2 hours) → Plan phases
+2. **If yes, polymarket:** Read POLYMARKET_QUICKSTART.md (1 hour) → Start implementation
+3. **If yes, full conversion:** Read CONVERSION_ANALYSIS.md (2 hours) → Plan phases
 4. **If maybe:** Prototype in 1 day (see EXECUTIVE_SUMMARY.md "Getting Started")
 
 **Good luck! 🚀**
