@@ -7,21 +7,22 @@ In a future version this documentation referencing the old dispatcher will be re
 """
 import os
 import json
+import time
+import tqdm
 import socket
+import difflib
 import logging
 import threading
-import time
 import traceback
-
-import tqdm
 from utils3 import runAsThread
-
-from argus.polymarket_direct import rest, PolymarketEvent
 from utils3.networking.sockets import Server
 from argus._argus_utils import Introspective
 from argus.polymarket_direct.rest import OrderEvent
+from argus.polymarket_direct import rest, PolymarketEvent
 from argus.capital import decode_multiple_packets, encode_packet, DomainCache
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
+
+
 
 _CACHE = DomainCache('polymarket_dispatcher_v2')
 
@@ -186,6 +187,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._market_cache_lock = threading.Lock()
 
         self._routing_helper = RoutingHelper()
+        # str is 'ticker' for Polymarket
         self._all_markets_cache: dict[str, PolymarketEvent] = {}
 
         # Configs
@@ -232,6 +234,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         @_CACHE.cache_decorator(
             func_uuid=uuid_of_func,
             expiration=60 * 60 * 3,  # 3 hours
+            should_cache_function=lambda x: len(x.keys()) > 0
         )
         def fetch_all_markets_cached():
             scoped_all_markets_cache = {}
@@ -248,7 +251,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                         offset=offset,
                         limit=self._market_api_limit
                     )
-                    scoped_all_markets_cache = {market.ticker: market for market in markets}
+                    scoped_all_markets_cache.update({market.ticker: market for market in markets})
                     offset += len(markets)
                     progress.update(len(markets))
                     progress.set_postfix({'Total Markets': len(scoped_all_markets_cache), 'Offset': offset})
@@ -315,7 +318,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
             # Market Data Requests
             'fetch_all_markets': self._handle_fetch_all_markets,
-            'fetch_market_by_clob_id': self._handle_fetch_market_by_clob_id,
+            'fetch_all_tickers': self._handle_fetch_all_markets_ticker,
+            'fetch_market_by_ticker': self._handle_fetch_market_by_ticker,
             'search_markets': self._handle_search_markets,
 
             # Order Management
@@ -429,7 +433,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # Market Data Requests
     #########################################
 
-    # Warning: This is a chunky method it sends a LOT of data
+    # Warning: This is a chunky method it sends a LOT of data,
+    # use `_handle_fetch_all_markets_ticker` instead if possible
     def _handle_fetch_all_markets(self, args_obj: ArgsObject):
         """
         Handle request to fetch all markets.
@@ -440,6 +445,59 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         _ = args_obj
         markets = self._all_markets_cache
         return [market.to_dict() for market in markets.values()]
+
+    def _handle_fetch_all_markets_ticker(self, args_obj: ArgsObject):
+        """
+        Handle request to fetch all market tickers.
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be empty.
+        :return:
+        """
+        _ = args_obj
+        markets = self._all_markets_cache
+        return list(markets.keys())
+
+    def _handle_fetch_market_by_ticker(self, args_obj: ArgsObject):
+        """
+        Handle a request to fetch a market by ticker.
+        :param args_obj: ArgsObject containing the socket and arguments.
+            [0] is expected to be the ticker string.
+        :return:
+        """
+        try:
+            ticker = args_obj.args[0]
+        except IndexError:
+            raise InvalidArgumentError("Ticker argument is required for fetch_market_by_ticker.")
+        market = self._all_markets_cache.get(ticker, None)
+        if market is None:
+            raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
+        return market.to_dict()
+
+    def _handle_search_markets(self, args_obj: ArgsObject):
+        """
+        Handle a request to search markets by keyword.
+        :param args_obj: ArgsObject containing the socket and arguments.
+            [0] is expected to be the search keyword string.
+            [1] optional is the limit of results to return (default 10).
+
+        Returns only the tickers of matching markets.
+        :return:
+        """
+        sorted_markets = sorted(
+            self._all_markets_cache.keys(),
+            key=lambda x: difflib.SequenceMatcher(None, args_obj.args[0], x).ratio(),
+            reverse=True
+        )
+        limit = 10
+        if len(args_obj.args) > 1:
+            try:
+                limit = int(args_obj.args[1])
+            except ValueError:
+                pass
+        return sorted_markets[:limit]
+
+
+
 
     ########################################
     # Utilities
