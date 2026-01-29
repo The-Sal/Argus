@@ -544,10 +544,12 @@ class PolyMarketAccountEventWss:
                         self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
                         pings = self._ping_pongs[0]
                         pongs = self._ping_pongs[1]
-                        logging.info(
-                            'Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d',
-                            pings, pongs
-                        )
+
+                        if os.environ.get('POLYMARKET_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
+                            logging.info(
+                                'Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d',
+                                pings, pongs
+                            )
 
                         ping_delta = abs(pings - pongs)
                         if ping_delta > 3:

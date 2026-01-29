@@ -293,7 +293,7 @@ Note: This represents the total cash available for trading or `COLLATERAL` per t
 Normally the action field corresponds directly to a specific action. However, there are some special actions that
 are sent by the server to notify clients of important events. These are the following special actions:
 
-### Notification
+### notification
 These are general notifications from the server. This includes events such as but is not limited to:
 * Token expiration
 * Dispatcher internal errors (non-fatal)
@@ -301,12 +301,12 @@ These are general notifications from the server. This includes events such as bu
 * WebSocket connection issues (generally the dispatcher auto-reconnects with full state restoration)
 * Pings (you do not need to respond to pings, they are just to keep the connection alive)
 
-### Fatal-Error
+### fatal_error
 These are CRITICAL ERRORS that happened inside the `PolyRestAPI` and was result of the `fatal_callback`.
 These should be considered as CRITICAL errors that require immediate attention. It maybe moments before the dispatcher
 completely crashes. 
 
-### Acc-Update
+### account_update
 These are messages sent when an account update has occurred. This includes events such as:
 * Order status changes (filled, canceled, etc.)
 * Orders placed

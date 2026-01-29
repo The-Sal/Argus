@@ -321,6 +321,45 @@ class PolymarketEvent:
         for mkt in self.markets:
             mkt.convert_to_datetime()
 
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'ticker': self.ticker,
+            'slug': self.slug,
+            'title': self.title,
+            'description': self.description,
+            'resolutionSource': self.resolutionSource,
+            'endDate': self.endDate,
+            'image': self.image,
+            'icon': self.icon,
+            'active': self.active,
+            'closed': self.closed,
+            'archived': self.archived,
+            'new': self.new,
+            'featured': self.featured,
+            'restricted': self.restricted,
+            'createdAt': self.createdAt,
+            'updatedAt': self.updatedAt,
+            'enableOrderBook': self.enableOrderBook,
+            'negRisk': self.negRisk,
+            'commentCount': self.commentCount,
+            'markets': [mkt.__dict__ for mkt in self.markets],
+            'series': [s.__dict__ for s in self.series],
+            'tags': [tag.__dict__ for tag in self.tags],
+            'cyom': self.cyom,
+            'showAllOutcomes': self.showAllOutcomes,
+            'showMarketImages': self.showMarketImages,
+            'enableNegRisk': self.enableNegRisk,
+            'automaticallyActive': self.automaticallyActive,
+            'seriesSlug': self.seriesSlug,
+            'negRiskAugmented': self.negRiskAugmented,
+            'pendingDeployment': self.pendingDeployment,
+            'deploying': self.deploying,
+            'startDate': self.startDate,
+            'creationDate': self.creationDate
+        }
+
+
 # Helper function to parse a Polymarket event from dictionary
 def parse_polymarket_event(data: dict) -> PolymarketEvent:
     """
