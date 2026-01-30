@@ -8,7 +8,7 @@ Argus runtime entrypoint.
 - Push Notifications requires macOS due to the use of osascript to notify on machine-local notifications
 - Capital.com, Polymarket, Binance, TradingView (Chart+Quote), etc... work on all platforms.
 - DO NOT PASS AUTH CREDENTIALS VIA COMMAND LINE ARGS, use environment variables or .env file instead.
-- Automatically loads .env file if present in working directory.
+- Automatically loads .env file if present in a working directory.
 """
 import sys
 import argus
@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from argus.ib.forecast import FXCDispatcher
 from argus.ib import MKTDispatcher, IBKRModes
 from argus.binance import BinanceMKTDispatcher
+from argus.polymarket import PolymarketDispatcher
 from argus.capital import MKTDispatcher as CapitalComDispatcher, Environment
 
 
@@ -55,7 +56,14 @@ def main(argv=None):
         dispatcher.select_account_interactive()
         dispatcher.ws.interactive_mode()
     elif args.target == 'polymarket':
-        raise NotImplementedError('Polymarket dispatcher is not yet implemented')
+        polymarket_kwargs = {}
+        if args.host:
+            polymarket_kwargs['host'] = args.host
+        if args.port is not None:
+            polymarket_kwargs['port'] = args.port
+        dispatcher = PolymarketDispatcher(**polymarket_kwargs)
+        dispatcher.interactive_mode()
+        print("Exiting Polymarket dispatcher")
     elif args.target == 'capital.com':
         print('Warning: capital.com uses Unix domain socket, --host/--port are ignored')
         if args.capital_env == 'demo':

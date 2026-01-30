@@ -161,7 +161,7 @@ class ArgsObject:
 
 class PolymarketDispatcher(Introspective, RoutingHelper):
     def __init__(self, private_key: str = None, proxy_funder: str = None,
-                 host="localhost", control_port=9972, market_data_port=9973):
+                 host="localhost", port=9972):
         super().__init__()
         RoutingHelper.__init__(self)
         if private_key is None:
@@ -174,7 +174,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             on_recv=self._handle_incoming_packets,
             on_disconnect=lambda *args: print("PolymarketDispatcher: Disconnected from client.", args),
             host=host,
-            port=control_port,
+            port=port,
         )
 
         # All the below are already registered with WireProxy system
@@ -522,8 +522,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     def run(self):
         self.dispatcher_svr.start()
 
+    def interactive_mode(self):
+        self._interactive_ui({})
+
 
 if __name__ == '__main__':
     dispatcher = PolymarketDispatcher()
     dispatcher.run()
+    dispatcher.interactive_mode()
     input("Polymarket Dispatcher running. Press Enter to exit...\n")
