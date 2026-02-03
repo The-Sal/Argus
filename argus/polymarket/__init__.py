@@ -23,8 +23,6 @@ from argus.polymarket_direct import rest, PolymarketEvent
 from argus.protocol import decode_multiple_packets, encode_packet
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
 
-
-
 _CACHE = DomainCache('polymarket_dispatcher_v2')
 
 
@@ -206,7 +204,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         logging.info("Market cache refresh interval set to %d seconds", self._market_cache_refresh_interval)
         logging.info("Market API limit set to %d", self._market_api_limit)
         logging.info("Max seen markets initialized to %d", self._max_seen_markets)
-
 
     #######################################
     # Worker Threads & Functions
@@ -502,9 +499,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             except ValueError:
                 pass
         return sorted_markets[:limit]
-
-
-
 
     ########################################
     # Utilities

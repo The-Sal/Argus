@@ -13,10 +13,10 @@ Argus connects to major financial data providers (Interactive Brokers, Capital.c
 ### Core Design Principles
 
 1. **Server-Client Architecture** - Dispatchers run as servers, clients connect via TCP/UDS
-2. **Dispatcher Paradigm** - Most modules follow a unified dispatcher pattern for consistency
-3. **Protocol 2 Normalization** - Standardized binary protocol across all dispatcher-based modules
+2. **Dispatcher Paradigm** – Most modules follow a unified dispatcher pattern for consistency
+3. **Protocol 2 Normalization** – Standardized binary protocol across all dispatcher-based modules
 4. **Multi-Client Support** - Single data stream multiplexed to multiple consuming processes
-5. **Language Agnostic** - Clients can be written in any language with socket support
+5. **Language Agnostic** – Clients can be written in any language with socket support
 
 ## Architecture
 

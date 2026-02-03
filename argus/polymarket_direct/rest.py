@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import hashlib
 import logging
 import requests
 import threading
@@ -412,6 +413,7 @@ class PolyRestAPI:
             "passphrase": creds.api_passphrase,
         }
 
+
 class PolyMarketAccountEventWss:
     """
     A WebSocket that exists just to listen to account events from the Polymarket CLOB.
@@ -460,14 +462,13 @@ class PolyMarketAccountEventWss:
     def _reset_threading_events(self):
         """
         Reset threading events for socket open and first pong.
-        The 'default' state is 'set' meaning the socket/ping is not ready.
+        The 'default' state is 'clear' meaning the socket/ping is not ready.
         :return:
         """
         self.wait_till_socket_open = threading.Event()
         self.wait_till_first_pong = threading.Event()
 
-        self.wait_till_socket_open.set()
-        self.wait_till_first_pong.set()
+        # Don't set these - they should start cleared (not ready)
 
     def _init_ws(self):
         """
@@ -491,25 +492,25 @@ class PolyMarketAccountEventWss:
     def _on_message(self, ws, message):
         _ = ws
         if message == "PONG":
-            logging.debug('Polymarket Account Event WebSocket received PONG.')
+            logging.debug('Polymarket Order Book WebSocket received PONG.')
             with self._ping_pong_lock:
                 self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
             self.wait_till_first_pong.clear()
             return
 
-        content = json.loads(message)
-        update = OrderEvent.from_dict(content)
+        try:
+            content = json.loads(message)
 
-        if self._throw_fuss_on_user_events:
-            throw_fuss(update.__repr__(), notify=False)
-            macos_notification_with_custom_sound(
-                title="POLYMARKET USER ACCOUNT EVENT",
-                message="A new account event occurred."
-            )
+            # If it's a list, iterate; if it's a dict, treat as single message
+            if isinstance(content, list):
+                for msg in content:
+                    self._handle_order_book_message(msg)
+            else:
+                self._handle_order_book_message(content)
 
-        logging.info('Polymarket Account Event WebSocket message received: %s', content)
-        if self._update_callback:
-            self._update_callback(update)
+        except json.JSONDecodeError as e:
+            print('WARNING: Failed to decode Polymarket Order Book WebSocket message: "{}"'.format(message))
+            raise
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._allow_ping = False
@@ -544,7 +545,8 @@ class PolyMarketAccountEventWss:
 
         # check if already pinging
         if self._pinging_lock.locked():
-            logging.warning('Ping thread for Polymarket Account Event WebSocket is already running. Not starting another.')
+            logging.warning(
+                'Ping thread for Polymarket Account Event WebSocket is already running. Not starting another.')
             return
 
         with self._pinging_lock:
@@ -583,14 +585,12 @@ class PolyMarketAccountEventWss:
                     pass
                 time.sleep(10)
 
-
-
     def _on_open(self, ws):
         _ = ws
         logging.info('Polymarket Account Event WebSocket opened.')
         self.authenticate_ws_for_asset_ids()
         self.ping()
-        self.wait_till_socket_open.clear()
+        self.wait_till_socket_open.set()
 
     def authenticate_ws_for_asset_ids(self):
         """
@@ -617,10 +617,12 @@ class PolyMarketAccountEventWss:
             websocket=self.user_ws,
         )
 
+
 class PolyMarketOrderBookWss:
     """
     A level 2 order book WebSocket for Polymarket markets.
     """
+
     def __init__(self, order_book_update_callback=None):
 
         # Where a singular order book is stored as:
@@ -649,14 +651,13 @@ class PolyMarketOrderBookWss:
     def _reset_threading_events(self):
         """
         Reset threading events for socket open and first pong.
-        The 'default' state is 'set' meaning the socket/ping is not ready.
+        The 'default' state is 'clear' meaning the socket/ping is not ready.
         :return:
         """
         self.wait_till_socket_open = threading.Event()
         self.wait_till_first_pong = threading.Event()
 
-        self.wait_till_socket_open.set()
-        self.wait_till_first_pong.set()
+        # Don't set these - they should start cleared (not ready)
 
     def _init_ws(self):
         """
@@ -690,7 +691,8 @@ class PolyMarketOrderBookWss:
 
                         ping_delta = abs(pings - pongs)
                         if ping_delta > 3:
-                            logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(self._max_ping_pong_failures))
+                            logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(
+                                self._max_ping_pong_failures))
 
                         if ping_delta >= self._max_ping_pong_failures:
                             logging.error(
@@ -713,9 +715,16 @@ class PolyMarketOrderBookWss:
             self.wait_till_first_pong.clear()
             return
 
-        content = json.loads(message)
-        logging.info('Polymarket Order Book WebSocket message received: %s', content)
-        self._handle_order_book_message(content)
+        try:
+            content = json.loads(message)
+            logging.info('Polymarket Order Book WebSocket message received: %s', content)
+            self._handle_order_book_message(content)
+        except json.JSONDecodeError as e:
+            print('WARNING: Failed to decode Polymarket Order Book WebSocket message: "{}"'.format(message))
+            raise
+        except Exception as e:
+            print('WARNING: Error handling Polymarket Order Book WebSocket message: "{}"'.format(message))
+            raise e
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._defer_restore_state()
@@ -739,7 +748,7 @@ class PolyMarketOrderBookWss:
         initial_msg = json.dumps({"assets_ids": [], "type": "market"})
         self._market_ws.send(initial_msg)
         self.ping()
-        self.wait_till_socket_open.clear()
+        self.wait_till_socket_open.set()
 
     @staticmethod
     def _on_error(ws, error):
@@ -775,21 +784,91 @@ class PolyMarketOrderBookWss:
     ##############################################
 
     def _handle_order_book_message(self, message: dict) -> None:
-        """
-        Handle incoming order book messages. To form the full state of the order book
-        once updated will call `self._order_book_update_callback` if provided.
-        :param message: A dictionary containing the order book message.
-        :return: None
-        """
-        pass
+        event_type = message.get('event_type')
+        asset_id = message.get('asset_id')
+
+        if not asset_id:
+            # Handle price_change multi-asset
+            if event_type == 'price_change' and 'price_changes' in message:
+                for change in message['price_changes']:
+                    self._update_order_book(change['asset_id'], change)
+            return
+
+        if event_type == 'book':
+            # Snapshot: bids descending, asks ascending
+            self._asset_id_to_order_book[asset_id] = {
+                'bids': sorted(
+                    message['bids'], key=lambda x: float(x['price']), reverse=True
+                ),  # List of dicts -> tuples
+                'asks': sorted(
+                    message['asks'], key=lambda x: float(x['price'])
+                )
+            }
+            # Validate hash if present (log mismatch)
+            book_hash = message.get('hash')
+            if book_hash and book_hash != self._compute_book_hash(asset_id):
+                logging.warning(f"Hash mismatch for {asset_id}")
+
+        elif event_type == 'price_change':
+            # Single-asset delta
+            self._update_order_book(asset_id, message)
+
+        # Callback with full book
+        if self._order_book_update_callback:
+            self._order_book_update_callback({
+                asset_id: self.order_book_for_asset_id(asset_id)
+            })
+
+    def _update_order_book(self, asset_id: str, change: dict) -> None:
+        """Apply delta: add/update size at price, or delete if size=0."""
+        if asset_id not in self._asset_id_to_order_book:
+            logging.warning(f"Unknown asset_id {asset_id} in delta")
+            return
+
+        book = self._asset_id_to_order_book[asset_id]
+        price = change['price']
+        size = float(change['size']) if change['size'] != '0' else 0
+        side = 'bids' if change['side'] == 'BUY' else 'asks'
+
+        # Update dict view for easy modify
+        if not hasattr(book[side], '_price_to_size'):
+            book[side]._price_to_size = {level['price']: float(level['size']) for level in book[side]}
+
+        if size == 0:
+            book[side]._price_to_size.pop(price, None)
+        else:
+            book[side]._price_to_size[price] = size
+
+        # Rebuild sorted list of tuples
+        book[side][:] = sorted(
+            book[side]._price_to_size.items(),
+            key=lambda x: float(x[0]), reverse=(side == 'bids')
+        )
+
+        # Validate new hash
+        new_hash = change.get('hash')
+        if new_hash and new_hash != self._compute_book_hash(asset_id):
+            logging.warning(f"Post-delta hash mismatch for {asset_id}")
+
+    def _compute_book_hash(self, asset_id: str) -> str:
+        """Recompute hash from current book state (match Polymarket's algo)."""
+        book = self.order_book_for_asset_id(asset_id)
+        if not book:
+            return ''
+
+        # Serialize bids+asks as JSON strings, sorted
+        def serialize_side(side):
+            return json.dumps(sorted(side, key=lambda x: x[0]))  # price str keys
+
+        content = f"{serialize_side(book['bids'])}|{serialize_side(book['asks'])}"
+        return hashlib.sha256(content.encode()).hexdigest()[:40]  # Truncate to observed length
 
     def subscribe_to_asset_id(self, asset_id: str):
-        """
-        Subscribe to order book updates for a specific asset ID.
-        :param asset_id: The asset ID to subscribe to.
-        :return: None
-        """
-        pass
+        self._market_ws.send(json.dumps({
+            "assets_ids": [asset_id],
+            "type": "market",
+            "operation": "subscribe"
+        }))
 
     def unsubscribe_from_asset_id(self, asset_id: str):
         """
@@ -800,7 +879,13 @@ class PolyMarketOrderBookWss:
         :param asset_id: The asset ID to unsubscribe from.
         :return:
         """
-        pass
+        self._market_ws.send(json.dumps({
+            "assets_ids": [asset_id],
+            "type": "market",
+            "operation": "unsubscribe"
+        }))
+        if asset_id in self._asset_id_to_order_book:
+            del self._asset_id_to_order_book[asset_id]
 
     @runAsThread
     def _defer_restore_state(self):
@@ -838,7 +923,13 @@ class PolyMarketOrderBookWss:
         else:
             self._start_ws()
 
+
 if __name__ == '__main__':
     wss = PolyMarketOrderBookWss(lambda x: print("Order Book Update Callback:", x))
-    wss.run()
+    wss.run(main_thread=False)
+    # wait with thereading event to ensure socket is open
+    wss.wait_till_socket_open.wait()
+    wss.subscribe_to_asset_id(
+        '114146289481875016482487618103244997576940433512574164333026946544813769810669'
+    )
     input('Press Enter to exit...\n')
