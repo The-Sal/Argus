@@ -1,7 +1,6 @@
 import os
 import json
 import time
-import hashlib
 import logging
 import requests
 import threading
@@ -450,11 +449,6 @@ class PolyMarketAccountEventWss:
         self._ping_pongs = (0, 0)  # (sent, received)
         self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
 
-        # In some cases we've seen concurrent pings causing issues
-        # that is since the ping function is a thread that runs forever;
-        # it should not be called twice ever while it's already running
-        self._pinging_lock = threading.Lock()
-
         self._throw_fuss_on_user_events = os.environ.get('POLYMARKET_USER_EVENTS_FUSS', 'false').lower() == 'true'
 
         self._start_ws()
@@ -492,25 +486,25 @@ class PolyMarketAccountEventWss:
     def _on_message(self, ws, message):
         _ = ws
         if message == "PONG":
-            logging.debug('Polymarket Order Book WebSocket received PONG.')
+            logging.debug('Polymarket Account Event WebSocket received PONG.')
             with self._ping_pong_lock:
                 self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
             self.wait_till_first_pong.clear()
             return
 
-        try:
-            content = json.loads(message)
+        content = json.loads(message)
+        update = OrderEvent.from_dict(content)
 
-            # If it's a list, iterate; if it's a dict, treat as single message
-            if isinstance(content, list):
-                for msg in content:
-                    self._handle_order_book_message(msg)
-            else:
-                self._handle_order_book_message(content)
+        if self._throw_fuss_on_user_events:
+            throw_fuss(update.__repr__(), notify=False)
+            macos_notification_with_custom_sound(
+                title="POLYMARKET USER ACCOUNT EVENT",
+                message="A new account event occurred."
+            )
 
-        except json.JSONDecodeError as e:
-            print('WARNING: Failed to decode Polymarket Order Book WebSocket message: "{}"'.format(message))
-            raise
+        logging.info('Polymarket Account Event WebSocket message received: %s', content)
+        if self._update_callback:
+            self._update_callback(update)
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._allow_ping = False
@@ -633,6 +627,9 @@ class PolyMarketOrderBookWss:
         # asset ID then indexes the above in the main dict below
         self._asset_id_to_order_book = {}
 
+        self._pinging_lock = threading.Lock()
+
+
         self._market_ws: WebSocketApp = None
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', '50'))
@@ -676,35 +673,48 @@ class PolyMarketOrderBookWss:
 
     @runAsThread
     def ping(self):
-        while True:
-            try:
-                if self._allow_ping:
-                    self._market_ws.send("PING")
+
+        # check if already pinging
+        if self._pinging_lock.locked():
+            logging.warning(
+                'Ping thread for Polymarket Account Event WebSocket is already running. Not starting another.')
+            return
+
+        with self._pinging_lock:
+            while True:
+                try:
+                    if self._allow_ping:
+                        self._market_ws.send("PING")
+                        with self._ping_pong_lock:
+                            self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
+                            pings = self._ping_pongs[0]
+                            pongs = self._ping_pongs[1]
+
+                            if os.environ.get('POLYMARKET_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
+                                logging.info(
+                                    'Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d',
+                                    pings, pongs
+                                )
+
+                            ping_delta = abs(pings - pongs)
+                            if ping_delta > 3:
+                                logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(
+                                    self._max_ping_pong_failures))
+
+                            if ping_delta >= self._max_ping_pong_failures:
+                                logging.error(
+                                    'Maximum PING-PONG failures reached. Reconnecting Polymarket Account Event WebSocket...'
+                                )
+                                self._market_ws.close()
+                    else:
+                        logging.info('Ping to Polymarket Account Event WebSocket is currently disabled.')
+                except Exception as e:
+                    logging.error("User WebSocket ping failed: %s", e)
                     with self._ping_pong_lock:
                         self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
-                        pings = self._ping_pongs[0]
-                        pongs = self._ping_pongs[1]
-                        logging.info(
-                            'Sending PING to Polymarket Order Book WebSocket. Total PINGs: %d, Total PONGs: %d',
-                            pings, pongs
-                        )
-
-                        ping_delta = abs(pings - pongs)
-                        if ping_delta > 3:
-                            logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(
-                                self._max_ping_pong_failures))
-
-                        if ping_delta >= self._max_ping_pong_failures:
-                            logging.error(
-                                'Maximum PING-PONG failures reached. Reconnecting Polymarket Order Book WebSocket...'
-                            )
-                            self._market_ws.close()
-                else:
-                    logging.info('Ping to Polymarket Order Book WebSocket is currently disabled.')
-            except Exception as e:
-                logging.error("Market WebSocket ping failed: %s", e)
-                pass
-            time.sleep(10)
+                        logging.info("Incrementing PING count despite error. Total PINGs: %d, Total PONGs: %d", )
+                    pass
+                time.sleep(10)
 
     def _on_message(self, ws, message):
         _ = ws
@@ -717,8 +727,14 @@ class PolyMarketOrderBookWss:
 
         try:
             content = json.loads(message)
-            logging.info('Polymarket Order Book WebSocket message received: %s', content)
-            self._handle_order_book_message(content)
+            # logging.info('Polymarket Order Book WebSocket message received: %s', content)
+
+            # Handle both list and dict messages
+            if isinstance(content, list):
+                for msg in content:
+                    self._handle_order_book_message(msg)
+            else:
+                self._handle_order_book_message(content)
         except json.JSONDecodeError as e:
             print('WARNING: Failed to decode Polymarket Order Book WebSocket message: "{}"'.format(message))
             raise
@@ -799,21 +815,17 @@ class PolyMarketOrderBookWss:
             self._asset_id_to_order_book[asset_id] = {
                 'bids': sorted(
                     message['bids'], key=lambda x: float(x['price']), reverse=True
-                ),  # List of dicts -> tuples
+                ),
                 'asks': sorted(
                     message['asks'], key=lambda x: float(x['price'])
                 )
             }
-            # Validate hash if present (log mismatch)
-            book_hash = message.get('hash')
-            if book_hash and book_hash != self._compute_book_hash(asset_id):
-                logging.warning(f"Hash mismatch for {asset_id}")
 
         elif event_type == 'price_change':
             # Single-asset delta
             self._update_order_book(asset_id, message)
 
-        # Callback with full book
+        # Callback with a full book
         if self._order_book_update_callback:
             self._order_book_update_callback({
                 asset_id: self.order_book_for_asset_id(asset_id)
@@ -822,7 +834,7 @@ class PolyMarketOrderBookWss:
     def _update_order_book(self, asset_id: str, change: dict) -> None:
         """Apply delta: add/update size at price, or delete if size=0."""
         if asset_id not in self._asset_id_to_order_book:
-            logging.warning(f"Unknown asset_id {asset_id} in delta")
+            # logging.warning(f"Unknown asset_id {asset_id} in delta")
             return
 
         book = self._asset_id_to_order_book[asset_id]
@@ -830,38 +842,19 @@ class PolyMarketOrderBookWss:
         size = float(change['size']) if change['size'] != '0' else 0
         side = 'bids' if change['side'] == 'BUY' else 'asks'
 
-        # Update dict view for easy modify
-        if not hasattr(book[side], '_price_to_size'):
-            book[side]._price_to_size = {level['price']: float(level['size']) for level in book[side]}
+        # Build price->size dict from current list of dicts
+        price_to_size = {level['price']: float(level['size']) for level in book[side]}
 
         if size == 0:
-            book[side]._price_to_size.pop(price, None)
+            price_to_size.pop(price, None)
         else:
-            book[side]._price_to_size[price] = size
+            price_to_size[price] = size
 
-        # Rebuild sorted list of tuples
-        book[side][:] = sorted(
-            book[side]._price_to_size.items(),
-            key=lambda x: float(x[0]), reverse=(side == 'bids')
+        # Rebuild sorted list of dicts
+        book[side] = sorted(
+            [{'price': p, 'size': str(s)} for p, s in price_to_size.items()],
+            key=lambda x: float(x['price']), reverse=(side == 'bids')
         )
-
-        # Validate new hash
-        new_hash = change.get('hash')
-        if new_hash and new_hash != self._compute_book_hash(asset_id):
-            logging.warning(f"Post-delta hash mismatch for {asset_id}")
-
-    def _compute_book_hash(self, asset_id: str) -> str:
-        """Recompute hash from current book state (match Polymarket's algo)."""
-        book = self.order_book_for_asset_id(asset_id)
-        if not book:
-            return ''
-
-        # Serialize bids+asks as JSON strings, sorted
-        def serialize_side(side):
-            return json.dumps(sorted(side, key=lambda x: x[0]))  # price str keys
-
-        content = f"{serialize_side(book['bids'])}|{serialize_side(book['asks'])}"
-        return hashlib.sha256(content.encode()).hexdigest()[:40]  # Truncate to observed length
 
     def subscribe_to_asset_id(self, asset_id: str):
         self._market_ws.send(json.dumps({
@@ -886,6 +879,20 @@ class PolyMarketOrderBookWss:
         }))
         if asset_id in self._asset_id_to_order_book:
             del self._asset_id_to_order_book[asset_id]
+
+    def subscribe_to_market(self, market: pm_types.PolymarketEvent):
+        """
+        Subscribe to order book updates for all asset IDs in a market.
+        :param market: The PolymarketEvent market to subscribe to.
+        :return:
+        """
+        if len(market.markets) > 1:
+            logging.warning('Market has multiple sub-markets; This is unexpected behavior.')
+            for m in market.markets:
+                logging.warning('Sub-market: %s', m)
+
+        for asset in market.markets[0].clobTokenIds:
+            self.subscribe_to_asset_id(asset.id)
 
     @runAsThread
     def _defer_restore_state(self):
@@ -925,11 +932,18 @@ class PolyMarketOrderBookWss:
 
 
 if __name__ == '__main__':
-    wss = PolyMarketOrderBookWss(lambda x: print("Order Book Update Callback:", x))
+    __x = 0
+
+    def ev(x):
+        global __x
+        __x += 1
+        print(f"\rEvents {__x}", end='')
+
+    wss = PolyMarketOrderBookWss(ev)
     wss.run(main_thread=False)
     # wait with thereading event to ensure socket is open
     wss.wait_till_socket_open.wait()
     wss.subscribe_to_asset_id(
-        '114146289481875016482487618103244997576940433512574164333026946544813769810669'
+        '57019809863459957624891779838199510276510917469190120383870695711577496872031'
     )
     input('Press Enter to exit...\n')
