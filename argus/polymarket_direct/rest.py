@@ -8,7 +8,7 @@ import traceback
 from termcolor import colored
 from utils3 import runAsThread
 from websocket import WebSocketApp
-from argus.capital import DomainCache
+from argus.cache_sys import DomainCache
 from py_clob_client import BalanceAllowanceParams
 from argus.wireproxy import wrapper as wp_wrappers
 from argus.polymarket_direct import _types as pm_types
@@ -448,6 +448,11 @@ class PolyMarketAccountEventWss:
         self._ping_pongs = (0, 0)  # (sent, received)
         self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
 
+        # In some cases we've seen concurrent pings causing issues
+        # that is since the ping function is a thread that runs forever;
+        # it should not be called twice ever while it's already running
+        self._pinging_lock = threading.Lock()
+
         self._throw_fuss_on_user_events = os.environ.get('POLYMARKET_USER_EVENTS_FUSS', 'false').lower() == 'true'
 
         self._start_ws()
@@ -536,36 +541,49 @@ class PolyMarketAccountEventWss:
 
     @runAsThread
     def ping(self):
-        while True:
-            try:
-                if self._allow_ping:
-                    self.user_ws.send("PING")
+
+        # check if already pinging
+        if self._pinging_lock.locked():
+            logging.warning('Ping thread for Polymarket Account Event WebSocket is already running. Not starting another.')
+            return
+
+        with self._pinging_lock:
+            while True:
+                try:
+                    if self._allow_ping:
+                        self.user_ws.send("PING")
+                        with self._ping_pong_lock:
+                            self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
+                            pings = self._ping_pongs[0]
+                            pongs = self._ping_pongs[1]
+
+                            if os.environ.get('POLYMARKET_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
+                                logging.info(
+                                    'Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d',
+                                    pings, pongs
+                                )
+
+                            ping_delta = abs(pings - pongs)
+                            if ping_delta > 3:
+                                logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(
+                                    self._max_ping_pong_failures))
+
+                            if ping_delta >= self._max_ping_pong_failures:
+                                logging.error(
+                                    'Maximum PING-PONG failures reached. Reconnecting Polymarket Account Event WebSocket...'
+                                )
+                                self.user_ws.close()
+                    else:
+                        logging.info('Ping to Polymarket Account Event WebSocket is currently disabled.')
+                except Exception as e:
+                    logging.error("User WebSocket ping failed: %s", e)
                     with self._ping_pong_lock:
                         self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
-                        pings = self._ping_pongs[0]
-                        pongs = self._ping_pongs[1]
+                        logging.info("Incrementing PING count despite error. Total PINGs: %d, Total PONGs: %d", )
+                    pass
+                time.sleep(10)
 
-                        if os.environ.get('POLYMARKET_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
-                            logging.info(
-                                'Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d',
-                                pings, pongs
-                            )
 
-                        ping_delta = abs(pings - pongs)
-                        if ping_delta > 3:
-                            logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(self._max_ping_pong_failures))
-
-                        if ping_delta >= self._max_ping_pong_failures:
-                            logging.error(
-                                'Maximum PING-PONG failures reached. Reconnecting Polymarket Account Event WebSocket...'
-                            )
-                            self.user_ws.close()
-                else:
-                    logging.info('Ping to Polymarket Account Event WebSocket is currently disabled.')
-            except Exception as e:
-                logging.error("User WebSocket ping failed: %s", e)
-                pass
-            time.sleep(10)
 
     def _on_open(self, ws):
         _ = ws
@@ -718,6 +736,8 @@ class PolyMarketOrderBookWss:
     def _on_open(self, ws):
         _ = ws
         logging.info('Polymarket Order Book WebSocket opened.')
+        initial_msg = json.dumps({"assets_ids": [], "type": "market"})
+        self._market_ws.send(initial_msg)
         self.ping()
         self.wait_till_socket_open.clear()
 
@@ -735,7 +755,7 @@ class PolyMarketOrderBookWss:
         )
 
     @runAsThread
-    def _start_ws(self):
+    def _start_ws(self) -> threading.Thread:
         """
         Start the WebSocket connection.
         :return:
@@ -746,6 +766,9 @@ class PolyMarketOrderBookWss:
             idx='POLYMARKET',
             websocket=self._market_ws,
         )
+
+        # the return of threading.Thread comes from @runAsThread ==> allows .join() if needed
+        # returns here will be ignored
 
     ##############################################
     # Message Handlers & Logic
@@ -804,6 +827,18 @@ class PolyMarketOrderBookWss:
     def asset_ids(self):
         return list(self._asset_id_to_order_book.keys())
 
+    def run(self, main_thread=False):
+        """
+        Run the WebSocket connection.
+        :param main_thread: If True, run in the main thread. Otherwise, run in a separate thread.
+        :return:
+        """
+        if main_thread:
+            self._start_ws().join()
+        else:
+            self._start_ws()
 
 if __name__ == '__main__':
-    pass
+    wss = PolyMarketOrderBookWss(lambda x: print("Order Book Update Callback:", x))
+    wss.run()
+    input('Press Enter to exit...\n')

@@ -15,7 +15,7 @@ Protocol Formats:
 """
 
 import time
-from typing import List, Dict, Union, Any
+from typing import List, Dict, Union
 
 
 # =============================================================================

@@ -5,9 +5,8 @@ import time
 import socket
 import logging
 import argparse
-import threading
 from utils3 import runAsThread
-from argus.capital import encode_packet
+from argus.protocol import encode_packet
 from typing import Any, Dict, List, Optional
 from argus.capital import CapitalComMKTDataLive
 

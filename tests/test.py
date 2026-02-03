@@ -1,6 +1,6 @@
 import json
 import socket
-from argus.capital import encode_packet, decode_packet
+from argus.protocol import encode_packet, decode_packet
 
 
 def send_request(client: socket.socket, request: dict):

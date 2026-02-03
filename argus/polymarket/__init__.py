@@ -15,11 +15,12 @@ import logging
 import threading
 import traceback
 from utils3 import runAsThread
+from argus.cache_sys import DomainCache
 from utils3.networking.sockets import Server
 from argus._argus_utils import Introspective
 from argus.polymarket_direct.rest import OrderEvent
 from argus.polymarket_direct import rest, PolymarketEvent
-from argus.capital import decode_multiple_packets, encode_packet, DomainCache
+from argus.protocol import decode_multiple_packets, encode_packet
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
 
 
@@ -45,7 +46,7 @@ class RoutingHelper:
     """
 
     def __init__(self):
-        self._sockets: list[socket.socket] = set()
+        self._sockets: set[socket.socket] = set()
         self._market_data_routing_table: dict[str, list[socket.socket]] = {}  # clob_id -> list[socket.socket]
         self._order_subscriptions: dict[socket.socket, list[str]] = {}  # socket.socket -> list[clob_id]
         self._lock = threading.Lock()
@@ -191,7 +192,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._all_markets_cache: dict[str, PolymarketEvent] = {}
 
         # Configs
-        self._market_cache_refresh_interval = os.environ.get('POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL', 300)
+        self._market_cache_refresh_interval = int(os.environ.get('POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL', 300))
         self._market_api_limit = 150  # Max markets per API call
         self._max_seen_markets = 6000  # Typical polymarket size
 
@@ -200,6 +201,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         # Start background tasks
         self.start_update_markets_cache_thread()
+
+        logging.info("PolymarketDispatcher initialized on %s:%d", host, port)
+        logging.info("Market cache refresh interval set to %d seconds", self._market_cache_refresh_interval)
+        logging.info("Market API limit set to %d", self._market_api_limit)
+        logging.info("Max seen markets initialized to %d", self._max_seen_markets)
+
 
     #######################################
     # Worker Threads & Functions

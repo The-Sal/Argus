@@ -53,8 +53,6 @@ else:
         """Placeholder for non-macOS systems."""
         print(f"macOS notification with sound not supported on this platform: {title} - {message}")
 
-
-
 class Notification:
     """Dispatcher for notifications."""
 

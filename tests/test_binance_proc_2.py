@@ -2,7 +2,7 @@ import sys
 import time
 import socket
 import traceback
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 
 HOST = 'localhost'

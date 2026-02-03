@@ -11,13 +11,13 @@ import websocket
 import threading
 from utils3 import runAsThread
 from argus._argus_utils import throw_fuss
-from argus.capital import Protocol2Parser
 from argus.ib.fields import IBKRFields, SearchResult
-from argus.capital import transmit_mkt_data_with_protocol_2
+from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.ib._shortable_shares_data import ShortableSharesData
 from argus.ib._ib_utils import (LockedSession, IBKRModes, IBKR_CapitalComMKTDataLive,
                                 AuthenticationTimeout, MarketData, IBError, NOTIFICATION as _NOTIFICATION,
-                                IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, FakeSocket, enforce_currency, expand_exception_decorator, AccountBalances)
+                                IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, FakeSocket,
+                                enforce_currency, expand_exception_decorator, AccountBalances)
 
 # noinspection PyUnresolvedReferences
 

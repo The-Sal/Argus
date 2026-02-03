@@ -3,13 +3,46 @@ The following specification covers the entire Polymarket Dispatcher API surface.
 ---
 
 # Overview
-There are two ports that expose different parts of the API:
-- **Port 9972**: Market Data 
-- **Port 9973**: Control Plane
 
-The market data port only sends out data. It does not accept any incoming data. Everything from the market data port is
-encoded with Protocol 2. To interact with the market data port, you will need to send messages via the control plane port.
+The Polymarket Dispatcher exposes a **single heterogeneous socket** on **Port 9972** that handles all communication (both control plane and market data) through a unified protocol. Both inbound and outbound messages use packet encoding, with differentiation based on message structure.
 
+**Single Socket Architecture:**
+- All communication flows through a single TCP connection
+- Both client requests and server responses use the same encoding mechanism
+- Protocol differentiation is automatic based on packet structure (see Protocol Details below)
+
+
+# Protocol Details
+
+## Packet Structure and Differentiation
+
+Packets on the single socket use one of two formats, differentiated by structure:
+
+**Control/Request Packets (Basic Format):**
+```
+~XXXX|<JSON_DATA>
+```
+- Prefix: `~XXXX|` where `XXXX` is a 4-digit **decimal** number (zero-padded)
+- First byte after `|` is always `{` (JSON object start)
+- Content: JSON with `action`, `data`, and `error` fields
+- Direction: Client requests and server responses (request-response pairs)
+- Example: `~0045|{"action":"subscribe","data":["CLOB_ID_1"]}`
+
+**Market Data Packets (Protocol 2 Format):**
+```
+~XXXXYYYY|<SYMBOL><DATA>L
+```
+- Prefix: `~XXXXYYYY|` where:
+  - `XXXX` = 4-digit decimal total packet length (after the `~XXXX`)
+  - `YYYY` = 4-digit decimal symbol length
+  - Packet terminates with `L` byte
+- Content: Symbol followed by the dispatcher's P2 format layout (see docs)
+- Direction: Server → Client (asynchronous streaming after subscription)
+- Example: `~0065<0006|BTCUSD50000.0,50001.0,50000.5,1.0,1.0,1750729519.286L`
+
+**Auto-Detection:** Check the first byte after `|`:
+- `{` → Basic format (control message)
+- Other and ends with `L` → Protocol 2 format (market data)
 
 # Message Structure (Control Plane)
 
@@ -84,11 +117,23 @@ To unsubscribe from market data for a specific token/clob_id, send a JSON messag
 }
 ```
 
+# Connection Model
+
+The Polymarket Dispatcher uses a **single persistent socket connection** for all communication:
+
+1. **Establish Connection**: Connect to `localhost:9972` (or configured host/port)
+2. **Send Requests**: Send JSON control messages on the same socket
+3. **Receive Responses**: Responses to your requests arrive on the same socket
+4. **Receive Market Data**: Market data updates arrive automatically after subscription on the same socket
+5. **Multiplex Messages**: Your client must be able to distinguish between control responses and market data updates based on packet structure
+
+This unified approach simplifies connection management and eliminates the complexity of coordinating multiple ports or sockets.
+
 # Fetching Market Metadata (Control Plane)
 The dispatcher maintains a cache of ALL available markets on polymarket. This comes out to ~6000ish markets as of 2026.
-This list is updated automatically every five mins to add new markets and remove expired ones. In 99% of cases you will 
+This list is updated automatically every five mins to add new markets and remove expired ones. In 99% of cases you will
 get a cache hit because markets in Polymarket are often available on the API ahead of time (by sometimes even 51 hours),
-especially for markets that continuously roll over (e.g., hourly/15min markets). The dispatcher allows has the following
+especially for markets that continuously roll over (e.g., hourly/15min markets). The dispatcher has the following
 actions to fetch market metadata:
 
 ### Fetch All Markets
@@ -109,19 +154,41 @@ The response will be in the following format:
 }
 ```
 
-### Fetch Market by CLOB ID
-To fetch metadata for a specific market by its clob_id, send a JSON message in the following format:
+### Fetch All Market Tickers
+
+To fetch only the ticker symbols for all available markets (lightweight alternative to `fetch_all_markets`), send:
+
 ```json
 {
-    "action": "fetch_market_by_clob_id",
-    "data": "<CLOB_ID>"
+    "action": "fetch_all_tickers",
+    "data": null
 }
 ```
 
 The response will be in the following format:
 ```json
 {
-  "action": "fetch_market_by_clob_id",
+  "action": "fetch_all_tickers",
+  "data": ["TICKER_1", "TICKER_2", "..."], // array of ticker strings
+  "error": null
+}
+```
+
+This endpoint is useful when you only need ticker information without the full market metadata, reducing bandwidth consumption.
+
+### Fetch Market by Ticker
+To fetch metadata for a specific market by its ticker symbol, send a JSON message in the following format:
+```json
+{
+    "action": "fetch_market_by_ticker",
+    "data": "<TICKER>"
+}
+```
+
+The response will be in the following format:
+```json
+{
+  "action": "fetch_market_by_ticker",
   "data": { ... }, // dict representing market derived from `PolymarketEvent`
   "error": null
 }
@@ -289,6 +356,84 @@ The response will be in the following format:
 
 Note: This represents the total cash available for trading or `COLLATERAL` per the clob API.
 
+# Client Implementation Guide
+
+## Handling the Single Socket Connection
+
+Since the dispatcher uses a heterogeneous data stream on a single socket, your client must:
+
+1. **Maintain a single persistent connection** to the dispatcher
+2. **Parse incoming packets** to distinguish between two types:
+   - **Control responses**: Basic format `~XXXX|{...}` (first byte after `|` is `{`)
+   - **Market data**: Protocol 2 format `~XXXX<YYYY>|...|L` (first byte after `|` is symbol, ends with `L`)
+3. **Send control messages** (basic format) while receiving both control responses and market data asynchronously
+4. **Handle interleaved message types** - control responses and market data arrive on the same socket and may be interleaved
+
+## Packet Detection Logic
+
+```python
+def detect_packet_type(packet_bytes):
+    # Find the pipe separator
+    pipe_idx = packet_bytes.find(b'|')
+    if pipe_idx == -1:
+        raise ValueError("Invalid packet: no pipe found")
+
+    first_byte_after_pipe = packet_bytes[pipe_idx + 1]
+
+    if first_byte_after_pipe == ord('{'):
+        return "control"  # Basic format: ~XXXX|{JSON}
+    elif packet_bytes[-1] == ord('L'):
+        return "market_data"  # Protocol 2: ~XXXX<YYYY>|SYMBOL...|L
+    else:
+        raise ValueError("Unknown packet format")
+```
+
+## Pseudo-Code Example
+
+```python
+import socket
+import json
+import threading
+
+def listen_loop(sock):
+    while True:
+        # Read header to determine packet length
+        header = sock.recv(6)  # ~XXXX|
+        if not header:
+            break
+
+        packet_type = detect_packet_type(header)
+        length = int(header[1:5])
+
+        if packet_type == "control":
+            # Basic format: read JSON
+            json_data = sock.recv(length)
+            msg = json.loads(json_data)
+            handle_control_response(msg)
+        elif packet_type == "market_data":
+            # Protocol 2: read symbol_length, then symbol, then data
+            # Handle market data update
+            pass
+
+# Connect and send request
+sock = socket.socket()
+sock.connect(('localhost', 9972))
+
+# Send control request (basic format)
+request = {"action": "subscribe", "data": ["CLOB_ID_1"]}
+encoded = encode_packet(json.dumps(request).encode())
+sock.sendall(encoded)
+
+# Listen in background thread
+thread = threading.Thread(target=listen_loop, args=(sock,))
+thread.daemon = True
+thread.start()
+
+# Now receive both control responses and market data on the same connection
+```
+
+The key advantage is **no connection management overhead** — single socket handles request-response pairs AND asynchronous market data streaming simultaneously.
+
 # Special Actions (Control Plane)
 Normally the action field corresponds directly to a specific action. However, there are some special actions that
 are sent by the server to notify clients of important events. These are the following special actions:
@@ -312,11 +457,45 @@ These are messages sent when an account update has occurred. This includes event
 * Orders placed
 
 
-# Market Data (Market Data Port)
-The market data port (9972) sends out real-time market data updates for subscribed markets.
-All messages are encoded using Protocol 2. There are only 2 types of messages sent out on this port:
-* Top-of-Book Updates
-* Full Order Book Snapshots
+# Market Data (Single Socket)
 
-Note: The market data port does not do delta updates. It sends out full updates for the top-of-book and full order book snapshots.
+Real-time market data updates for subscribed markets are sent to clients through the same socket connection in **Protocol 2 format** (see Protocol Details above).
+
+**Market Data Format:**
+```
+~XXXX<YYYY>|<SYMBOL><DATA>L
+```
+- Identified by: starts with `~XXXX<YYYY>|` and ends with `L`
+- Symbol: Asset identifier (e.g., `CLOB_ID_1`)
+- Data: CSV-formatted values (prices, sizes, timestamps)
+
+**Market Data Message Types:**
+* Top-of-Book Updates: Best bid/ask prices and sizes
+* Full Order Book Snapshots: Complete order book state
+
+**Note:** Market data does not use delta updates. All updates are sent as complete snapshots.
+
+**Receiving Market Data:**
+
+After subscribing via `subscribe` action, market data packets stream asynchronously on the same connection. Your client must parse both:
+1. **Control responses** (Basic format `~XXXX|{...}`) — responses to your requests
+2. **Market data** (Protocol 2 format `~XXXX<YYYY>|...|L`) — asynchronous updates
+
+These arrive interleaved on the same socket and must be handled with proper packet detection (see Client Implementation Guide above).
+
+---
+
+# Summary
+
+The Polymarket Dispatcher provides a **simplified, unified interface** through a single heterogeneous socket:
+
+- **Single Port**: All communication on port 9972 (no dual-port complexity)
+- **Heterogeneous Packets**: Control uses Basic format (`~XXXX|{JSON}`), market data uses Protocol 2 (`~XXXX<YYYY>|SYMBOL...L`)
+- **Auto-Detection**: Clients distinguish packet types by checking first byte after `|` and looking for `L` terminator
+- **Simplified Connection Management**: One persistent socket handles request-response pairs AND market data streaming
+- **Stateful Subscriptions**: Subscriptions are tied to connection lifetime; client disconnect triggers cleanup
+- **Full Market Cache**: ~6000 active markets cached and refreshed automatically every 5 minutes
+- **Async-Ready**: Market data streams asynchronously while you send control requests on the same connection
+
+For questions or issues, refer to the implementation in `argus/polymarket/__init__.py` or the companion `polymarket_direct` module for REST/WebSocket details.
 

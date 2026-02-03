@@ -1,9 +1,8 @@
 import json
 import random
 import unittest
-from argus.capital import (
-    encode_packet, decode_packet, MKTDispatcher, Environment
-)
+from argus.capital import  MKTDispatcher, Environment
+from argus.protocol import encode_packet, decode_packet
 
 class TestCapcom(unittest.TestCase):
 

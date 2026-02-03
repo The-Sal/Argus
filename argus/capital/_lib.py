@@ -6,7 +6,7 @@ import requests
 import threading
 import websocket 
 from enum import Enum
-from typing import List, Dict, Optional, Callable, Any, Union
+from typing import List, Dict, Optional, Callable, Any
 
 logging.basicConfig(
     level=logging.INFO,
