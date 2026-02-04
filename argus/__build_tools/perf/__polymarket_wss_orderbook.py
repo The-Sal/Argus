@@ -31,7 +31,7 @@ def load_messages(filepath):
             array_of_msg.append(orjson.loads(line))
 
     # Multiply and shuffle
-    array_of_msg = array_of_msg * 100
+    array_of_msg = array_of_msg * 1000
     random.shuffle(array_of_msg)
 
     # Pre-serialize all messages
@@ -99,7 +99,7 @@ def find_slowest_message(times_taken, dumped_msgs):
 
 def main():
     """Main entry point"""
-    # os.environ['POLYMARKET_ORJSON'] = 'true'
+    os.environ['POLYMARKET_ORJSON'] = 'true'
     os.chdir(__file__.replace('__polymarket_wss_orderbook.py', ''))
     print("Initializing WebSocket handler...")
     wss = PolyMarketOrderBookWss(lambda x: None)

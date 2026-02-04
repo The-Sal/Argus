@@ -15,7 +15,7 @@ import logging
 import threading
 import traceback
 from utils3 import runAsThread
-from argus.cache_sys import DomainCache
+from argus.cache_sys import DomainCache, FastCache
 from utils3.networking.sockets import Server
 from argus._argus_utils import Introspective
 from argus.polymarket_direct.rest import OrderEvent
@@ -23,8 +23,10 @@ from argus.polymarket_direct import rest, PolymarketEvent
 from argus.protocol import decode_multiple_packets, encode_packet
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
 
-_CACHE = DomainCache('polymarket_dispatcher_v2')
 
+# Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
+_poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
+_CACHE = DomainCache('polymarket_dispatcher_v2', cache=_poly_cache)
 
 def print_with_name(*args, **kwargs):
     print("[{}]".format(__name__), *args, **kwargs)
