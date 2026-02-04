@@ -627,9 +627,11 @@ class PolyMarketOrderBookWss:
     A level 2 order book WebSocket for Polymarket markets.
 
     Notes:
-        - This class takes on average 132mb of RAM and spawns ~5 threads.
-        - Tested with if/main on
-
+        This class takes, on average, 132mb of RAM and spawns ~5 threads.
+        Tested with if/main on commit c5f0be913721305e937626f0e16c64bc75a3d0d4 (HEAD -> perf/rest-wss-orderbook-tuning) at 2026-02-04 23:05 UTC
+        Unlike #59 this class does not have the same memory leak issues again tested on the above commit.
+        Commits after this maybe affected. However, considering this is written during the final implementation of
+        Polymarket order book WebSocket handling in Argus, it is likely stable and accurate.
     """
 
     def __init__(self, order_book_update_callback=None):
