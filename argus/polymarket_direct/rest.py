@@ -625,6 +625,11 @@ class PolyMarketAccountEventWss:
 class PolyMarketOrderBookWss:
     """
     A level 2 order book WebSocket for Polymarket markets.
+
+    Notes:
+        - This class takes on average 132mb of RAM and spawns ~5 threads.
+        - Tested with if/main on
+
     """
 
     def __init__(self, order_book_update_callback=None):
@@ -649,6 +654,9 @@ class PolyMarketOrderBookWss:
         self._allow_ping = True
         self._reset_threading_events()
         self._order_book_update_callback = order_book_update_callback
+
+        # Stats
+        self._updates: list[float] = []  # timestamps of updates received
 
     #############################################
     # WebSocket Event Handlers  & Utilities
@@ -726,8 +734,7 @@ class PolyMarketOrderBookWss:
                 time.sleep(10)
 
     def _on_message(self, ws, message):
-        # debug_handle.write(message + '\n')
-        # debug_handle.flush()
+        self._updates.append(time.time())
         _ = ws
         if message == "PONG":
             logging.debug('Polymarket Order Book WebSocket received PONG.')
@@ -756,7 +763,6 @@ class PolyMarketOrderBookWss:
             raise e
 
         # how_long.stop()
-
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._defer_restore_state()
@@ -945,17 +951,48 @@ class PolyMarketOrderBookWss:
         else:
             self._start_ws()
 
+    def print_stats(self):
+        """
+        Print msgs/sec received in the last 10 seconds.
+        :return:
+        """
+        updates_copy = self._updates.copy()
+        now = time.time()
+        last_10s = [t for t in updates_copy if now - t <= 10]
+        msgs_per_sec = len(last_10s) / 10
+        logging.info('Polymarket Order Book WebSocket stats: %.2f msgs/sec in the last 10 seconds.', msgs_per_sec)
+
+        # find the highest 10s msgs/sec in history
+        highest_10s = 0
+        for i in range(len(updates_copy)):
+            start_time = updates_copy[i]
+            end_time = start_time + 10
+            count = sum(1 for t in updates_copy if start_time <= t < end_time)
+            if count > highest_10s:
+                highest_10s = count
+        highest_msgs_per_sec = highest_10s / 10
+        logging.info('Polymarket Order Book WebSocket highest recorded: %.2f msgs/sec in any 10 second window.', highest_msgs_per_sec)
+
+
+    @runAsThread
+    def _debug_print_stats_loop(self):
+        while True:
+            self.print_stats()
+            time.sleep(10)
 
 if __name__ == '__main__':
     __x = 0
 
-    _HIDDEN_ASSET_ID = '81916206347121459497221114766050949090435061493822476265356047392175668050706'
+    _HIDDEN_ASSET_ID = '70257161748242154417830949164492697213576535524972981809953121043413148169037'
+
 
     def ev(x):
         print(x[_HIDDEN_ASSET_ID]['bids'][0])
         print('*' * 50)
 
+
     wss = PolyMarketOrderBookWss(ev)
+    wss._debug_print_stats_loop()
     wss.run(main_thread=False)
     # wait with threading event to ensure socket is open
     wss.wait_till_socket_open.wait()
@@ -963,3 +1000,4 @@ if __name__ == '__main__':
         _HIDDEN_ASSET_ID
     )
     input('Press Enter to exit...\n')
+    wss.print_stats()
