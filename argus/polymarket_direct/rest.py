@@ -17,6 +17,15 @@ from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
 from argus.polymarket_direct._order_types import OrderException, PolyMarketOrder, TradeData, OrderEvent
 
+
+if os.environ.get('POLYMARKET_ORJSON', 'false').lower() == 'true':
+    import orjson as json
+
+# from argus.__build_tools import HowLongDidThisTake
+# how_long = HowLongDidThisTake('SOCKET to PRINT')
+# debug_handle = open('polymarket_socket_debug.log', 'w')
+
+
 REST_CACHE = DomainCache('polymarket_direct.rest')
 endpoints = {
     'events': "https://gamma-api.polymarket.com/events?order=id&ascending=false&closed=false&limit={}&offset={}",
@@ -629,7 +638,6 @@ class PolyMarketOrderBookWss:
 
         self._pinging_lock = threading.Lock()
 
-
         self._market_ws: WebSocketApp = None
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', '50'))
@@ -717,6 +725,8 @@ class PolyMarketOrderBookWss:
                 time.sleep(10)
 
     def _on_message(self, ws, message):
+        # debug_handle.write(message + '\n')
+        # debug_handle.flush()
         _ = ws
         if message == "PONG":
             logging.debug('Polymarket Order Book WebSocket received PONG.')
@@ -724,6 +734,8 @@ class PolyMarketOrderBookWss:
                 self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
             self.wait_till_first_pong.clear()
             return
+
+        # how_long.start()
 
         try:
             content = json.loads(message)
@@ -741,6 +753,9 @@ class PolyMarketOrderBookWss:
         except Exception as e:
             print('WARNING: Error handling Polymarket Order Book WebSocket message: "{}"'.format(message))
             raise e
+
+        # how_long.stop()
+
 
     def _on_close(self, ws, close_status_code, close_msg):
         self._defer_restore_state()
@@ -834,7 +849,6 @@ class PolyMarketOrderBookWss:
     def _update_order_book(self, asset_id: str, change: dict) -> None:
         """Apply delta: add/update size at price, or delete if size=0."""
         if asset_id not in self._asset_id_to_order_book:
-            # logging.warning(f"Unknown asset_id {asset_id} in delta")
             return
 
         book = self._asset_id_to_order_book[asset_id]
@@ -842,7 +856,7 @@ class PolyMarketOrderBookWss:
         size = float(change['size']) if change['size'] != '0' else 0
         side = 'bids' if change['side'] == 'BUY' else 'asks'
 
-        # Build price->size dict from current list of dicts
+        # Build price->size dict from the current list of dicts
         price_to_size = {level['price']: float(level['size']) for level in book[side]}
 
         if size == 0:
@@ -934,16 +948,17 @@ class PolyMarketOrderBookWss:
 if __name__ == '__main__':
     __x = 0
 
+    _HIDDEN_ASSET_ID = '81916206347121459497221114766050949090435061493822476265356047392175668050706'
+
     def ev(x):
-        global __x
-        __x += 1
-        print(f"\rEvents {__x}", end='')
+        print(x[_HIDDEN_ASSET_ID]['bids'][0])
+        print('*' * 50)
 
     wss = PolyMarketOrderBookWss(ev)
     wss.run(main_thread=False)
-    # wait with thereading event to ensure socket is open
+    # wait with threading event to ensure socket is open
     wss.wait_till_socket_open.wait()
     wss.subscribe_to_asset_id(
-        '57019809863459957624891779838199510276510917469190120383870695711577496872031'
+        _HIDDEN_ASSET_ID
     )
     input('Press Enter to exit...\n')
