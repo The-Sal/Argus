@@ -459,6 +459,11 @@ class PolyMarketAccountEventWss:
         self._ping_pongs = (0, 0)  # (sent, received)
         self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
 
+        # In some cases we've seen concurrent pings causing issues
+        # that is since the ping function is a thread that runs forever;
+        # it should not be called twice ever while it's already running
+        self._pinging_lock = threading.Lock()
+
         self._throw_fuss_on_user_events = os.environ.get('POLYMARKET_USER_EVENTS_FUSS', 'false').lower() == 'true'
 
         self._start_ws()
@@ -549,8 +554,7 @@ class PolyMarketAccountEventWss:
 
         # check if already pinging
         if self._pinging_lock.locked():
-            logging.warning(
-                'Ping thread for Polymarket Account Event WebSocket is already running. Not starting another.')
+            logging.warning('Ping thread for Polymarket Account Event WebSocket is already running. Not starting another.')
             return
 
         with self._pinging_lock:
@@ -758,6 +762,7 @@ class PolyMarketOrderBookWss:
             else:
                 self._handle_order_book_message(content)
         except json.JSONDecodeError as e:
+            _ = e
             print('WARNING: Failed to decode Polymarket Order Book WebSocket message: "{}"'.format(message))
             raise
         except Exception as e:
@@ -994,6 +999,8 @@ if __name__ == '__main__':
 
 
     wss = PolyMarketOrderBookWss(ev)
+
+    # noinspection PyProtectedMember
     wss._debug_print_stats_loop()
     wss.run(main_thread=False)
     # wait with threading event to ensure socket is open
