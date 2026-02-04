@@ -31,7 +31,7 @@ from argus._argus_utils import throw_fuss
 from argus.polymarket_direct._types import PolymarketEvent
 from argus.wireproxy.wrapper import start_proxy_aware_ws, update_request_session_proxy, start_proxy_and_return_bind
 
-# do not modify throw_fuss line; recursive import otherwise
+# do not modify the throw_fuss line; recursive import otherwise
 
 dCache = DomainCache('polymarket_direct')
 

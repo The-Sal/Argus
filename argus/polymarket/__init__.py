@@ -18,15 +18,16 @@ from utils3 import runAsThread
 from utils3.networking.sockets import Server
 from argus._argus_utils import Introspective
 from argus.cache_sys import DomainCache, FastCache
-from argus.polymarket_direct.rest import OrderEvent
 from argus.polymarket_direct import rest, PolymarketEvent
+from argus.polymarket_direct.order_types import OrderEvent
+from argus.polymarket_direct import wss
 from argus.protocol import decode_multiple_packets, encode_packet
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
-
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
 _CACHE = DomainCache('polymarket_dispatcher_v2', cache=_poly_cache)
+
 
 def print_with_name(*args, **kwargs):
     print("[{}]".format(__name__), *args, **kwargs)
@@ -179,11 +180,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
 
         # All the below are already registered with WireProxy system
-        self.market_data = rest.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
+        self.market_data = wss.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
         self.rest_api = rest.PolyRestAPI(private_key=private_key, proxy_funder=proxy_funder,
                                          fatal_callback=self._on_fatal_error)
-        self.account_updates = rest.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
-                                                              update_callback=self._account_update_callback)
+        self.account_updates = wss.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
+                                                             update_callback=self._account_update_callback)
 
         self._market_cache_lock = threading.Lock()
 
@@ -288,7 +289,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             content = json.loads(packet.decode('utf-8'))
             logging.debug("Received data from Polymarket client: %s", content)
             try:
-                response = self._handle_client_message(address, content)
+                response = self._handle_client_message(client_socket, address, content)
                 msg = {
                     'action': content.get('action', None),
                     'data': response,
@@ -467,7 +468,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         Handle a request to fetch a market by ticker.
         :param args_obj: ArgsObject containing the socket and arguments.
-            [0] is expected to be the ticker string.
+            [0] it is expected to be the ticker string.
         :return:
         """
         try:
@@ -515,7 +516,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     def send_with_p1_encoding(dict_data: dict) -> bytes:
         """
         Encodes a dictionary into bytes using JSON and P1 packet encoding.
-        :param dict_data: the dictionary to encode.
+        :param dict_data: The dictionary to encode.
         :return:
         """
         json_data = json.dumps(dict_data).encode('utf-8')
