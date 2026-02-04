@@ -15,9 +15,9 @@ import logging
 import threading
 import traceback
 from utils3 import runAsThread
-from argus.cache_sys import DomainCache, FastCache
 from utils3.networking.sockets import Server
 from argus._argus_utils import Introspective
+from argus.cache_sys import DomainCache, FastCache
 from argus.polymarket_direct.rest import OrderEvent
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.protocol import decode_multiple_packets, encode_packet

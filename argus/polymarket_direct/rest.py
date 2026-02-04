@@ -17,15 +17,6 @@ from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
 from argus.polymarket_direct._order_types import OrderException, PolyMarketOrder, TradeData, OrderEvent
 
-# See docs/perf/rest-wss-orderbook-tuning.md for details on how we tuned the performance of the REST and WebSocket clients in this module.
-if os.environ.get('POLYMARKET_ORJSON', 'false').lower() == 'true':
-    import orjson as json
-
-# This is how we built perf/rest-wss-orderbook-tuning
-# from argus.__build_tools import HowLongDidThisTake
-# how_long = HowLongDidThisTake('SOCKET to PRINT')
-# debug_handle = open('polymarket_socket_debug.log', 'w')
-
 
 REST_CACHE = DomainCache('polymarket_direct.rest')
 endpoints = {
