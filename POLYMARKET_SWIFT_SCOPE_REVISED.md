@@ -200,7 +200,7 @@ Python uses `py_clob_client` for:
 
 ### 4.2 Solutions (In Order of Preference)
 
-#### Option A: Transcpile py_clob_client Logic (Recommended for argus-swift)
+#### Option A: Transcompile py_clob_client Logic (Recommended for argus-swift)
 - Extract pure signing/encoding logic from py_clob_client
 - Implement in native Swift using CryptoKit
 - Most work, but aligns with zero-dependency paradigm
