@@ -4,6 +4,19 @@ see https://github.com/The-Sal/Argus/tree/legacy/polymarket-dispatcher
 
 The below code removes the entire old stub with a new implementation based on polymarket_direct.
 In a future version this documentation referencing the old dispatcher will be removed.
+
+IMPORTANT — Account Update Delivery Requirement:
+    Real-time account events (order PLACEMENT, CANCELLATION, MATCH, etc.) are
+    only broadcast to client sockets that have an active market data subscription.
+    A client that connects and issues order management commands (place_order,
+    cancel_order, get_order_status, etc.) WITHOUT first subscribing to at least
+    one asset via the 'subscribe' action will NEVER receive account_update pushes,
+    even though the dispatcher's internal WebSocket is receiving them from the CLOB.
+
+    This is because the dispatcher tracks connected clients through the
+    RoutingHelper's socket set, which is only populated when a client subscribes
+    to market data.  If your workflow depends on receiving account lifecycle
+    events, you MUST subscribe to at least one asset_id before placing orders.
 """
 import os
 import json
@@ -232,6 +245,19 @@ class ArgsObject:
 
 
 class PolymarketDispatcher(Introspective, RoutingHelper):
+    """
+    TCP server that exposes Polymarket's CLOB via a P1 (JSON) control protocol
+    and a P2 (binary) market data protocol.
+
+    WARNING: Account lifecycle events (PLACEMENT, CANCELLATION, MATCH, etc.)
+    are only forwarded to client sockets that have an active market data
+    subscription via the 'subscribe' action.  Clients that only use order
+    management actions (place_order, cancel_order, get_order_status, ...) will
+    NOT receive real-time account_update pushes unless they first subscribe to
+    at least one asset_id.  This is a consequence of the RoutingHelper's socket
+    tracking — sockets are registered only on subscription.
+    """
+
     def __init__(self, private_key: str = None, proxy_funder: str = None,
                  host="localhost", port=9972):
         super().__init__()
@@ -492,8 +518,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             if asset_id in self._market_data_routing_table:
                 clients_to_send = self._market_data_routing_table[asset_id]
 
+        # If no clients are subscribed (e.g. last client disconnected between the
+        # routing table read and this point), bail out early.  Continuing would
+        # attempt to build a P2 packet from the update which can crash if the
+        # message type (e.g. last_trade_price) doesn't carry full order book data.
         if not clients_to_send:
             logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.", asset_id)
+            return
 
         p2_obj = self.send_market_data_with_p2_encoding(
             market_data=update,
@@ -506,14 +537,20 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # On send failure (dead/disconnected client), remove the socket via remove_socket()
         # which cascades cleanup through the routing table and triggers subscription_expired
         # if no clients remain for a given clob_id.
+        # NOTE: remove_socket() and friends are thread-safe (all guarded by self._lock),
+        # so it is safe to call from this WSS callback thread.
         for sock in clients_to_send:
             try:
                 sock.sendall(p2_obj)
-            except (ConnectionResetError, BrokenPipeError) as e:
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                # OSError [Errno 9] Bad file descriptor occurs when the client
+                # has already closed the socket but the routing table still holds
+                # a reference to it (race between disconnect and this callback).
                 self.remove_socket(sock)
-                print_with_name('Removed socket due to error while sending market data for asset_id %s: %s', asset_id, e)
+                print_with_name('Removed dead socket while sending market data for asset_id %s: %s', asset_id, e)
             except Exception as e:
                 print_with_name('Unexpected error sending market data for asset_id %s to socket: %s', asset_id, e)
+                self.remove_socket(sock)
                 traceback.print_exc()
 
     def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
@@ -600,6 +637,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :return:
         """
         sock = args_obj.sock
+        self.add_socket(sock)
         subscribed = []
         failed = []
         for clob_id in args_obj.args:

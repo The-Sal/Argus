@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import functools
 import requests
 import traceback
 from termcolor import colored
@@ -24,6 +25,32 @@ qw = '[{}]'.format(__name__)
 
 
 
+
+
+def retry(max_attempts=3, delay=0.35):
+    """Retry decorator for methods that may fail due to eventual consistency.
+    Retries on TypeError (e.g. None response unpacked as **kwargs) with a delay between attempts."""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except TypeError as e:
+                    if attempt < max_attempts:
+                        logging.warning(
+                            '%s failed on attempt %d/%d: %s — retrying in %.2fs...',
+                            func.__qualname__, attempt, max_attempts, e, delay
+                        )
+                        time.sleep(delay)
+                    else:
+                        logging.warning(
+                            '%s failed on attempt %d/%d: %s — no more retries.',
+                            func.__qualname__, attempt, max_attempts, e
+                        )
+                        raise
+        return wrapper
+    return decorator
 
 
 # MUST be used on methods within PolyRestAPI that are critical
@@ -340,6 +367,7 @@ class PolyRestAPI:
         return TradeData.from_list(trades)
 
     @fatal_decorator('get_order_status')
+    @retry(max_attempts=3, delay=0.35)
     def get_order_status(self, order_id: str) -> PolyMarketOrder:
         """
         Get the status of a specific order.
