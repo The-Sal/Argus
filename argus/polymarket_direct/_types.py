@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import datetime
 from typing import List, Optional
 from dataclasses import dataclass, fields
@@ -97,7 +98,7 @@ class Market:
     volume1wk: Optional[float] = None
     volume1mo: Optional[float] = None
     volume1yr: Optional[float] = None
-    clobTokenIds: Optional[str] = None
+    clobTokenIds: Optional[list] = None  # technically it comes in as a string, but it's a JSON string that needs to be parsed into a list
     volume24hrAmm: Optional[float] = None
     volume1wkAmm: Optional[float] = None
     volume1moAmm: Optional[float] = None
@@ -169,6 +170,7 @@ class Market:
             try:
                 filtered_data['clobTokenIds'] = json.loads(filtered_data['clobTokenIds'])
             except json.JSONDecodeError:
+                logging.warning(f"Could not decode clobTokenIds: {filtered_data['clobTokenIds']}")
                 pass  # Keep as string if parsing fails
 
         # same with outcomes
@@ -176,6 +178,7 @@ class Market:
             try:
                 filtered_data['outcomes'] = json.loads(filtered_data['outcomes'])
             except json.JSONDecodeError:
+                logging.warning(f"Could not decode outcomes: {filtered_data['outcomes']}")
                 pass  # Keep as string if parsing fails
 
         return cls(**filtered_data)
@@ -196,7 +199,6 @@ class Market:
                     setattr(self, field, dt_obj)
                 except ValueError:
                     pass  # Keep original string if parsing fails
-
 
 
 @dataclass

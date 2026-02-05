@@ -15,13 +15,13 @@ import logging
 import threading
 import traceback
 from utils3 import runAsThread
+from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
 from argus._argus_utils import Introspective
 from argus.cache_sys import DomainCache, FastCache
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
-from argus.polymarket_direct import wss
-from argus.protocol import decode_multiple_packets, encode_packet
+from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
@@ -31,6 +31,75 @@ _CACHE = DomainCache('polymarket_dispatcher_v2', cache=_poly_cache)
 
 def print_with_name(*args, **kwargs):
     print("[{}]".format(__name__), *args, **kwargs)
+
+class P2ConvertClass:
+    """
+    Implements the methods required for the P2 encoder to encode market data.
+    - symbol
+    - transferable_2
+
+    Expected input market data:
+    {
+        '661095475084821930790589425827399710453605787397495798070750303202782280580': {
+            'bids': [
+                {'price': '0.75', 'size': '65'},
+                {'price': '0.74', 'size': '299'},
+                {'price': '0.73', 'size': '621.2'},
+                {'price': '0.72', 'size': '2472'},
+                {'price': '0.37', 'size': '464'},
+                {'price': '0.36', 'size': '464'},
+                {'price': '0.01', 'size': '2822.47'}
+            ],
+            'asks': [
+                {'price': '0.76', 'size': '227.02'},
+                {'price': '0.77', 'size': '1737.48'},
+                {'price': '0.78', 'size': '335'},
+                {'price': '0.79', 'size': '585'},
+                {'price': '0.8', 'size': '746'},
+                {'price': '0.81', 'size': '704'},
+                {'price': '0.99', 'size': '4998.02'}
+                ]
+            },
+        'timestamp': '1770251679393'
+    }
+
+    """
+    def __init__(self, ticker: str, market_slug: str,
+                 asset_id: str, market_data: dict, order_book_depth: int):
+        self.ticker = ticker
+        self.market_slug = market_slug
+        self.asset_id = asset_id
+        self.market_data = market_data
+        self.order_book_depth = order_book_depth
+
+    @property
+    def symbol(self) -> str:
+        return f"{self.ticker}{self.market_slug}{self.asset_id}"
+
+    def transferable_2(self) -> bool:
+        data_obj = self.market_data.get(self.asset_id, {})
+        bids = data_obj.get('bids', [])[:self.order_book_depth]
+        asks = data_obj.get('asks', [])[:self.order_book_depth]
+
+        market_packet = str()
+
+        for bid_index in range(self.order_book_depth):
+            if bid_index < len(bids):
+                bid = bids[bid_index]
+                market_packet += f"{bid['price']},{bid['size']},"
+            else:
+                market_packet += "0,0,"
+
+        for ask_index in range(self.order_book_depth):
+            if ask_index < len(asks):
+                ask = asks[ask_index]
+                market_packet += f"{ask['price']},{ask['size']},"
+            else:
+                market_packet += "0,0,"
+
+        # add the timestamp at the end and the server timestamp
+        market_packet += f"{self.market_data.get('timestamp', '')},{time.time()}"
+        return market_packet.encode('ascii')
 
 
 class RoutingHelper:
@@ -192,6 +261,15 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # str is 'ticker' for Polymarket
         self._all_markets_cache: dict[str, PolymarketEvent] = {}
 
+        # TL;DR the P2 encoding format's ticker field
+        # is formatted like <Event-Ticker><Market-Slug><Asset_id>
+        # now we will get asset_id from the market data wss, but we need
+        # to match the asset_id to the ticker and market index so we can route the data and also decode the market data correctly.
+        self._asset_id_to_ticker = {}
+        # ^^^ is locked with '_market_cache_lock' since it is only updated in the market cache refresh function and read in the market data update callback, which are both protected by the same lock.
+
+        self._orderbook_depth = int(os.environ.get('POLYMARKET_ORDERBOOK_DEPTH', 10))
+
         # Configs
         self._market_cache_refresh_interval = int(os.environ.get('POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL', 300))
         self._market_api_limit = 150  # Max markets per API call
@@ -280,6 +358,29 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         with self._market_cache_lock:
             self._all_markets_cache.update(markets_cached)
 
+        self._build_asset_id_to_ticker_mapping()
+
+    # ALREADY LOCKED WITH `_market_cache_lock` DO NOT use inside with `_market_cache_lock` block
+    def _build_asset_id_to_ticker_mapping(self):
+        """
+        Build a mapping of asset_id to ticker for a quick lookup when receiving market data updates.
+        This should be called after the markets cache is updated.
+        :return:
+        """
+        dict_asset_id_to_ticker = {}
+        with self._market_cache_lock:
+            for ticker, event in tqdm.tqdm(self._all_markets_cache.items(), desc="Building asset_id to ticker mapping",
+                                           unit="markets", dynamic_ncols=True):
+                markets = event.markets
+                for index in range(len(markets)):
+                    clobs: list[str] = markets[index].clobTokenIds
+                    for clob_id in clobs:
+                        # Store ticker and market index for later use in market data updates
+                        dict_asset_id_to_ticker[clob_id] = (ticker, index)
+
+        with self._market_cache_lock:
+            self._asset_id_to_ticker.update(dict_asset_id_to_ticker)
+
     #######################################
     # Callbacks
     #######################################
@@ -308,8 +409,39 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     def _on_fatal_error(self, error: dict):
         pass
 
-    def _order_book_update_callback(self, update):
-        pass
+    def _order_book_update_callback(self, update: dict):
+        """
+        Callback for market data updates from Polymarket.
+        :param update: The market data update. Contains asset_id as the key for the updated market.
+        :return:
+        """
+
+        keys = list(update.keys())
+        if len(keys) > 1:
+            logging.warning("Received market data update with multiple keys: %s", keys)
+
+        asset_id = keys[0]
+        with self._market_cache_lock:
+            ticker_market_index = self._asset_id_to_ticker.get(asset_id, None)
+            if ticker_market_index is None:
+                logging.warning("Received market data update for unknown asset_id: %s", asset_id)
+                return
+        ticker, market_index = ticker_market_index
+
+        clients_to_send = []
+        with self._lock:
+            if asset_id in self._market_data_routing_table:
+                clients_to_send = self._market_data_routing_table[asset_id]
+
+        if not clients_to_send:
+            logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.", asset_id)
+
+        p2_obj = self.send_market_data_with_p2_encoding(
+            market_data=update,
+            ticker=ticker,
+            market_slug=self._all_markets_cache[ticker].markets[market_index].slug,
+            asset_id=asset_id
+        )
 
     def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
         _ = address
@@ -522,6 +654,33 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         json_data = json.dumps(dict_data).encode('utf-8')
         packet = encode_packet(json_data)
         return packet
+
+    def send_market_data_with_p2_encoding(self, market_data: dict, ticker: str, market_slug: str, asset_id: str) -> bytes:
+        """
+        Encodes market data into bytes using a custom P2 encoding format.
+        The P2 encoding format's ticker field is formatted like <Event-Ticker><Market-Slug><Asset_id>.
+
+        P2 Layout:
+        ~<packet-len><ticker-len><[event-ticker][market-slug][asset_id]><[Nx (price, size) for bid]><[Nx (price, size) for bid]>L
+
+        Control N with `POLYMARKET_ORDERBOOK_DEPTH` environment variable (default 10)
+
+        :param market_data: The market data to encode.
+        :param ticker: The event ticker for the market data.
+        :param market_slug: The market slug for the market data.
+        :param asset_id: The asset ID for the market data.
+        :return:
+        """
+
+        return transmit_mkt_data_with_protocol_2(
+            P2ConvertClass(
+                ticker=ticker,
+                market_slug=market_slug,
+                asset_id=asset_id,
+                market_data=market_data,
+                order_book_depth=self._orderbook_depth
+            )
+        )
 
     def run(self):
         self.dispatcher_svr.start()

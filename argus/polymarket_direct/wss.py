@@ -448,7 +448,8 @@ class PolyMarketOrderBookWss:
         # Callback with a full book
         if self._order_book_update_callback:
             self._order_book_update_callback({
-                asset_id: self.order_book_for_asset_id(asset_id)
+                asset_id: self.order_book_for_asset_id(asset_id),
+                'timestamp': message['timestamp']
             })
 
     def _update_order_book(self, asset_id: str, change: dict) -> None:
@@ -581,18 +582,24 @@ class PolyMarketOrderBookWss:
 if __name__ == '__main__':
     __x = 0
 
-    _HIDDEN_ASSET_ID = '70257161748242154417830949164492697213576535524972981809953121043413148169037'
+    _HIDDEN_ASSET_ID = '661095475084821930790589425827399710453605787397495798070750303202782280580'
 
 
     def ev(x):
-        print(x[_HIDDEN_ASSET_ID]['bids'][0])
-        print('*' * 50)
+        print('---ORDER BOOK UPDATE---')
+        print(x)
+        print('---END UPDATE---')
+        print('Number of bid levels: {}, Number of ask levels: {}'.format(
+            len(x[_HIDDEN_ASSET_ID]['bids']) if x.get(_HIDDEN_ASSET_ID) else 'N/A',
+            len(x[_HIDDEN_ASSET_ID]['asks']) if x.get(_HIDDEN_ASSET_ID) else 'N/A'
+        ))
+        print('-'*100)
 
 
     wss = PolyMarketOrderBookWss(ev)
 
     # noinspection PyProtectedMember
-    wss._debug_print_stats_loop()
+    # wss._debug_print_stats_loop()
     wss.run(main_thread=False)
     # wait with threading event to ensure socket is open
     wss.wait_till_socket_open.wait()
