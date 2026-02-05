@@ -4,7 +4,8 @@ import traceback
 from termcolor import colored
 from dotenv import load_dotenv
 from argus._argus_utils import throw_fuss
-from argus.polymarket_direct.rest import PolyRestAPI, PolyMarketAccountEventWss, pm_types
+from argus.polymarket_direct.rest import PolyRestAPI, pm_types
+from argus.polymarket_direct.wss import PolyMarketAccountEventWss
 
 def do_the_test():
     # noinspection PyProtectedMember
@@ -57,7 +58,7 @@ def do_the_test():
         print('Canceling order...')
         rest.cancel_order(order_id=order_id)
         time.sleep(1)
-        print(rest.get_trades())
+        # print(rest.get_trades())
 
     a_test_function()
     input('Press Enter to exit...\n')

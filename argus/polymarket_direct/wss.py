@@ -344,18 +344,21 @@ class PolyMarketOrderBookWss:
 
         try:
             content = json.loads(message)
-            # logging.info('Polymarket Order Book WebSocket message received: %s', content)
+        except json.JSONDecodeError:
+            # Polymarket's WebSocket occasionally sends plain-text control strings
+            # (e.g. "NO NEW ASSETS") that are not valid JSON.  These are informational
+            # and safe to ignore — re-raising would crash the websocket-client callback
+            # loop and tear down the connection.
+            logging.debug('Non-JSON message from Polymarket Order Book WebSocket (ignored): "%s"', message)
+            return
 
+        try:
             # Handle both list and dict messages
             if isinstance(content, list):
                 for msg in content:
                     self._handle_order_book_message(msg)
             else:
                 self._handle_order_book_message(content)
-        except json.JSONDecodeError as e:
-            _ = e
-            print('WARNING: Failed to decode Polymarket Order Book WebSocket message: "{}"'.format(message))
-            raise
         except Exception as e:
             print('WARNING: Error handling Polymarket Order Book WebSocket message: "{}"'.format(message))
             raise e
