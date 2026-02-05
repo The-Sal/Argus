@@ -1,37 +1,56 @@
 # Polymarket Swift Translation - Scope Analysis
 
-This directory contains the scope analysis for translating the Polymarket Python implementation to Swift for the `argus-swift` branch.
+⚠️ **IMPORTANT UPDATE:** The original analysis was **significantly flawed** because it did not check the argus-swift branch before estimating. Revised documents are now available.
 
-## Documents
+## Documents (REVISED - Feb 5, 2026)
 
-### 📊 [POLYMARKET_SCOPE_SUMMARY.md](./POLYMARKET_SCOPE_SUMMARY.md)
-**Start here!** Quick reference summary with:
-- Visual breakdowns and tables
-- Timeline estimates
-- Key challenges
-- Cost-benefit analysis
-- Recommendations
+### ⭐ [POLYMARKET_SCOPE_SUMMARY_REVISED.md](./POLYMARKET_SCOPE_SUMMARY_REVISED.md)
+**START HERE!** Corrected quick reference summary:
+- Existing argus-swift infrastructure (~72.5KB)
+- **Revised timeline: 4-6 weeks** (not 14-22 weeks)
+- **Revised LOC: ~2,730 lines** (not 6,600-9,800)
+- Zero external dependencies paradigm
+- What was wrong in original analysis
 
 **Read time:** 10-15 minutes
 
-### 📚 [POLYMARKET_SWIFT_SCOPE.md](./POLYMARKET_SWIFT_SCOPE.md)
-Comprehensive 12-section detailed analysis with:
-- Complete code statistics
-- Architecture differences (Python vs Swift)
-- Phase-by-phase implementation plan
-- Risk factors and mitigation
-- Success criteria
-- Open questions
+### 📚 [POLYMARKET_SWIFT_SCOPE_REVISED.md](./POLYMARKET_SWIFT_SCOPE_REVISED.md)
+Comprehensive corrected analysis:
+- Existing infrastructure audit
+- Actual gaps to fill
+- Realistic 4-6 week timeline
+- argus-swift paradigms (zero dependencies)
+- Why original was wrong (didn't check argus-swift branch)
 
 **Read time:** 30-45 minutes
 
-## Quick Facts
+---
 
+## ⚠️ Original Documents (OBSOLETE)
+
+The following documents are **superseded** and should **not be used**:
+
+- ~~POLYMARKET_SCOPE_SUMMARY.md~~ (did not account for existing infrastructure)
+- ~~POLYMARKET_SWIFT_SCOPE.md~~ (assumed starting from scratch)
+
+**Why they were wrong:** Failed to check the argus-swift branch which contains ~72.5KB of existing infrastructure including partial Polymarket implementation.
+
+## Quick Facts (CORRECTED)
+
+**Python Implementation:**
 - **Current Code:** 3,953 lines Python (12 files)
 - **Completeness:** ~70% (market data ✅, order management ❌)
 - **Missing:** 5 order handler implementations (~200-300 lines)
-- **Swift Translation:** 6,600-9,800 lines over 14-22 weeks
-- **Key Challenge:** py_clob_client dependency (crypto signing)
+
+**argus-swift Status (Previously Unknown):**
+- **Existing Infrastructure:** ~40KB of utilities (cache, Protocol 2, sockets, HTTP)
+- **Polymarket Code:** ~32.5KB (3 files: Classes, WebSocket, Example)
+- **Total Existing:** ~72.5KB relevant Swift code already present
+
+**Corrected Effort Estimate:**
+- **Swift Translation:** ~2,730 new lines over **4-6 weeks** (not 14-22 weeks)
+- **Key Challenge:** EIP-712 signing in pure Swift (no external crypto libs)
+- **Paradigm:** ZERO external dependencies (uses native Swift + cURL wrapper)
 
 ## Key Findings
 
@@ -47,14 +66,19 @@ Comprehensive 12-section detailed analysis with:
 - ❌ Get orders list (missing)
 - ❌ Get account balance (missing)
 
-### Translation Effort
+### Translation Effort (CORRECTED)
 ```
-Phase 1: Complete Python        1 week
-Phase 2: Core infrastructure     3-5 weeks
-Phase 3: Polymarket-specific     7-11 weeks
-Phase 4: Integration & testing   3-5 weeks
+Phase 0: Audit existing Swift    1 day
+Phase 1: Complete Python         2-3 days
+Phase 2: Data models + REST      8-10 days
+Phase 3: Account WebSocket       2-3 days
+Phase 4: Dispatcher              5-7 days
+Phase 5: Integration & testing   3-5 days
 ────────────────────────────────────────
-TOTAL:                           14-22 weeks
+TOTAL:                           4-6 weeks
+
+Original estimate: 14-22 weeks (75% overestimated!)
+Reason: Didn't check argus-swift branch
 ```
 
 ## Recommendations
