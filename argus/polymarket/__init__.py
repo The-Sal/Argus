@@ -14,10 +14,11 @@ import difflib
 import logging
 import threading
 import traceback
+import dataclasses
 from utils3 import runAsThread
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
-from argus._argus_utils import Introspective
+from argus._argus_utils import Introspective, throw_fuss
 from argus.cache_sys import DomainCache, FastCache
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
@@ -279,6 +280,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._update_markets_cache(invalidate_cache=False)  # load from cache or fetch fresh
 
         # Start background tasks
+        self.market_data.run(main_thread=False)
         self.start_update_markets_cache_thread()
 
         logging.info("PolymarketDispatcher initialized on %s:%d", host, port)
@@ -374,6 +376,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 markets = event.markets
                 for index in range(len(markets)):
                     clobs: list[str] = markets[index].clobTokenIds
+                    if clobs is None:
+                        logging.warning("Market %s has no clobTokenIds, skipping.", markets[index].slug)
+                        continue
                     for clob_id in clobs:
                         # Store ticker and market index for later use in market data updates
                         dict_asset_id_to_ticker[clob_id] = (ticker, index)
@@ -407,7 +412,54 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             client_socket.sendall(response_bytes)
 
     def _on_fatal_error(self, error: dict):
-        pass
+        """
+        Callback invoked by PolyRestAPI's fatal_decorator when a critical REST operation fails.
+        Performs two actions:
+            1. Logs the error to stdout via throw_fuss with notifications disabled (notify=False),
+               since throw_fuss expects a str, not a dict — we format the error dict into a readable
+               multi-line string containing the function name, exception, and traceback.
+            2. Broadcasts a P1-encoded fatal_error message to all connected clients following the
+               dispatcher's standard response format: {'action': 'fatal_error', 'data': ..., 'error': ...}.
+               Dead sockets are cleaned up on send failure.
+
+        :param error: Dict from fatal_decorator with keys:
+            'function' (str), 'exception' (Exception), 'traceback' (str), 'args', 'kwargs', 'self'.
+        :return:
+        """
+        func_name = error.get('function', 'unknown')
+        exception = error.get('exception', 'unknown')
+        tb = error.get('traceback', '')
+
+        fuss_msg = (
+            f"POLYMARKET DISPATCHER FATAL ERROR\n"
+            f"Function: {func_name}\n"
+            f"Exception: {exception}\n"
+            f"Traceback:\n{tb}"
+        )
+        throw_fuss(fuss_msg, notify=False, title="Argus Polymarket Fatal Error")
+
+        # Build a serializable error payload for clients (Exception objects are not JSON serializable)
+        client_error_payload = {
+            'function': func_name,
+            'exception': str(exception),
+            'traceback': tb,
+        }
+
+        error_packet = self.send_with_p1_encoding({
+            'action': 'fatal_error',
+            'data': client_error_payload,
+            'error': str(exception)
+        })
+
+        for sock in self.sockets:
+            try:
+                sock.sendall(error_packet)
+            except (ConnectionResetError, BrokenPipeError) as e:
+                self.remove_socket(sock)
+                print_with_name('Removed socket due to error while broadcasting fatal error:', e)
+            except Exception as e:
+                print_with_name('Unexpected error broadcasting fatal error to socket:', e)
+                traceback.print_exc()
 
     def _order_book_update_callback(self, update: dict):
         """
@@ -416,11 +468,18 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :return:
         """
 
-        keys = list(update.keys())
-        if len(keys) > 1:
-            logging.warning("Received market data update with multiple keys: %s", keys)
+        # The update dict from the order book WebSocket contains the asset_id as a key
+        # alongside a 'timestamp' metadata key, e.g.:
+        #   {'<asset_id>': {'bids': [...], 'asks': [...]}, 'timestamp': '177...'}
+        # We filter out 'timestamp' to reliably extract the actual asset_id regardless
+        # of dict key ordering.
+        asset_keys = [k for k in update.keys() if k != 'timestamp']
+        if len(asset_keys) != 1:
+            logging.warning("Unexpected keys in market data update (expected 1 asset_id + timestamp): %s",
+                            list(update.keys()))
+            return
 
-        asset_id = keys[0]
+        asset_id = asset_keys[0]
         with self._market_cache_lock:
             ticker_market_index = self._asset_id_to_ticker.get(asset_id, None)
             if ticker_market_index is None:
@@ -442,6 +501,20 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             market_slug=self._all_markets_cache[ticker].markets[market_index].slug,
             asset_id=asset_id
         )
+
+        # Broadcast P2-encoded market data to all clients subscribed to this asset_id.
+        # On send failure (dead/disconnected client), remove the socket via remove_socket()
+        # which cascades cleanup through the routing table and triggers subscription_expired
+        # if no clients remain for a given clob_id.
+        for sock in clients_to_send:
+            try:
+                sock.sendall(p2_obj)
+            except (ConnectionResetError, BrokenPipeError) as e:
+                self.remove_socket(sock)
+                print_with_name('Removed socket due to error while sending market data for asset_id %s: %s', asset_id, e)
+            except Exception as e:
+                print_with_name('Unexpected error sending market data for asset_id %s to socket: %s', asset_id, e)
+                traceback.print_exc()
 
     def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
         _ = address
@@ -634,6 +707,154 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             except ValueError:
                 pass
         return sorted_markets[:limit]
+
+    ########################################
+    # Order Management
+    ########################################
+
+    def _resolve_market_from_token_id(self, token_id: str) -> PolymarketEvent:
+        """
+        Resolves a token_id (asset_id / clob_id) to its parent PolymarketEvent using the
+        dispatcher's internal caches. The lookup path is:
+            token_id -> _asset_id_to_ticker[token_id] -> (ticker, market_index)
+                     -> _all_markets_cache[ticker] -> PolymarketEvent
+
+        This is required because the REST API's place_order method needs a full PolymarketEvent
+        object (for negRisk and other market metadata), but clients only send a token_id.
+        Both caches are protected by _market_cache_lock.
+
+        :param token_id: The asset_id / clob_id identifying a specific market outcome.
+        :return: The PolymarketEvent object associated with this token_id.
+        :raises InvalidArgumentError: If the token_id is not found in the asset-to-ticker mapping.
+        :raises PolyMarketDispatcherError: If the resolved ticker is not found in the markets cache.
+        """
+        with self._market_cache_lock:
+            ticker_market_index = self._asset_id_to_ticker.get(token_id, None)
+        if ticker_market_index is None:
+            raise InvalidArgumentError(
+                f"token_id '{token_id}' not found in asset-to-ticker mapping. "
+                f"The market may not exist or the cache may not have refreshed yet."
+            )
+        ticker, _ = ticker_market_index
+
+        with self._market_cache_lock:
+            market = self._all_markets_cache.get(ticker, None)
+        if market is None:
+            raise PolyMarketDispatcherError(
+                f"Market with ticker '{ticker}' resolved from token_id '{token_id}' "
+                f"was not found in markets cache."
+            )
+        return market
+
+    def _handle_place_order(self, args_obj: ArgsObject):
+        """
+        Handle an order placement request from a client. Resolves the token_id to its parent
+        PolymarketEvent from the internal cache, then delegates to the REST API's place_order.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be a dict with:
+                'token_id' (str): The asset_id / clob_id to trade.
+                'price' (float): The price at which to place the order.
+                'size' (float): The size (number of contracts) of the order.
+                'side' (str): The side of the order ('buy' or 'sell').
+                'order_type' (str, optional): The order type, defaults to 'GTC'.
+                    Accepted values match py_clob_client.OrderType enum names.
+        :return: Dict from the CLOB API, e.g.:
+            {'errorMsg': '', 'orderID': '0x...', 'takingAmount': '', 'makingAmount': '',
+             'status': 'live', 'success': True}
+        """
+        args = args_obj.args
+        token_id = args.get('token_id', None)
+        if token_id is None:
+            raise InvalidArgumentError("'token_id' is required for place_order.")
+
+        price = args.get('price', None)
+        if price is None:
+            raise InvalidArgumentError("'price' is required for place_order.")
+
+        size = args.get('size', None)
+        if size is None:
+            raise InvalidArgumentError("'size' is required for place_order.")
+
+        side = args.get('side', None)
+        if side is None:
+            raise InvalidArgumentError("'side' is required for place_order.")
+
+        market = self._resolve_market_from_token_id(token_id)
+
+        result = self.rest_api.place_order(
+            token_id=token_id,
+            market=market,
+            price=float(price),
+            size=float(size),
+            side=str(side),
+        )
+        return result
+
+    def _handle_cancel_order(self, args_obj: ArgsObject):
+        """
+        Handle an order cancellation request from a client. Delegates directly to the
+        REST API's cancel_order with the provided order_id.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be a dict with:
+                'order_id' (str): The ID of the order to cancel.
+        :return: Dict from the CLOB API, e.g.:
+            {'not_canceled': {}, 'canceled': ['0x...']}
+        """
+        args = args_obj.args
+        order_id = args.get('order_id', None)
+        if order_id is None:
+            raise InvalidArgumentError("'order_id' is required for cancel_order.")
+
+        result = self.rest_api.cancel_order(order_id=str(order_id))
+        return result
+
+    def _handle_get_order_status(self, args_obj: ArgsObject):
+        """
+        Handle a request to get the status of a specific order. Delegates to the REST API's
+        get_order_status and serializes the resulting PolyMarketOrder dataclass to a dict.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be a dict with:
+                'order_id' (str): The ID of the order to query.
+        :return: Dict representation of the PolyMarketOrder, containing fields such as:
+            id, status, owner, maker_address, market, asset_id, side, original_size,
+            size_matched, price, outcome, expiration, order_type, associate_trades, created_at.
+        """
+        args = args_obj.args
+        order_id = args.get('order_id', None)
+        if order_id is None:
+            raise InvalidArgumentError("'order_id' is required for get_order_status.")
+
+        order = self.rest_api.get_order_status(order_id=str(order_id))
+        return dataclasses.asdict(order)
+
+    def _handle_get_orders(self, args_obj: ArgsObject):
+        """
+        Handle a request to fetch all open orders for the account. Delegates to the REST API's
+        get_orders and serializes each PolyMarketOrder dataclass to a dict.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be empty (no arguments required).
+        :return: List of dicts, each representing a PolyMarketOrder.
+        """
+        _ = args_obj
+        orders = self.rest_api.get_orders()
+        return [dataclasses.asdict(order) for order in orders]
+
+    def _handle_get_balance(self, args_obj: ArgsObject):
+        """
+        Handle a request to get the account's USDC balance. Delegates to the REST API's
+        get_balance which returns the collateral balance divided by the chain divisor.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be empty (no arguments required).
+        :return: Float representing the account balance in USDC.
+        """
+        _ = args_obj
+        balance = self.rest_api.get_balance()
+        return balance
 
     ########################################
     # Utilities
