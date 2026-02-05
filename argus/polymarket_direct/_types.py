@@ -1,7 +1,8 @@
 import json
-from dataclasses import dataclass, fields
-from typing import List, Optional
+import logging
 from datetime import datetime
+from typing import List, Optional
+from dataclasses import dataclass, fields
 
 
 @dataclass
@@ -97,7 +98,7 @@ class Market:
     volume1wk: Optional[float] = None
     volume1mo: Optional[float] = None
     volume1yr: Optional[float] = None
-    clobTokenIds: Optional[str] = None
+    clobTokenIds: Optional[list] = None  # technically it comes in as a string, but it's a JSON string that needs to be parsed into a list
     volume24hrAmm: Optional[float] = None
     volume1wkAmm: Optional[float] = None
     volume1moAmm: Optional[float] = None
@@ -169,6 +170,7 @@ class Market:
             try:
                 filtered_data['clobTokenIds'] = json.loads(filtered_data['clobTokenIds'])
             except json.JSONDecodeError:
+                logging.warning(f"Could not decode clobTokenIds: {filtered_data['clobTokenIds']}")
                 pass  # Keep as string if parsing fails
 
         # same with outcomes
@@ -176,6 +178,7 @@ class Market:
             try:
                 filtered_data['outcomes'] = json.loads(filtered_data['outcomes'])
             except json.JSONDecodeError:
+                logging.warning(f"Could not decode outcomes: {filtered_data['outcomes']}")
                 pass  # Keep as string if parsing fails
 
         return cls(**filtered_data)
@@ -196,7 +199,6 @@ class Market:
                     setattr(self, field, dt_obj)
                 except ValueError:
                     pass  # Keep original string if parsing fails
-
 
 
 @dataclass
@@ -320,6 +322,45 @@ class PolymarketEvent:
 
         for mkt in self.markets:
             mkt.convert_to_datetime()
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'ticker': self.ticker,
+            'slug': self.slug,
+            'title': self.title,
+            'description': self.description,
+            'resolutionSource': self.resolutionSource,
+            'endDate': self.endDate,
+            'image': self.image,
+            'icon': self.icon,
+            'active': self.active,
+            'closed': self.closed,
+            'archived': self.archived,
+            'new': self.new,
+            'featured': self.featured,
+            'restricted': self.restricted,
+            'createdAt': self.createdAt,
+            'updatedAt': self.updatedAt,
+            'enableOrderBook': self.enableOrderBook,
+            'negRisk': self.negRisk,
+            'commentCount': self.commentCount,
+            'markets': [mkt.__dict__ for mkt in self.markets],
+            'series': [s.__dict__ for s in self.series],
+            'tags': [tag.__dict__ for tag in self.tags],
+            'cyom': self.cyom,
+            'showAllOutcomes': self.showAllOutcomes,
+            'showMarketImages': self.showMarketImages,
+            'enableNegRisk': self.enableNegRisk,
+            'automaticallyActive': self.automaticallyActive,
+            'seriesSlug': self.seriesSlug,
+            'negRiskAugmented': self.negRiskAugmented,
+            'pendingDeployment': self.pendingDeployment,
+            'deploying': self.deploying,
+            'startDate': self.startDate,
+            'creationDate': self.creationDate
+        }
+
 
 # Helper function to parse a Polymarket event from dictionary
 def parse_polymarket_event(data: dict) -> PolymarketEvent:

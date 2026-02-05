@@ -5,7 +5,6 @@ Supported Dispatchers:
     – Binance, IDX=BINANCE
 
 """
-
 import os
 import time
 import copy
@@ -20,6 +19,7 @@ if not load_dotenv():
 BIND_ADDRESS = os.environ.get('WIREPROXY_BIND_ADDRESS', '127.0.0.1:25344')
 old_name = copy.copy(__name__)
 __name__ = '[{}]'.format(old_name)
+
 
 def _load_all_proxy_mappings():
     """
@@ -38,13 +38,15 @@ def _load_all_proxy_mappings():
     return mappings
 
 
-def _setup_proxy_for_dispatcher(idx):
+def _setup_proxy_for_dispatcher(idx, verbose=True):
     mappings = _load_all_proxy_mappings()
     if str(idx) in mappings:
-        print(__name__, f'Found WireProxy mapping for dispatcher {idx}, ensuring WireProxy daemon is running...')
+        if verbose:
+            print(__name__, f'Found WireProxy mapping for dispatcher {idx}, ensuring WireProxy daemon is running...')
         ensure_daemon_running()
         config_name = mappings[str(idx)].split('.conf')[0]
-        print(__name__, f'Sending command to WireProxy daemon to start proxy with config name: {config_name}')
+        if verbose:
+            print(__name__, f'Sending command to WireProxy daemon to start proxy with config name: {config_name}')
         state = send_server_command('state')['result']
         already_running = False
         if state['running']:
@@ -56,17 +58,26 @@ def _setup_proxy_for_dispatcher(idx):
                 logging.warning(msg)
                 logging.warning("State=%s", state)
                 response = send_server_command('spin_down')
-                print(__name__, f'WireProxy daemon response to spin_down: {response}')
+                if verbose:
+                    print(__name__, f'WireProxy daemon response to spin_down: {response}')
+                if response['error'] is not None:
+                    raise RuntimeError(f'Failed to spin down existing WireProxy daemon: {response["error"]}')
                 time.sleep(2)
             else:
                 already_running = True
-                print(__name__, f'WireProxy daemon is already running with the requested configuration: {config_name}')
-                print(__name__, f'Daemon state: {state}')
+                if verbose:
+                    print(__name__,
+                          f'WireProxy daemon is already running with the requested configuration: {config_name}')
+                    print(__name__, f'Daemon state: {state}')
 
         if not already_running:
-            print(__name__, f'Spinning up WireProxy daemon with configuration: {config_name}')
+            if verbose:
+                print(__name__, f'Spinning up WireProxy daemon with configuration: {config_name}')
             response = send_server_command('spin_up', config_name)
-            print(__name__, f'WireProxy daemon response: {response}')
+            if verbose:
+                print(__name__, f'WireProxy daemon response: {response}')
+            if response['error'] is not None:
+                raise RuntimeError(f'Failed to spin up WireProxy daemon: {response["error"]}')
 
         return True
     return False
@@ -86,12 +97,20 @@ def start_proxy_aware_ws(idx, websocket: WebSocketApp, *args, **kwargs):
         print(__name__, f'No WireProxy mapping found for dispatcher {idx}, starting normal WebSocketApp')
         websocket.run_forever(*args, **kwargs)
 
-def update_request_session_proxy(idx, session):
-    _setup_proxy_for_dispatcher(idx)
-    session.proxies.update({
-        'http': f'socks5h://{BIND_ADDRESS}',
-        'https': f'socks5h://{BIND_ADDRESS}',
-    })
+def update_request_session_proxy(idx, session, verbose=True):
+    if _setup_proxy_for_dispatcher(idx, verbose=verbose):
+        session.proxies.update({
+            'http': f'socks5h://{BIND_ADDRESS}',
+            'https': f'socks5h://{BIND_ADDRESS}',
+        })
+
+def start_proxy_and_return_bind(idx):
+    if _setup_proxy_for_dispatcher(idx):
+        print(__name__, f'Returning WireProxy bind address for dispatcher {idx}: {BIND_ADDRESS}')
+        return BIND_ADDRESS
+    else:
+        print(__name__, f'No WireProxy mapping found for dispatcher {idx}, returning None')
+        return None
 
 
 if __name__ == '__main__':

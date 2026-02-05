@@ -10,3 +10,6 @@ setuptools~=80.9.0
 utils3 @ git+https://github.com/the-sal/utils3
 termcolor
 python-socks~=2.8.0
+httpx
+py-clob-client
+httpx[socks]

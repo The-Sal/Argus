@@ -1,5 +1,5 @@
-from typing import Dict, Optional, Any
 from dataclasses import dataclass
+from typing import Dict, Optional, Any
 
 @dataclass
 class SearchResult:

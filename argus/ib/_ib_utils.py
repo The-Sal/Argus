@@ -4,9 +4,11 @@ import socket
 import logging
 import threading
 import traceback
-from utils3.networking import Session as _RAW_SESSION
-from argus.capital import DomainCache, CapitalComMKTDataLive
+from typing import Dict, Optional
+from argus.cache_sys import DomainCache
 from argus._argus_utils import Notification
+from argus.capital import CapitalComMKTDataLive
+from utils3.networking import Session as _RAW_SESSION
 
 logger = logging.getLogger(__name__)
 
@@ -268,7 +270,6 @@ class Account:
             raise ValueError("Account ID is required to create an Account instance.")
         return cls(account_id=account_id, **data)
 
-from typing import Dict, Optional
 
 
 class AccountBalances:

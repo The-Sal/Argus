@@ -12,6 +12,7 @@ import socket
 import inspect
 import threading
 import traceback
+from argus import throw_fuss
 from utils3 import runAsThread
 from tempfile import gettempdir
 from argus.ib.fields import IBKRFields
@@ -22,7 +23,6 @@ from argus.ib._ib_utils import (
     NOTIFICATION as _NOTIFICATION, expand_exception_decorator, AbstractSocketMessage, MarketData,
     IBKRModes
 )
-from argus import throw_fuss
 
 
 def apply_some_lock(lock_name):

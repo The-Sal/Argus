@@ -17,19 +17,21 @@ to provide results. This module also supports a 'dry' mode where you do NOT need
 supports real-time market data subscriptions via WebSocket. The keys are usually only for order placement.
 
 """
-import json
 import os
+import json
 import time
 import uuid
+import logging
 import requests
 import threading
-from argus import throw_fuss
 from utils3 import runAsThread
-from argus.capital import DomainCache
 from websocket import WebSocketApp
-# from py_clob_client.client import ClobClient
+from argus.cache_sys import DomainCache
+from argus._argus_utils import throw_fuss
 from argus.polymarket_direct._types import PolymarketEvent
-from argus.wireproxy.wrapper import start_proxy_aware_ws, update_request_session_proxy
+from argus.wireproxy.wrapper import start_proxy_aware_ws, update_request_session_proxy, start_proxy_and_return_bind
+
+# do not modify the throw_fuss line; recursive import otherwise
 
 dCache = DomainCache('polymarket_direct')
 
@@ -41,34 +43,40 @@ endpoints = {
 }
 
 
+def _make_httpx_clob_client():
+    """
+    PyClobClient uses httpx for its HTTP requests; however, it does not expose a way to set up proxies.
+    This function patches the internal httpx Client used by py_clob_client to use a proxy if specified
+    via WireProxy.
+    """
+    from httpx import Client
+    from py_clob_client.http_helpers import helpers
+
+    proxy = start_proxy_and_return_bind('POLYMARKET')
+    if proxy is not None:
+        proxy = f'socks5://{proxy}'
+    _client = Client(http2=2, proxy=proxy)
+    setattr(helpers, '_http_client', _client)
+
+
 class EnhancedPM:
     """
     A direct Polymarket integration that aims to fill the gaps left by the official py_clob_client.
-    Note:
-        - Pre v0.0.7 this class inherited from ClobClient, however, we are yet to actually use any of its functionality,
-        so we have removed the inheritance for clarity. We are also dropping it as a dependency in from 0.0.7 onwards.
-        - The <0.0.7 versions can still use this class as a drop-in replacement because we are not changing the
-        constructor signature or any of the public methods. These parameters are kept for future compatibility
-        but will not have any effect.
     """
 
-    def __init__(self, private_key, proxy_funder,
+    def __init__(self,
+                 private_key = None, proxy_funder = None,
                  host='https://clob.polymarket.com',
-                 chain_id=137,
-                 order_book_depth=1, dry_mode=False, max_socket_retries=100):
+                 chain_id=137, order_book_depth=1, dry_mode='XXX',
+                 max_socket_retries=100):
 
-        # IDE Stop complaining about unused variables
-        _ = (private_key, proxy_funder,  host, chain_id, dry_mode)
+        if dry_mode != 'XXX':
+            msg = ("In Argus version 0.0.9 `dry_mode` parameter will be depreciated. You have"
+                   " set it to a non-default value, but it is currently unused. Please remove it from your code.")
+            logging.warning(msg)
 
-        # if not dry_mode:
-            # super().__init__(
-            #     host,
-            #     key=private_key,
-            #     chain_id=chain_id,
-            #     signature_type=1,
-            #     funder=proxy_funder,
-            # )
-            # self.set_api_creds(self.create_or_derive_api_creds())
+        _ = (private_key, proxy_funder, dry_mode, host, chain_id)
+
         self.max_socket_retries = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', max_socket_retries))
         self.bd = order_book_depth
         self.user_ws = WebSocketApp('wss://ws-subscriptions-clob.polymarket.com/ws/user')
@@ -79,7 +87,7 @@ class EnhancedPM:
         )
         self.idx_to_callback = {}
         self.ws_messages = []
-        
+
         # Rolling mechanism configuration
         # Addresses issue #20: Unbounded memory growth due to lack of rolling mechanism
         # See commit e518e24 for initial rolling implementation
@@ -89,7 +97,7 @@ class EnhancedPM:
         self._write_interval = int(os.environ.get('POLYMARKET_WRITE_INTERVAL', '30'))
         self.uuid = str(uuid.uuid4())
         self.message_seg_id = 0
-        
+
         self._write_messages_to_file()
         self.ws_errors = 0
         # noinspection PyTypeChecker
@@ -97,18 +105,19 @@ class EnhancedPM:
         self.init_market_ws()
         self._internally_closed = False
 
-
         # This should be reset everytime after use. It will be blocked
         # when you call init_market_ws until the ws connection is open.
         self.market_open_semaphore = threading.Semaphore(0)
+
+        self._ping()
 
     ############################################
     # NON-PUBLIC METHODS
     ############################################
 
     def unique_file_name(self, file_name, file_type):
-        """Generate unique filename with UUID and segment ID
-        
+        """Generate a unique filename with UUID and segment ID
+
         Part of issue #20 fix - creates segmented filenames for rolling mechanism
         Pattern: {filename}_{uuid}-{segment_id}.{file_type}
         """
@@ -116,11 +125,11 @@ class EnhancedPM:
 
     def rollover_message_segment(self):
         """Roll over to a new message segment, clearing memory
-        
+
         Core fix for issue #20 - prevents unbounded memory growth by:
         1. Incrementing segment ID for new file naming
         2. Clearing in-memory message list (saw-tooth pattern)
-        3. Creating new file segment for subsequent messages
+        3. Creating a new file segment for later messages
         """
         self.message_seg_id += 1
         self.ws_messages = []
@@ -183,7 +192,8 @@ class EnhancedPM:
             print("Error parsing WebSocket message:", e)
             data = message
             self.ws_messages.append(data)
-            print(data, len(data), type(data))
+            debug_info = "DATA='{}' TYPE='{}' LEN='{}'".format(data, type(data), len(data))
+            logging.warning(debug_info)
             return
 
         if not isinstance(data, dict):
@@ -199,14 +209,14 @@ class EnhancedPM:
             callback(change)
 
     @runAsThread
-    def _write_messages_to_file(self, filename='ws_messages.fk'):
+    def _write_messages_to_file(self):
         """Write WebSocket messages to file with rolling mechanism
-        
+
         Addresses issue #20 - Unbounded memory growth in .fk file:
         - Initial fix (commit e518e24): Added rolling mechanism with configurable limits
         - Optimization (commit 11ee88e): Added configurable write interval (default: 30s)
         - Reduces I/O overhead from 1s to 30s intervals while maintaining memory control
-        
+
         Environment Variables:
         - POLYMARKET_ENABLE_ROLLING: Enable/disable rolling (default: true)
         - POLYMARKET_MAX_MESSAGE_COUNT: Messages before rollover (default: 5000)
@@ -214,21 +224,34 @@ class EnhancedPM:
         """
         while self._enable_rolling:
             time.sleep(self._write_interval)
-            
+
             # Check if rolling is enabled and we've exceeded the message count
             if len(self.ws_messages) > self._max_message_count:
-                print(f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
+                print(
+                    f"[Polymarket] Rolling over message segment: {len(self.ws_messages)} messages > {self._max_message_count} limit")
                 self.rollover_message_segment()
-            
+
             # Only write if we have messages
             if not self.ws_messages:
                 continue
-                
+
             # Generate filename based on rolling mechanism
             current_filename = self.unique_file_name('ws_messages', 'fk')
             with open(current_filename, 'w') as f:
                 for msg in self.ws_messages:
                     f.write(str(msg) + '\n')
+
+    @runAsThread
+    def _ping(self, interval=10):
+        # Questionable if required since we've run into no issues without it
+        # but was used in the official docs ==> https://docs.polymarket.com/quickstart/websocket/WSS-Quickstart
+        # while True:
+        #     time.sleep(interval)
+        #     self.market_ws.send("PING")
+
+        # NOTE: DO NOT USE OR IMPLEMENT PING, IT CAUSES WS TO DISCONNECT DESPITE
+        # WHATEVER IS WRITTEN IN THE OFFICIAL DOCS
+        pass
 
     ############################################
     # PUBLIC METHODS
@@ -249,7 +272,6 @@ class EnhancedPM:
                 print("Error parsing event:", e)
 
         return returns
-
 
     def restart_ws_connections(self):
         """
@@ -278,18 +300,31 @@ class EnhancedPM:
             'type': 'market'
         }))
 
-    def unsubscribe_from_market_data(self, asset_id):
+    def unsubscribe_from_market_data(self, asset_ids: list[str]):
         """
         Unsubscribe from real-time market data for the given market IDs.
         Due to how polymarket's ws works, there is no actual unsubscribing; instead
         we set the callback to a no-op lambda function.
 
-        :param asset_id: The asset IDs to unsubscribe from.
+        :param asset_ids: The asset IDs to unsubscribe from.
         :return:
         """
-        for idx in asset_id:
-            if idx in self.idx_to_callback:
-                self.idx_to_callback[idx] = lambda x: None
+        if os.environ.get('POLYMARKET_ENABLE_UNSUB_PATCH') != 'true':
+            for idx in asset_ids:
+                if idx in self.idx_to_callback:
+                    self.idx_to_callback[idx] = lambda x: None
+        else:
+            logging.info("Using unsubscribe patch for Polymarket WebSocket")
+            for idx in asset_ids:
+                if idx in self.idx_to_callback:
+                    self.idx_to_callback[idx] = lambda x: logging.warning(
+                        'Received data for unsubscribed asset id %s: %s', idx, x)
+
+            # Unsure about this requires testing, but this endpoint may work:
+            self.market_ws.send(json.dumps({
+                'assets_ids': asset_ids,
+                'operation': 'unsubscribe',
+            }))
 
     @runAsThread
     def start_market_ws(self):
@@ -298,6 +333,4 @@ class EnhancedPM:
 
 
 if __name__ == '__main__':
-    from argus.polymarket_direct._example import example_usage
-
-    example_usage()
+    pass

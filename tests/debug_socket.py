@@ -4,7 +4,6 @@ Real-time AccountProvider Debug Client
 Connects to localhost:9973 and displays live portfolio updates
 """
 import os
-import sys
 import json
 import socket
 from datetime import datetime

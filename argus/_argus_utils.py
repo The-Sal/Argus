@@ -1,6 +1,6 @@
 """Utilities for the Argus package."""
-import inspect
 import os
+import inspect
 import platform
 import traceback
 import subprocess
@@ -52,8 +52,6 @@ else:
     def macos_notification_with_custom_sound(title: str, message: str, sound_name: str = "default") -> None:
         """Placeholder for non-macOS systems."""
         print(f"macOS notification with sound not supported on this platform: {title} - {message}")
-
-
 
 class Notification:
     """Dispatcher for notifications."""
@@ -213,7 +211,11 @@ class Introspective:
 
 def throw_fuss(msg: str, boarder="*", notify=True, title="Argus IBKR Alert") -> None:
     """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
-    environment_size = os.get_terminal_size().columns
+    try:
+        environment_size = os.get_terminal_size().columns
+    except OSError:
+        environment_size = 80
+
     if environment_size < 80:
         environment_size = 80
     opening_line = boarder * environment_size

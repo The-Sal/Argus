@@ -12,12 +12,10 @@ Protocol Formats:
 - Basic: ~<data-length>|{data}
 - Protocol 2: ~<packet-length><symbol-length>|<symbol><market-data>L
 
-Author: [Your Name]
-Version: 1.0
 """
 
-from typing import List, Dict, Union, Any
 import time
+from typing import List, Dict, Union
 
 
 # =============================================================================

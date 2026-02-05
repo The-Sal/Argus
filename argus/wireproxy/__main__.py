@@ -13,12 +13,12 @@ Usage:
     python3 -m argus.wireproxy --server-status # Check server status
 """
 
-import argparse
 import sys
 import json
-import socket
-import subprocess
 import time
+import socket
+import argparse
+import subprocess
 from argus.wireproxy import WireProxy, WireProxyServer
 
 

@@ -4,7 +4,7 @@ import logging
 import tempfile
 import subprocess
 import urllib.request
-from argus.capital import DomainCache
+from argus.cache_sys import DomainCache
 from typing import Dict, List, Optional
 
 
