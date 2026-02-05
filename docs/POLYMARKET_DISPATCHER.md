@@ -18,31 +18,37 @@ The Polymarket Dispatcher exposes a **single heterogeneous socket** on **Port 99
 
 Packets on the single socket use one of two formats, differentiated by structure:
 
-**Control/Request Packets (Basic Format):**
+**Control/Request Packets (P1 Format):**
 ```
-~XXXX|<JSON_DATA>
+~NNNN|<JSON_DATA>
 ```
-- Prefix: `~XXXX|` where `XXXX` is a 4-digit **decimal** number (zero-padded)
+- Prefix: `~NNNN|` where `NNNN` is a **variable-width** decimal number (zero-padded to a minimum of 4 digits).
+  For payloads <= 9999 bytes the field is exactly 4 digits (e.g. `~0045|`). For larger payloads the field
+  grows to however many digits are needed (e.g. `~12345|`). **Clients must locate the `|` dynamically**
+  rather than assuming it is always at byte offset 5. See [#68](https://github.com/The-Sal/Argus/issues/68).
 - First byte after `|` is always `{` (JSON object start)
 - Content: JSON with `action`, `data`, and `error` fields
 - Direction: Client requests and server responses (request-response pairs)
 - Example: `~0045|{"action":"subscribe","data":["CLOB_ID_1"]}`
+- **Important:** Clients must also wrap their outbound JSON requests in P1 encoding before sending.
+  Raw JSON sent without the `~NNNN|` framing will not be understood by the dispatcher.
 
-**Market Data Packets (Protocol 2 Format):**
+**Market Data Packets (P2 Format):**
 ```
-~XXXXYYYY|<SYMBOL><DATA>L
+~NNNNYYYY|<SYMBOL><DATA>L
 ```
-- Prefix: `~XXXXYYYY|` where:
-  - `XXXX` = 4-digit decimal total packet length (after the `~XXXX`)
+- Prefix: `~NNNNYYYY|` where:
+  - `NNNN` = 4-digit decimal total packet length (everything after the `~NNNN` prefix)
   - `YYYY` = 4-digit decimal symbol length
+  - `|` separator immediately after `YYYY`
   - Packet terminates with `L` byte
-- Content: Symbol followed by the dispatcher's P2 format layout (see docs)
-- Direction: Server → Client (asynchronous streaming after subscription)
-- Example: `~0065<0006|BTCUSD50000.0,50001.0,50000.5,1.0,1.0,1750729519.286L`
+- Content: Symbol followed by CSV market data (see P2 Data Layout below)
+- Direction: Server -> Client (asynchronous streaming after subscription)
+- Example: `~00650006|BTCUSD50000.0,50001.0,50000.5,1.0,1.0,1750729519.286L`
 
 **Auto-Detection:** Check the first byte after `|`:
-- `{` → Basic format (control message)
-- Other and ends with `L` → Protocol 2 format (market data)
+- `{` -> P1 (control message)
+- Other and ends with `L` -> P2 (market data)
 
 # Message Structure (Control Plane)
 
@@ -117,15 +123,27 @@ To unsubscribe from market data for a specific token/clob_id, send a JSON messag
 }
 ```
 
+The response will be in the following format:
+```json
+{
+  "action": "unsubscribe",
+  "data": {
+    "unsubscribed": ["<CLOB_ID_1>", "<CLOB_ID_2>", "..."],
+    "failed": ["<CLOB_ID_3>", "..."]
+  },
+  "error": null
+}
+```
+
 # Connection Model
 
 The Polymarket Dispatcher uses a **single persistent socket connection** for all communication:
 
 1. **Establish Connection**: Connect to `localhost:9972` (or configured host/port)
-2. **Send Requests**: Send JSON control messages on the same socket
-3. **Receive Responses**: Responses to your requests arrive on the same socket
-4. **Receive Market Data**: Market data updates arrive automatically after subscription on the same socket
-5. **Multiplex Messages**: Your client must be able to distinguish between control responses and market data updates based on packet structure
+2. **Send Requests**: Send P1-encoded JSON control messages on the socket (see Protocol Details for framing)
+3. **Receive Responses**: Responses to your requests arrive on the same socket as P1 packets
+4. **Receive Market Data**: Market data updates arrive automatically after subscription as P2 packets
+5. **Multiplex Messages**: Your client must be able to distinguish between P1 (control) and P2 (market data) packets based on structure
 
 This unified approach simplifies connection management and eliminates the complexity of coordinating multiple ports or sockets.
 
@@ -181,7 +199,7 @@ To fetch metadata for a specific market by its ticker symbol, send a JSON messag
 ```json
 {
     "action": "fetch_market_by_ticker",
-    "data": "<TICKER>"
+    "data": ["<TICKER>"]
 }
 ```
 
@@ -199,23 +217,24 @@ To search a market by a query string, send a JSON message in the following forma
 ```json
 {
     "action": "search_markets",
-    "data": {
-        "query": "<SEARCH_QUERY>",
-        "limit": <MAX_RESULTS>
-    }
+    "data": ["<SEARCH_QUERY>", <MAX_RESULTS>]
 }
 ```
+
+The `data` field is a list where:
+- Index 0 (required): The search query string
+- Index 1 (optional): Maximum number of results to return (default: 10)
 
 The response will be in the following format:
 ```json
 {
   "action": "search_markets",
-  "data": [...], // array of sorted dicts representing markets derived from `PolymarketEvent`
+  "data": ["TICKER_1", "TICKER_2", "..."], // array of ticker strings sorted by similarity
   "error": null
 }
 ```
 
-Note: The search is case-insensitive and matches against market titles and symbols. Sorted by levenshtein distance.
+Note: The search matches against market ticker strings. Results are sorted by `difflib.SequenceMatcher` similarity ratio (longest common subsequence based), not Levenshtein distance.
 
 # Order Execution & Account Data (Control Plane)
 
@@ -226,23 +245,23 @@ To place an order, send a JSON message in the following format:
 {
     "action": "place_order",
     "data": {
-        "clob_id": "<CLOB_ID>",
+        "token_id": "<TOKEN_ID>",
         "side": "<buy|sell>",
         "price": <PRICE>,
-        "size": <SIZE>,
-        "order_type": "<GTC|FOK|GTD|FAK>", // optional, defaults to GTC
+        "size": <SIZE>
     }
 }
 ```
 
-The response will be in the following format:
+The response will be in the following format (note: field names use camelCase as returned by the CLOB API):
 ```json
 {
   "action": "place_order",
   "data": {
-    "order_id": "<ORDER_ID>",
-    "taking_amount": "<TAKING_AMOUNT>",
-    "making_amount": "<MAKING_AMOUNT>",
+    "errorMsg": "",
+    "orderID": "<ORDER_ID>",
+    "takingAmount": "<TAKING_AMOUNT>",
+    "makingAmount": "<MAKING_AMOUNT>",
     "status": "<live|filled|cancelled|rejected>",
     "success": true
   },
@@ -250,9 +269,9 @@ The response will be in the following format:
 }
 ```
 
-Note: This action relies on the function `place_order` which is part of the rest/PoltRestAPI and has the requirement
-of `market: pm_types.PolymarketEvent` this is automatically filled from the aformentioned market cache. Make sure the
-token id will exist in the cache before placing an order using `fetch_market_by_clob_id` or `search_markets` if the token_id
+Note: This action relies on the function `place_order` which is part of the rest/PolyRestAPI and has the requirement
+of `market: pm_types.PolymarketEvent` this is automatically filled from the aforementioned market cache. Make sure the
+token id will exist in the cache before placing an order using `search_markets` or `fetch_all_tickers` if the token_id
 was sourced externally.
 
 
@@ -261,7 +280,9 @@ To cancel an order, send a JSON message in the following format:
 ```json
 {
     "action": "cancel_order",
-    "data": "<ORDER_ID>"
+    "data": {
+        "order_id": "<ORDER_ID>"
+    }
 }
 ```
 
@@ -269,19 +290,25 @@ The response will be in the following format:
 ```json
 {
   "action": "cancel_order",
-  "data": "<CANCELLED | NOT CANCELLED>", 
+  "data": {
+    "canceled": ["<ORDER_ID>"],
+    "not_canceled": {}
+  },
   "error": null 
 }
 ```
 
-Note: Canceled or NOT canceled is not because of an error and simply what the API returned.
+Note: An order appearing in `not_canceled` rather than `canceled` is not an error condition; it reflects
+what the CLOB API returned (e.g. the order may have already been filled or canceled).
 
 ### Get Order Status
 To get the status of an order, send a JSON message in the following format:
 ```json
 {
     "action": "get_order_status",
-    "data": "<ORDER_ID>"
+    "data": {
+        "order_id": "<ORDER_ID>"
+    }
 }
 ```
 
@@ -356,6 +383,26 @@ The response will be in the following format:
 
 Note: This represents the total cash available for trading or `COLLATERAL` per the clob API.
 
+# Utilities (Control Plane)
+
+### Ping
+To check if the dispatcher is alive and responsive, send:
+```json
+{
+    "action": "ping",
+    "data": null
+}
+```
+
+The response will be in the following format:
+```json
+{
+  "action": "ping",
+  "data": "pong",
+  "error": null
+}
+```
+
 # Client Implementation Guide
 
 ## Handling the Single Socket Connection
@@ -364,28 +411,36 @@ Since the dispatcher uses a heterogeneous data stream on a single socket, your c
 
 1. **Maintain a single persistent connection** to the dispatcher
 2. **Parse incoming packets** to distinguish between two types:
-   - **Control responses**: Basic format `~XXXX|{...}` (first byte after `|` is `{`)
-   - **Market data**: Protocol 2 format `~XXXX<YYYY>|...|L` (first byte after `|` is symbol, ends with `L`)
-3. **Send control messages** (basic format) while receiving both control responses and market data asynchronously
+   - **Control responses**: P1 format `~NNNN|{...}` (first byte after `|` is `{`)
+   - **Market data**: P2 format `~NNNNYYYY|...L` (first byte after `|` is part of the symbol, ends with `L`)
+3. **Send control messages** (P1 format) while receiving both control responses and market data asynchronously
 4. **Handle interleaved message types** - control responses and market data arrive on the same socket and may be interleaved
 
 ## Packet Detection Logic
 
+P2 packets always have a 4-digit packet length at bytes 1-4, a 4-digit symbol length at bytes 5-8,
+and a pipe at byte 9. P1 packets have a variable-width length field (minimum 4 digits) followed
+immediately by `|`. To distinguish them, find the pipe position: if `|` is at byte 9 and the
+packet ends with `L`, it is P2; otherwise it is P1.
+
 ```python
-def detect_packet_type(packet_bytes):
-    # Find the pipe separator
-    pipe_idx = packet_bytes.find(b'|')
+def detect_and_parse_packet(raw_bytes):
+    """Detect whether a complete packet starting at raw_bytes[0] is P1 or P2."""
+    pipe_idx = raw_bytes.find(b'|')
     if pipe_idx == -1:
         raise ValueError("Invalid packet: no pipe found")
 
-    first_byte_after_pipe = packet_bytes[pipe_idx + 1]
+    # P2: pipe is always at index 9 (~NNNNYYYY|), ends with L
+    if pipe_idx == 9:
+        pkt_len = int(raw_bytes[1:5].decode('ascii'))
+        total = 5 + pkt_len
+        if raw_bytes[total - 1:total] == b'L':
+            return "market_data", total
 
-    if first_byte_after_pipe == ord('{'):
-        return "control"  # Basic format: ~XXXX|{JSON}
-    elif packet_bytes[-1] == ord('L'):
-        return "market_data"  # Protocol 2: ~XXXX<YYYY>|SYMBOL...|L
-    else:
-        raise ValueError("Unknown packet format")
+    # P1: pipe is right after the variable-width length field
+    payload_len = int(raw_bytes[1:pipe_idx].decode('ascii'))
+    total = pipe_idx + 1 + payload_len
+    return "control", total
 ```
 
 ## Pseudo-Code Example
@@ -395,33 +450,45 @@ import socket
 import json
 import threading
 
+def encode_packet(data: bytes) -> bytes:
+    """Wrap data in P1 framing: ~NNNN|<data>"""
+    return f"~{len(data):04d}|".encode('ascii') + data
+
 def listen_loop(sock):
+    buf = b''
     while True:
-        # Read header to determine packet length
-        header = sock.recv(6)  # ~XXXX|
-        if not header:
+        chunk = sock.recv(65536)
+        if not chunk:
             break
+        buf += chunk
 
-        packet_type = detect_packet_type(header)
-        length = int(header[1:5])
+        while buf and buf[0:1] == b'~':
+            pipe_idx = buf.find(b'|')
+            if pipe_idx == -1:
+                break  # incomplete header
 
-        if packet_type == "control":
-            # Basic format: read JSON
-            json_data = sock.recv(length)
-            msg = json.loads(json_data)
-            handle_control_response(msg)
-        elif packet_type == "market_data":
-            # Protocol 2: read symbol_length, then symbol, then data
-            # Handle market data update
-            pass
+            pkt_type, total_len = detect_and_parse_packet(buf)
+            if len(buf) < total_len:
+                break  # incomplete packet
+
+            packet = buf[:total_len]
+            buf = buf[total_len:]
+
+            if pkt_type == "control":
+                payload = packet[pipe_idx + 1:]
+                msg = json.loads(payload.decode('utf-8'))
+                handle_control_response(msg)
+            else:
+                # P2 market data — parse symbol and CSV fields
+                handle_market_data(packet)
 
 # Connect and send request
 sock = socket.socket()
 sock.connect(('localhost', 9972))
 
-# Send control request (basic format)
+# Send control request (must be P1-encoded)
 request = {"action": "subscribe", "data": ["CLOB_ID_1"]}
-encoded = encode_packet(json.dumps(request).encode())
+encoded = encode_packet(json.dumps(request).encode('utf-8'))
 sock.sendall(encoded)
 
 # Listen in background thread
@@ -432,7 +499,7 @@ thread.start()
 # Now receive both control responses and market data on the same connection
 ```
 
-The key advantage is **no connection management overhead** — single socket handles request-response pairs AND asynchronous market data streaming simultaneously.
+The key advantage is **no connection management overhead** -- single socket handles request-response pairs AND asynchronous market data streaming simultaneously.
 
 # Special Actions (Control Plane)
 Normally the action field corresponds directly to a specific action. However, there are some special actions that
@@ -456,30 +523,62 @@ These are messages sent when an account update has occurred. This includes event
 * Order status changes (filled, canceled, etc.)
 * Orders placed
 
+**IMPORTANT — Account Update Delivery Requirement:**
+Real-time account events (order PLACEMENT, CANCELLATION, MATCH, etc.) are only broadcast to client
+sockets that have an active market data subscription. A client that connects and issues order management
+commands (`place_order`, `cancel_order`, `get_order_status`, etc.) **without** first subscribing to at
+least one asset via the `subscribe` action will **never** receive `account_update` pushes, even though
+the dispatcher's internal WebSocket is receiving them from the CLOB.
+
+This is because the dispatcher tracks connected clients through the routing table's socket set, which is
+only populated when a client subscribes to market data. If your workflow depends on receiving account
+lifecycle events, you **must** subscribe to at least one asset_id before placing orders.
+
 
 # Market Data (Single Socket)
 
-Real-time market data updates for subscribed markets are sent to clients through the same socket connection in **Protocol 2 format** (see Protocol Details above).
+Real-time market data updates for subscribed markets are sent to clients through the same socket connection in **P2 format** (see Protocol Details above).
 
 **Market Data Format:**
 ```
-~XXXX<YYYY>|<SYMBOL><DATA>L
+~NNNNYYYY|<SYMBOL><DATA>L
 ```
-- Identified by: starts with `~XXXX<YYYY>|` and ends with `L`
-- Symbol: Asset identifier (e.g., `CLOB_ID_1`)
-- Data: CSV-formatted values (prices, sizes, timestamps)
+- Identified by: first byte after `|` is NOT `{`, and packet ends with `L`
+- Symbol: A concatenation of `<event_ticker><market_slug><asset_id>` (e.g., `bitcoin-up-or-down-1hrbtc-hourly-up-or-down-jan-31-2026-2pm-et21742633143463...`)
+- Data: CSV-formatted order book values (see layout below)
 
-**Market Data Message Types:**
-* Top-of-Book Updates: Best bid/ask prices and sizes
-* Full Order Book Snapshots: Complete order book state
+**P2 Symbol Structure:**
+
+The P2 symbol is NOT just the clob_id/asset_id. It is constructed as:
+```
+<event_ticker> + <market_slug> + <asset_id>
+```
+For example, if the event ticker is `bitcoin-up-or-down-1hr`, the market slug is
+`btc-hourly-up-or-down-jan-31-2026-2pm-et`, and the asset_id is `217426331434639...`,
+the symbol will be the concatenation of all three.
+
+**P2 Data Layout:**
+
+After the symbol, the CSV data contains the following fields in order:
+
+| Fields | Count | Description |
+|--------|-------|-------------|
+| `bid_price_N, bid_size_N` | N pairs | Bid levels (best to worst) |
+| `ask_price_N, ask_size_N` | N pairs | Ask levels (best to worst) |
+| `exchange_timestamp` | 1 | Timestamp from the Polymarket WebSocket |
+| `server_timestamp` | 1 | Timestamp when the dispatcher encoded the packet |
+
+Where N = `POLYMARKET_ORDERBOOK_DEPTH` (default 10, configurable via environment variable).
+At default depth this yields `10*2 + 10*2 + 2 = 42` comma-separated float values per packet.
+If the order book has fewer than N levels on a side, the missing levels are padded with `0,0`.
 
 **Note:** Market data does not use delta updates. All updates are sent as complete snapshots.
 
 **Receiving Market Data:**
 
 After subscribing via `subscribe` action, market data packets stream asynchronously on the same connection. Your client must parse both:
-1. **Control responses** (Basic format `~XXXX|{...}`) — responses to your requests
-2. **Market data** (Protocol 2 format `~XXXX<YYYY>|...|L`) — asynchronous updates
+1. **Control responses** (P1 format `~NNNN|{...}`) -- responses to your requests
+2. **Market data** (P2 format `~NNNNYYYY|...L`) -- asynchronous updates
 
 These arrive interleaved on the same socket and must be handled with proper packet detection (see Client Implementation Guide above).
 
@@ -490,10 +589,11 @@ These arrive interleaved on the same socket and must be handled with proper pack
 The Polymarket Dispatcher provides a **simplified, unified interface** through a single heterogeneous socket:
 
 - **Single Port**: All communication on port 9972 (no dual-port complexity)
-- **Heterogeneous Packets**: Control uses Basic format (`~XXXX|{JSON}`), market data uses Protocol 2 (`~XXXX<YYYY>|SYMBOL...L`)
-- **Auto-Detection**: Clients distinguish packet types by checking first byte after `|` and looking for `L` terminator
+- **Heterogeneous Packets**: Control uses P1 format (`~NNNN|{JSON}`), market data uses P2 (`~NNNNYYYY|SYMBOL...L`)
+- **Auto-Detection**: Clients distinguish packet types by pipe position (byte 9 = P2, otherwise P1) and `L` terminator
 - **Simplified Connection Management**: One persistent socket handles request-response pairs AND market data streaming
 - **Stateful Subscriptions**: Subscriptions are tied to connection lifetime; client disconnect triggers cleanup
+- **Subscription Required for Account Updates**: Clients must subscribe to at least one asset before placing orders if they need real-time account_update pushes
 - **Full Market Cache**: ~6000 active markets cached and refreshed automatically every 5 minutes
 - **Async-Ready**: Market data streams asynchronously while you send control requests on the same connection
 
