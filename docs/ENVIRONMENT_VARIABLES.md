@@ -35,15 +35,23 @@ This document lists all environment variables used throughout the Argus project 
 
 ### `POLYMARKET_MAX_SOCKET_RETRIES`
 - **Purpose**: Maximum number of socket connection retries
-- **Default**: `3` (based on code context)
+- **Default**: `50` (for WebSocket connections in `wss.py`), varies by component
 - **Required**: No
-- **Used in**: `polymarket_direct/__init__.py`
+- **Used in**: `polymarket_direct/__init__.py`, `polymarket_direct/wss.py`
+- **Note**: Different components may use different defaults for this variable
 
 ### `POLYMARKET_MAX_MESSAGE_COUNT`
 - **Purpose**: Maximum message count before rolling mechanism triggers
 - **Default**: `5000`
 - **Required**: No
 - **Used in**: `polymarket_direct/__init__.py`
+
+### `POLYMARKET_ORDERBOOK_DEPTH`
+- **Purpose**: Controls the depth of orderbook data (number of bid/ask levels to fetch)
+- **Default**: `10`
+- **Required**: No
+- **Used in**: `polymarket/__init__.py`, `tests/test_poly_dispatcher.py`
+- **Example**: Set to `20` for deeper orderbook data, `5` for shallower data
 
 ### `POLYMARKET_ENABLE_ROLLING`
 - **Purpose**: Enable/disable rolling mechanism for message handling
