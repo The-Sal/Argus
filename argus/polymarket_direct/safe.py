@@ -1,3 +1,4 @@
+import os
 import requests
 from argus.wireproxy import wrapper as wp_wrappers
 
@@ -16,13 +17,14 @@ class IPSafety:
             session=self.session,
             verbose=False
         )
+        self._ip_info_token = os.environ.get('IPINFO_TOKEN', None)
 
     def get_ip_info(self) -> dict:
         """
         Fetch IP information from the ipinfo.io service.
         :return: A dictionary containing IP information.
         """
-        response = self.session.get('https://ipinfo.io/json')
+        response = self.session.get('https://ipinfo.io/json', headers=self.get_auth_headers(self))
         response.raise_for_status()
         return response.json()
 
@@ -34,3 +36,13 @@ class IPSafety:
         """
         country = ip_info.get('country', '')
         return country in self.KNOWN_BAD_REGIONS
+
+    @staticmethod
+    def get_auth_headers(self):
+        """
+        Returns {} if no token is set, otherwise returns {'Authorization': 'Bearer <token>'}
+        :return:
+        """
+        if not self._ip_info_token:
+            return {}
+        return {'Authorization': f'Bearer {self._ip_info_token}'}

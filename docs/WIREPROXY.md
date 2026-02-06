@@ -400,21 +400,11 @@ Socket response: `{"error": "Configuration not found: badconfig"}`
 
 ## Integration with Argus Dispatchers
 
-Dispatchers can use WireProxy programmatically:
-
-```python
-from argus.wireproxy import WireProxy
-
-wp = WireProxy()
-
-# Add config
-wp.add_conf('/path/to/vpn.conf')
-
-# Start server (programmatic interface would use socket API directly)
-# Dispatcher traffic then routes through SOCKS5: 127.0.0.1:25344
-```
-
-The `.env` configuration determines which config is used for specific dispatchers.
+The `.env` configuration determines which config is used for specific dispatchers. Moreover,
+the Argus dispatcher automatically spinup both the WireProxy Daemon (if offline) and then makes sure
+you are connecting to the right config for the respective dispatcher you are running. There is no need
+to manually do anything via the CLI if you are using WireProxy with the Argus Dispatchers besides 
+adding the config to the library with `--add-conf` or `--bulk-import`.
 
 ## Threading Model
 
@@ -444,16 +434,16 @@ The daemon uses `utils3.runAsThread` to run the socket server in a background th
 
 ## Command-line Flag Reference
 
-| Flag | Requires Daemon? | Description |
-|------|------------------|-------------|
-| `--run-server-daemon` | N/A | Starts the daemon (foreground) |
-| `--start-server <conf>` | Auto-starts if needed | Tells daemon to spin up WireProxy |
-| `--stop-server` | Yes | Tells daemon to spin down WireProxy |
-| `--server-status` | No (just checks) | Queries daemon status |
-| `--add-conf <path>` | No | Adds config to library |
-| `--bulk-import <dir>` | No | Bulk adds configs |
-| `--remove-conf <name>` | No | Removes config |
-| `--list-confs` | No | Lists configs |
-| *(no flags)* | No | Interactive CLI menu |
+| Flag                    | Requires Daemon?      | Description                         |
+|-------------------------|-----------------------|-------------------------------------|
+| `--run-server-daemon`   | N/A                   | Starts the daemon (foreground)      |
+| `--start-server <conf>` | Auto-starts if needed | Tells daemon to spin up WireProxy   |
+| `--stop-server`         | Yes                   | Tells daemon to spin down WireProxy |
+| `--server-status`       | No (just checks)      | Queries daemon status               |
+| `--add-conf <path>`     | No                    | Adds config to library              |
+| `--bulk-import <dir>`   | No                    | Bulk adds configs                   |
+| `--remove-conf <name>`  | No                    | Removes config                      |
+| `--list-confs`          | No                    | Lists configs                       |
+| *(no flags)*            | No                    | Interactive CLI menu                |
 
 **Auto-daemon-start:** `--start-server`, `--stop-server` will automatically launch the daemon in the background if not already running, using `subprocess.Popen(..., start_new_session=True)` for process detachment.
