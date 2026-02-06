@@ -33,6 +33,7 @@ def main(argv=None):
     parser.add_argument('--host', dest='host', help='Listening host (if supported by dispatcher)')
     parser.add_argument('--port', dest='port', type=int, help='Listening port (if supported by dispatcher)')
     parser.add_argument('--capital-env', dest='capital_env', choices=['demo', 'live'], help='Capital.com environment (demo or live)')
+    parser.add_argument('--wait-for-pong', dest='wait_for_pong', action='store_true', help='Wait for pong before starting interactive mode (if supported by dispatcher)')
 
     args = parser.parse_args(argv)
 
@@ -62,6 +63,11 @@ def main(argv=None):
         if args.port is not None:
             polymarket_kwargs['port'] = args.port
         dispatcher = PolymarketDispatcher(**polymarket_kwargs)
+        # dispatcher supports wait till pong
+        if args.wait_for_pong:
+            print('[Runtime] Waiting for first pong from Polymarket...')
+            dispatcher.account_updates.wait_till_first_pong.wait()
+            print('[Runtime] Received first pong, starting interactive mode.')
         dispatcher.interactive_mode()
         print("Exiting Polymarket dispatcher")
     elif args.target == 'capital.com':

@@ -95,7 +95,7 @@ class PolyMarketAccountEventWss:
             logging.debug('Polymarket Account Event WebSocket received PONG.')
             with self._ping_pong_lock:
                 self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
-            self.wait_till_first_pong.clear()
+            self.wait_till_first_pong.set()
             return
 
         content = json.loads(message)
@@ -306,7 +306,7 @@ class PolyMarketOrderBookWss:
 
                             if os.environ.get('POLYMARKET_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
                                 logging.info(
-                                    'Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d',
+                                    'Sending PING to Polymarket Orderbook WebSocket. Total PINGs: %d, Total PONGs: %d',
                                     pings, pongs
                                 )
 
@@ -337,7 +337,7 @@ class PolyMarketOrderBookWss:
             logging.debug('Polymarket Order Book WebSocket received PONG.')
             with self._ping_pong_lock:
                 self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
-            self.wait_till_first_pong.clear()
+            self.wait_till_first_pong.set()
             return
 
         # how_long.start()
