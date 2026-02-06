@@ -106,12 +106,20 @@ class DomainCache:
         """Initializes the DomainCache with a specified domain."""
         self.domain = domain
         self.cache = cache
-        self.cache.ensure_loaded()  # Lazy load when DomainCache is first used
-        if domain not in list(self.cache.cache.keys()):
+        self._checked = False  # Track if we've checked for domain existence
+
+    def _check_domain(self):
+        if self._checked:
+            return
+        self.cache.ensure_loaded()
+        if self.domain not in list(self.cache.cache.keys()):
             self.cache.cache[self.domain] = {}
             self.cache.save_cache()
 
+        self._checked = True
+
     def get(self, key: str):
+        self._check_domain()
         timenow = time.time()
         # check if there is an expiration key and if it has expired
         exp_key = self.expiration_key(key)
@@ -141,7 +149,7 @@ class DomainCache:
             value: The value to associate with the key.
             expiration (int, optional): Expiration time in seconds
         """
-
+        self._check_domain()
         self.cache.cache[self.domain][key] = value
         if expiration is not None:
             expiration_timestamp = time.time() + expiration
@@ -152,6 +160,7 @@ class DomainCache:
 
     def delete(self, key: str):
         """Deletes a key from the cache."""
+        self._check_domain()
         try:
             del self.cache.cache[self.domain][key]
             self.cache.save_cache()
@@ -191,6 +200,7 @@ class DomainCache:
             return wrapper
         return decorator
 
+    # does not require `self._check_domain()` because it uses `self.delete()` which does the check
     def invalidate_key(self, key: str):
         """Invalidates a specific key in the cache."""
         try:
