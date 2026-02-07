@@ -68,6 +68,7 @@ def main(argv=None):
             print('[Runtime] Waiting for first pong from Polymarket...')
             dispatcher.account_updates.wait_till_first_pong.wait()
             print('[Runtime] Received first pong, starting interactive mode.')
+        dispatcher.run()
         dispatcher.interactive_mode()
         print("Exiting Polymarket dispatcher")
     elif args.target == 'capital.com':

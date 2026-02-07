@@ -88,7 +88,7 @@ class P2ConvertClass:
 
     @property
     def symbol(self) -> str:
-        return f"{self.ticker}{self.market_slug}{self.asset_id}"
+        return f"{self.ticker}-{self.market_slug}-{self.asset_id}"
 
     def transferable_2(self) -> bool:
         data_obj = self.market_data.get(self.asset_id, {})
@@ -563,7 +563,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         functions_available = {
             # Market Data Subscriptions
             'subscribe': self._handle_subscribe,
+            'subscribe_to_market_by_ticker': self._handle_subscribe_to_market_by_ticker,
+
             'unsubscribe': self._handle_unsubscribe,
+            'unsubscribe_from_market_by_ticker': self._handle_unsubscribe_from_market_by_ticker,
+
+            #'orderbook_snapshot': self._handle_orderbook_snapshot, TBD
 
             # Market Data Requests
             'fetch_all_markets': self._handle_fetch_all_markets,
@@ -678,6 +683,80 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'unsubscribed': unsubscribed,
             'failed': failed
         }
+
+    def _handle_subscribe_to_market_by_ticker(self, args_obj: ArgsObject):
+        """
+        Subscribe to all clob_ids for a market identified by its ticker.
+        Note: This subscribes to all submarkets of the event that may not be desired
+        use `_handle_subscribe` with specific clob_ids for more granular control.
+        :param args_obj: Where args_obj.args[0] is expected to be the ticker string of the market to subscribe to.
+        :return:
+        """
+
+        sock = args_obj.sock
+        ticker = args_obj.args[0]
+        market = self._all_markets_cache.get(ticker, None)
+        if market is None:
+            raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found for subscription.")
+
+        subscribed = []
+        failed = []
+        for market_index in range(len(market.markets)):
+            clobs: list[str] = market.markets[market_index].clobTokenIds
+            if clobs is None:
+                logging.warning("Market %s has no clobTokenIds, skipping subscription for this submarket.", market.markets[market_index].slug)
+                continue
+            for clob_id in clobs:
+                try:
+                    self.add_socket_to_subscription(sock, clob_id)
+                    self.market_data.subscribe_to_asset_id(clob_id)
+                    subscribed.append(clob_id)
+                except Exception as e:
+                    failed.append(clob_id)
+                    print_with_name("Error subscribing to clob_id {}: {}".format(clob_id, e))
+                    traceback.print_exc()
+
+        return {
+            'subscribed': subscribed,
+            'failed': failed
+        }
+
+    def _handle_unsubscribe_from_market_by_ticker(self, args_obj: ArgsObject):
+        """
+        Unsubscribe from all clob_ids for a market identified by its ticker.
+         Note: This unsubscribes from all submarkets of the event that may not be desired
+            use `_handle_unsubscribe` with specific clob_ids for more granular control.
+        :param args_obj:
+        :return:
+        """
+
+        sock = args_obj.sock
+        ticker = args_obj.args[0]
+        market = self._all_markets_cache.get(ticker, None)
+        if market is None:
+            raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found for unsubscription.")
+
+        unsubscribed = []
+        failed = []
+        for market_index in range(len(market.markets)):
+            clobs: list[str] = market.markets[market_index].clobTokenIds
+            if clobs is None:
+                logging.warning("Market %s has no clobTokenIds, skipping unsubscription for this submarket.", market.markets[market_index].slug)
+                continue
+            for clob_id in clobs:
+                try:
+                    self.remove_socket_from_subscription(sock, clob_id)
+                    unsubscribed.append(clob_id)
+                except Exception as e:
+                    failed.append(clob_id)
+                    print_with_name("Error unsubscribing from clob_id {}: {}".format(clob_id, e))
+                    traceback.print_exc()
+
+        return {
+            'unsubscribed': unsubscribed,
+            'failed': failed
+        }
+
 
     ########################################
     # Market Data Requests
