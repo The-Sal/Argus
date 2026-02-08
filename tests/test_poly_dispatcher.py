@@ -25,12 +25,12 @@ Results:
 """
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import json
 import time
 import socket
 from argus.protocol import encode_packet, Protocol2Parser
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 HOST = 'localhost'
 PORT = 9972

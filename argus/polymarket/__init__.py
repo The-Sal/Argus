@@ -31,12 +31,12 @@ import dataclasses
 from utils3 import runAsThread
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
-from argus._argus_utils import Introspective, throw_fuss
 from argus.cache_sys import DomainCache, FastCache
+from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
-from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
+from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')

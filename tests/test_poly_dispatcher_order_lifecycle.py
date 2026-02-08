@@ -42,14 +42,14 @@ Flow:
 """
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 import json
 import time
 import socket
 import traceback
 from datetime import datetime, timezone
 from argus.protocol import encode_packet
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 HOST = 'localhost'
 PORT = 9972

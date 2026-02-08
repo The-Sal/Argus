@@ -1,8 +1,8 @@
 import os
 import time
 import logging
-import functools
 import requests
+import functools
 import traceback
 from termcolor import colored
 from argus.cache_sys import DomainCache
