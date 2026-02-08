@@ -15,11 +15,6 @@ import argus
 import platform
 import argparse
 from dotenv import load_dotenv
-from argus.ib.forecast import FXCDispatcher
-from argus.ib import MKTDispatcher, IBKRModes
-from argus.binance import BinanceMKTDispatcher
-from argus.polymarket import PolymarketDispatcher
-from argus.capital import MKTDispatcher as CapitalComDispatcher, Environment
 
 
 if not load_dotenv():
@@ -38,6 +33,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.target == 'ib.forecast':
+        from argus.ib.forecast import FXCDispatcher
         ib_kwargs = {}
         if args.host:
             ib_kwargs['host'] = args.host
@@ -48,6 +44,7 @@ def main(argv=None):
         dispatcher.interactive_mode()
         print("Exiting")
     elif args.target == 'ib.core':
+        from argus.ib import MKTDispatcher, IBKRModes
         ib_kwargs = {}
         if args.host:
             ib_kwargs['host'] = args.host
@@ -57,6 +54,7 @@ def main(argv=None):
         dispatcher.select_account_interactive()
         dispatcher.ws.interactive_mode()
     elif args.target == 'polymarket':
+        from argus.polymarket import PolymarketDispatcher
         polymarket_kwargs = {}
         if args.host:
             polymarket_kwargs['host'] = args.host
@@ -72,6 +70,7 @@ def main(argv=None):
         dispatcher.interactive_mode()
         print("Exiting Polymarket dispatcher")
     elif args.target == 'capital.com':
+        from argus.capital import MKTDispatcher as CapitalComDispatcher, Environment
         print('Warning: capital.com uses Unix domain socket, --host/--port are ignored')
         if args.capital_env == 'demo':
             env = Environment.DEMO
@@ -83,6 +82,7 @@ def main(argv=None):
         input('Press enter to exit.')
         dispatcher.api.logout()
     elif args.target == 'binance':
+        from argus.binance import BinanceMKTDispatcher
         binance_kwargs = {}
         if args.host:
             binance_kwargs['host'] = args.host
