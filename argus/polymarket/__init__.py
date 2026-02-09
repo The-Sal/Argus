@@ -46,6 +46,7 @@ _CACHE = DomainCache('polymarket_dispatcher_v2', cache=_poly_cache)
 def print_with_name(*args, **kwargs):
     print("[{}]".format(__name__), *args, **kwargs)
 
+
 class P2ConvertClass:
     """
     Implements the methods required for the P2 encoder to encode market data.
@@ -78,6 +79,7 @@ class P2ConvertClass:
     }
 
     """
+
     def __init__(self, ticker: str, market_slug: str,
                  asset_id: str, market_data: dict, order_book_depth: int):
         self.ticker = ticker
@@ -521,9 +523,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # If no clients are subscribed (e.g. last client disconnected between the
         # routing table read and this point), bail out early.  Continuing would
         # attempt to build a P2 packet from the update which can crash if the
-        # message type (e.g. last_trade_price) doesn't carry full order book data.
+        # message type (e.g., last_trade_price) doesn't carry full order book data.
         if not clients_to_send:
-            logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.", asset_id)
+            logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.",
+                            asset_id)
             return
 
         p2_obj = self.send_market_data_with_p2_encoding(
@@ -534,7 +537,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
 
         # Broadcast P2-encoded market data to all clients subscribed to this asset_id.
-        # On send failure (dead/disconnected client), remove the socket via remove_socket()
+        # On sent failure (dead/disconnected client), remove the socket via remove_socket()
         # which cascades cleanup through the routing table and triggers subscription_expired
         # if no clients remain for a given clob_id.
         # NOTE: remove_socket() and friends are thread-safe (all guarded by self._lock),
@@ -568,13 +571,18 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'unsubscribe': self._handle_unsubscribe,
             'unsubscribe_from_market_by_ticker': self._handle_unsubscribe_from_market_by_ticker,
 
-            #'orderbook_snapshot': self._handle_orderbook_snapshot, TBD
+            # TODO:
+            # 'orderbook_snapshot': self._handle_orderbook_snapshot,
 
             # Market Data Requests
             'fetch_all_markets': self._handle_fetch_all_markets,
             'fetch_all_tickers': self._handle_fetch_all_markets_ticker,
             'fetch_market_by_ticker': self._handle_fetch_market_by_ticker,
             'search_markets': self._handle_search_markets,
+
+            # TODO: Get information about a CLOB ID
+            # i.e., what the side it is YES/NO what it represents in human-readable form.
+            # 'fetch_clob_id_information': self._fetch_clob_id_information,
 
             # Order Management
             'place_order': self._handle_place_order,
@@ -704,7 +712,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
             if clobs is None:
-                logging.warning("Market %s has no clobTokenIds, skipping subscription for this submarket.", market.markets[market_index].slug)
+                logging.warning("Market %s has no clobTokenIds, skipping subscription for this submarket.",
+                                market.markets[market_index].slug)
                 continue
             for clob_id in clobs:
                 try:
@@ -741,7 +750,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
             if clobs is None:
-                logging.warning("Market %s has no clobTokenIds, skipping unsubscription for this submarket.", market.markets[market_index].slug)
+                logging.warning("Market %s has no clobTokenIds, skipping unsubscription for this submarket.",
+                                market.markets[market_index].slug)
                 continue
             for clob_id in clobs:
                 try:
@@ -756,7 +766,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'unsubscribed': unsubscribed,
             'failed': failed
         }
-
 
     ########################################
     # Market Data Requests
@@ -829,6 +838,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # Order Management
     ########################################
 
+    # TODO: This will aid in `fetch_clob_id_information`
     def _resolve_market_from_token_id(self, token_id: str) -> PolymarketEvent:
         """
         Resolves a token_id (asset_id / clob_id) to its parent PolymarketEvent using the
@@ -993,7 +1003,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         packet = encode_packet(json_data)
         return packet
 
-    def send_market_data_with_p2_encoding(self, market_data: dict, ticker: str, market_slug: str, asset_id: str) -> bytes:
+    def send_market_data_with_p2_encoding(self, market_data: dict, ticker: str, market_slug: str,
+                                          asset_id: str) -> bytes:
         """
         Encodes market data into bytes using a custom P2 encoding format.
         The P2 encoding format's ticker field is formatted like <Event-Ticker><Market-Slug><Asset_id>.
