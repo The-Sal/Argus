@@ -28,7 +28,7 @@ import logging
 import threading
 import traceback
 import dataclasses
-from utils3 import runAsThread
+from utils3 import runAsThread, Timer
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
 from argus.cache_sys import DomainCache, FastCache
@@ -37,7 +37,6 @@ from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
-
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
@@ -583,54 +582,54 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 traceback.print_exc()
 
     def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
-        _ = address
-        action = content.get('action', None)
-        data = content.get('data', None)
-        if action is None:
-            raise InvalidArgumentError("Received message without action field.")
+        with Timer(lambda x: print_with_name(f"Handled client message in {x:.4f} seconds: {content}")):
+            _ = address
+            action = content.get('action', None)
+            data = content.get('data', None)
+            if action is None:
+                raise InvalidArgumentError("Received message without action field.")
 
-        functions_available = {
-            # Market Data Subscriptions
-            'subscribe': self._handle_subscribe,
-            'subscribe_to_market_by_ticker': self._handle_subscribe_to_market_by_ticker,
+            functions_available = {
+                # Market Data Subscriptions
+                'subscribe': self._handle_subscribe,
+                'subscribe_to_market_by_ticker': self._handle_subscribe_to_market_by_ticker,
 
-            'unsubscribe': self._handle_unsubscribe,
-            'unsubscribe_from_market_by_ticker': self._handle_unsubscribe_from_market_by_ticker,
+                'unsubscribe': self._handle_unsubscribe,
+                'unsubscribe_from_market_by_ticker': self._handle_unsubscribe_from_market_by_ticker,
 
-            # TODO:
-            # 'orderbook_snapshot': self._handle_orderbook_snapshot,
+                'orderbook_snapshot': self._handle_orderbook_snapshot,
 
-            # Market Data Requests
-            'fetch_all_markets': self._handle_fetch_all_markets,
-            'fetch_all_tickers': self._handle_fetch_all_markets_ticker,
-            'fetch_market_by_ticker': self._handle_fetch_market_by_ticker,
-            'search_markets': self._handle_search_markets,
+                # Market Data Requests
+                'fetch_all_markets': self._handle_fetch_all_markets,
+                'fetch_all_tickers': self._handle_fetch_all_markets_ticker,
+                'fetch_market_by_ticker': self._handle_fetch_market_by_ticker,
+                'search_markets': self._handle_search_markets,
 
-            # TODO: Get information about a CLOB ID
-            # i.e., what the side it is YES/NO what it represents in human-readable form.
-            # 'fetch_clob_id_information': self._fetch_clob_id_information,
+                # TODO: Get information about a CLOB ID
+                # i.e., what the side it is YES/NO what it represents in human-readable form.
+                'fetch_clob_id_information': self._fetch_clob_id_information,
 
-            # Order Management
-            'place_order': self._handle_place_order,
-            'cancel_order': self._handle_cancel_order,
-            'get_order_status': self._handle_get_order_status,
-            'get_orders': self._handle_get_orders,
-            'get_balance': self._handle_get_balance,
+                # Order Management
+                'place_order': self._handle_place_order,
+                'cancel_order': self._handle_cancel_order,
+                'get_order_status': self._handle_get_order_status,
+                'get_orders': self._handle_get_orders,
+                'get_balance': self._handle_get_balance,
 
-            # Utilities
-            'ping': self._handle_ping,
-        }
+                # Utilities
+                'ping': self._handle_ping,
+            }
 
-        func = functions_available.get(action, None)
-        if func is None:
-            raise InvalidArgumentError(f"Unknown action '{action}' received from client.")
+            func = functions_available.get(action, None)
+            if func is None:
+                raise InvalidArgumentError(f"Unknown action '{action}' received from client.")
 
-        args = data if data is not None else {}
-        if func is not None:
-            # noinspection all
-            response = func(args_obj=ArgsObject(sock, args))
+            args = data if data is not None else {}
+            if func is not None:
+                # noinspection all
+                response = func(args_obj=ArgsObject(sock, args))
 
-        return response
+            return response
 
     def _account_update_callback(self, update: OrderEvent):
         """
@@ -859,6 +858,79 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             except ValueError:
                 pass
         return sorted_markets[:limit]
+
+    def _handle_orderbook_snapshot(self, args_obj: ArgsObject):
+        """
+        Trigger an orderbook snapshot for a given clob_id(s). The data will come over the normal
+        P2 channels. This is from a cache, NOT a live request to the CLOB. The endpoint
+        is designed for stale markets that are already SUBSCRIBED to get a snapshot on demand.
+        The endpoint will trigger a push of the latest order book with timestamp 0, which clients
+        can identify as an on-demand snapshot.
+
+        :param args_obj: Arg[0...n] of args_obj is expected to be the clob_id to fetch the snapshot for.
+        """
+
+        clobs = args_obj.args
+        successful = []
+        failed = []
+        for clob_id in clobs:
+            try:
+                self._order_book_update_callback(
+                    {
+                        clob_id: self.market_data.order_book_for_asset_id(asset_id=clob_id),
+                        'timestamp': 0  # Clients can identify this as a snapshot by the timestamp of 0
+                    }
+                )
+                successful.append(clob_id)
+            except Exception as e:
+                failed.append(clob_id)
+                print_with_name("Error triggering orderbook snapshot for clob_id {}: {}".format(clob_id, e))
+                traceback.print_exc()
+
+        return {
+            'successful': successful,
+            'failed': failed
+        }
+
+    def _fetch_clob_id_information(self, args_obj: ArgsObject):
+        """
+        Gets information about a clob_id by querying the internal market cache.
+        :param args_obj: [0] of args_obj is expected to be the clob_id to fetch information for.
+        :return:
+        """
+
+        clob_id = args_obj.args[0]
+        event = self._resolve_market_from_token_id(clob_id)
+        # Find the market and outcome associated with this clob_id
+        for market in event.markets:
+            if market.clobTokenIds and clob_id in market.clobTokenIds:
+                outcome_index = market.clobTokenIds.index(clob_id)
+                if market.outcomes and isinstance(market.outcomes, list):
+                    outcome = market.outcomes[outcome_index]
+                else:
+                    outcome = None
+                return {
+                    'event_name': event.title,
+                    'market_name': market.question,
+                    'outcome': outcome,
+                    'ticker': event.ticker,
+                    'market_slug': market.slug
+                }
+
+        raise PolyMarketDispatcherError(
+            f"clob_id '{clob_id}' not found in any market outcomes."
+        )
+
+    # TODO: This is a bit tricky since we need to know the market the underlying asset
+    # ...
+    def _fetch_up_down_targets(self, args_obj: ArgsObject):
+        """
+        Gets the up/down targets for a market by querying polymarket's API.
+        :param args_obj:
+        :return:
+        """
+        pass
+
 
     ########################################
     # Order Management
