@@ -38,6 +38,7 @@ from argus.polymarket_direct.order_types import OrderEvent
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 
+
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
 _CACHE = DomainCache('polymarket_dispatcher_v2', cache=_poly_cache)
@@ -262,6 +263,31 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
     def __init__(self, private_key: str = None, proxy_funder: str = None,
                  host="localhost", port=9972):
+        """
+        Initializes the PolymarketDispatcher instance to handle incoming market data, account events,
+        and routing tasks across relevant components. Configures the REST API and WebSocket
+        connections for managing and processing Polymarket events effectively. Ensures proper
+        initialization of market caches and spawns background threads for continuous data updates.
+
+        :param private_key: The private key used for authentication with the PolyRestAPI. Defaults
+            to the value of the 'POLYMARKET_PRIVATE_KEY' environment variable if not explicitly provided.
+        :type private_key: Str, optional
+
+        :param proxy_funder: The address or identifier of the proxy funder for routing transactions
+            within the Polymarket system. Defaults to the value of the 'POLYMARKET_PROXY_FUNDER'
+            environment variable if not explicitly provided.
+        :type proxy_funder: Str, optional
+
+        :param host: The hostname or IP address on which the dispatcher server listens for incoming
+            connections. Defaults to 'localhost'.
+        :type host: Str, optional
+
+        :param port: The port number on which the dispatcher server listens for incoming connections.
+            Defaults to 9972.
+        :type port: Int, optional
+
+        """
+
         super().__init__()
         RoutingHelper.__init__(self)
         if private_key is None:
