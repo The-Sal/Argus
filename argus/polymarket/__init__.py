@@ -1035,13 +1035,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         try:
             # Extract symbol from ticker or resolution source
             symbol = self._extract_crypto_symbol(ticker, market_event)
-            
-            # Extract variant (fifteen, hourly, daily) from ticker
-            variant = self._extract_variant(ticker)
-            
-            # Get start and end dates from market metadata
+
+            # Get start and end dates from market metadata FIRST
+            # (needed for variant calculation)
             start_date = self._extract_start_date(market)
             end_date = self._extract_end_date(market)
+
+            # Extract variant (fifteen, hourly, daily) from market duration
+            variant = self._extract_variant(start_date, end_date)
             
             if symbol and variant and start_date and end_date:
                 price = unsafe_api.build_crypto_price_url_and_get_price(
