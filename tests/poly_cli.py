@@ -162,6 +162,13 @@ class ArgusClient:
         if resp.get('error'):
             raise Exception(f"Fetch clob_id info failed: {resp['error']}")
         return dict(resp.get('data') or {}), dt
+    
+    def get_price_to_beat(self, ticker: str) -> Tuple[float, float]:
+        """Get the price to beat for an Up/Down market."""
+        resp, dt = self.send_request('get_price_to_beat', [ticker])
+        if resp.get('error'):
+            raise Exception(f"Get price to beat failed: {resp['error']}")
+        return float(resp.get('data') or 0), dt
 
 
 # =============================================================================
@@ -381,6 +388,7 @@ def print_help():
     print("  top [N]                   - Show top N markets (default: 100)")
     print("  info <ticker>              - Show detailed info about specific market")
     print("  clob <clob_id>            - Show info about a CLOB token ID")
+    print("  price <ticker>            - Get price to beat for Up/Down markets")
     print("  balance                    - Show account balance")
     print("  ping                       - Test connection")
     print("  stats                      - Show market statistics")
@@ -390,6 +398,7 @@ def print_help():
     print("\nExamples:")
     print("  info bitcoin-up-or-down-february-10-11-am-et")
     print("  clob 661095475084821930790589425827399710453605787397495798070750303202782280580")
+    print("  price bitcoin-up-or-down-february-10-4pm-et")
     print("  trump")
     print("  top 50")
     print()
@@ -459,6 +468,21 @@ def interactive_loop(client: ArgusClient):
                 except Exception as e:
                     print(f"✗ Failed to fetch CLOB info: {e}")
                     print(f"  Tip: Use the 'info' command to see available CLOB Token IDs for a market")
+            elif query.lower().startswith('price '):
+                ticker = query[6:].strip()
+                if not ticker:
+                    print("✗ Please provide a ticker. Usage: price <ticker>")
+                    continue
+                try:
+                    print(f"Fetching price to beat for '{ticker}'...")
+                    price, fetch_time = client.get_price_to_beat(ticker)
+                    print(f"✓ Price to beat: {price:,.2f} ({fetch_time*1000:.1f}ms)")
+                    print(f"\n  This is the reference price for Up/Down markets.")
+                    print(f"  If the final price is ABOVE this, 'Up' wins.")
+                    print(f"  If the final price is BELOW this, 'Down' wins.")
+                except Exception as e:
+                    print(f"✗ Failed to fetch price to beat: {e}")
+                    print(f"  Tip: This command only works for Up/Down markets (e.g., btc-updown, bitcoin-up-or-down)")
             elif query.lower().startswith('top'):
                 parts = query.split()
                 limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 100

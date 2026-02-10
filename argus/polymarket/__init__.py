@@ -28,6 +28,7 @@ import logging
 import threading
 import traceback
 import dataclasses
+from datetime import datetime
 from utils3 import runAsThread, Timer
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
@@ -605,8 +606,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 'fetch_market_by_ticker': self._handle_fetch_market_by_ticker,
                 'search_markets': self._handle_search_markets,
 
-                # TODO: Get information about a CLOB ID
-                # i.e., what the side it is YES/NO what it represents in human-readable form.
                 'fetch_clob_id_information': self._fetch_clob_id_information,
 
                 # Order Management
@@ -615,6 +614,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 'get_order_status': self._handle_get_order_status,
                 'get_orders': self._handle_get_orders,
                 'get_balance': self._handle_get_balance,
+
+                # Crypto Utilities
+                'get_price_to_beat': self._handle_get_price_to_beat,
 
                 # Utilities
                 'ping': self._handle_ping,
@@ -931,6 +933,270 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         pass
 
+    def _handle_get_price_to_beat(self, args_obj: ArgsObject):
+        """
+        Handle request to get the price to beat for an Up/Down market.
+
+        This method implements a dual-strategy approach to fetch the price to beat, ensuring maximum
+        reliability by attempting multiple methods in sequence. Both methods MUST be tried before
+        returning an error to the user.
+
+        DUAL METHOD STRATEGY:
+        --------------------
+
+        METHOD 1 - Frontend HTML Scraper (Primary):
+            Uses UnsafePolyMarket.get_price_to_beat(slug) to scrape the price directly from
+            Polymarket's frontend HTML. This method:
+            - Makes an HTTP GET request to https://polymarket.com/event/{market_slug}
+            - Parses the embedded JSON in the HTML page props to extract 'openPrice'
+            - Is more stable as it doesn't require forging API tokens or special headers
+            - Benefits from frontend caching via @_unsafe_api_cache.cache_decorator
+            - May fail if Polymarket changes their HTML structure or if the market slug is invalid
+
+        METHOD 2 - Crypto Price API (Fallback):
+            Uses UnsafePolyMarket.build_crypto_price_url_and_get_price() as a fallback when
+            the scraper fails. This method:
+            - Extracts metadata from the market (crypto symbol, variant, start/end dates)
+            - Builds a direct API URL to Polymarket's crypto price endpoint
+            - Returns the 'priceToBeat' field from the JSON response
+            - Requires proper parsing of market metadata from the ticker and resolution source
+            - Validates all required parameters before making the API call
+
+        METADATA EXTRACTION:
+        -------------------
+        The fallback method requires extracting the following from market metadata:
+        - Symbol: BTC, ETH, SOL (extracted from ticker or resolutionSource URL)
+        - Variant: 'fifteen', 'hourly', or 'daily' (parsed from ticker pattern like '15m', 'hour', etc.)
+        - Start Date: Event start time from market.eventStartTime or market.startDate
+        - End Date: Market end time from market.endDate
+
+        EXECUTION FLOW:
+        --------------
+        1. Validate ticker argument
+        2. Look up market in cache to get metadata
+        3. Attempt METHOD 1 (scraper)
+        4. If METHOD 1 fails, capture error and proceed to METHOD 2
+        5. If METHOD 2 succeeds, return price; otherwise return combined error
+
+        The input expected from the user is the ticker of the market, for example:
+        "bitcoin-up-or-down-february-10-4pm-et" or "btc-updown-15m-1769111100"
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            args_obj.args[0] is expected to be the market ticker string.
+        :return: float representing the price to beat
+        :raises InvalidArgumentError: If ticker argument is missing
+        :raises PolyMarketDispatcherError: If market not found or both methods fail
+        """
+        # Extract the ticker from the arguments
+        try:
+            ticker = args_obj.args[0]
+        except IndexError:
+            raise InvalidArgumentError("Ticker argument is required for get_price_to_beat.")
+        
+        # Look up the market in the cache to get metadata
+        with self._market_cache_lock:
+            market_event = self._all_markets_cache.get(ticker, None)
+        
+        if market_event is None:
+            raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
+        
+        # Import UnsafePolyMarket here to avoid circular imports
+        from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
+        
+        unsafe_api = UnsafePolyMarket()
+        
+        # Get the market slug from the first market in the event
+        # Most Up/Down events have a single market, so we use index 0
+        if not market_event.markets or len(market_event.markets) == 0:
+            raise PolyMarketDispatcherError(f"Market '{ticker}' has no submarkets.")
+        
+        market = market_event.markets[0]
+        market_slug = market.slug
+        
+        # Check if market_slug is available
+        if market_slug is None:
+            raise PolyMarketDispatcherError(f"Market '{ticker}' has no slug defined.")
+        
+        # METHOD 1: Try the scraper first (get_price_to_beat using market slug)
+        scraper_error = None
+        try:
+            price = unsafe_api.get_price_to_beat(market_slug)
+            if price is not None:
+                return price
+        except UnableToReachPolymarket as e:
+            scraper_error = str(e)
+            logging.warning(f"Scraper method failed for ticker '{ticker}': {scraper_error}")
+        except Exception as e:
+            scraper_error = str(e)
+            logging.warning(f"Unexpected error in scraper method for ticker '{ticker}': {scraper_error}")
+        
+        # METHOD 2: Fall back to crypto price API if scraper failed
+        # We need to extract metadata from the market to build the API call
+        try:
+            # Extract symbol from ticker or resolution source
+            symbol = self._extract_crypto_symbol(ticker, market_event)
+            
+            # Extract variant (fifteen, hourly, daily) from ticker
+            variant = self._extract_variant(ticker)
+            
+            # Get start and end dates from market metadata
+            start_date = self._extract_start_date(market)
+            end_date = self._extract_end_date(market)
+            
+            if symbol and variant and start_date and end_date:
+                price = unsafe_api.build_crypto_price_url_and_get_price(
+                    symbol=symbol,
+                    variant=variant,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                if price is not None:
+                    return price
+            else:
+                missing = []
+                if not symbol:
+                    missing.append("symbol")
+                if not variant:
+                    missing.append("variant")
+                if not start_date:
+                    missing.append("start_date")
+                if not end_date:
+                    missing.append("end_date")
+                raise PolyMarketDispatcherError(
+                    f"Cannot use crypto price API for ticker '{ticker}': missing {', '.join(missing)}"
+                )
+                
+        except UnableToReachPolymarket as e:
+            # Both methods failed - return comprehensive error
+            raise PolyMarketDispatcherError(
+                f"Failed to get price to beat for ticker '{ticker}'. "
+                f"Scraper error: {scraper_error}. "
+                f"Crypto API error: {str(e)}"
+            )
+        except Exception as e:
+            # Unexpected error in fallback method
+            raise PolyMarketDispatcherError(
+                f"Failed to get price to beat for ticker '{ticker}'. "
+                f"Scraper error: {scraper_error}. "
+                f"Crypto API error: {str(e)}"
+            )
+
+    @staticmethod
+    def _extract_crypto_symbol(ticker: str, market_event) -> str:
+        """
+        Extract the crypto symbol (e.g., 'BTC', 'ETH') from the ticker or resolution source.
+
+        :param ticker: The market ticker string
+        :param market_event: The PolymarketEvent object
+        :return: Uppercase crypto symbol or None if cannot extract
+        """
+        # Map of common crypto abbreviations in tickers to symbols
+        crypto_map = {
+            'btc': 'BTC',
+            'bitcoin': 'BTC',
+            'eth': 'ETH',
+            'ethereum': 'ETH',
+            'sol': 'SOL',
+            'solana': 'SOL',
+        }
+
+        # Try to extract from ticker first (e.g., "btc-updown-15m-1769111100")
+        ticker_lower = ticker.lower()
+        for key, symbol in crypto_map.items():
+            if key in ticker_lower:
+                return symbol
+
+        # Try to extract from resolution source (e.g., "https://data.chain.link/streams/btc-usd")
+        resolution_source = market_event.resolutionSource or ''
+        if 'btc' in resolution_source.lower():
+            return 'BTC'
+        elif 'eth' in resolution_source.lower():
+            return 'ETH'
+        elif 'sol' in resolution_source.lower():
+            return 'SOL'
+
+        return None
+
+    @staticmethod
+    def _extract_variant(start_date, end_date) -> str:
+        """
+        Calculate the variant type (fifteen, hourly, daily) from the market duration.
+
+        Instead of parsing human-readable slugs like "bitcoin-up-or-down-february-10-5pm-et",
+        we calculate the duration between start and end dates to determine the market type.
+
+        :param start_date: The market start datetime
+        :param end_date: The market end datetime
+        :return: Variant string ('fifteen', 'hourly', 'daily') or None if cannot determine
+        """
+        if start_date is None or end_date is None:
+            return None
+
+        try:
+            # Calculate duration
+            duration = end_date - start_date
+            duration_minutes = duration.total_seconds() / 60
+
+            # Determine variant based on duration
+            # 15-minute markets: ~15 minutes
+            if 10 <= duration_minutes <= 20:
+                return 'fifteen'
+
+            # Hourly markets: ~60 minutes (with some tolerance)
+            if 50 <= duration_minutes <= 70:
+                return 'hourly'
+
+            # Daily markets: ~24 hours (1440 minutes)
+            if 1380 <= duration_minutes <= 1500:
+                return 'daily'
+
+            # Log warning for unclassified durations
+            logging.warning(f"Could not determine variant for duration of {duration_minutes:.1f} minutes")
+            return None
+
+        except (TypeError, AttributeError) as e:
+            logging.warning(f"Error calculating variant from dates: {e}")
+            return None
+
+    @staticmethod
+    def _extract_start_date(market):
+        """
+        Extract the start datetime from the market metadata.
+
+        :param market: The Market object
+        :return: datetime object or None
+        """
+        # Try eventStartTime first, then startDate, then startDateIso
+        date_str = market.eventStartTime or market.startDate or market.startDateIso
+
+        if date_str:
+            try:
+                # Parse ISO format datetime string
+                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                pass
+
+        return None
+
+    @staticmethod
+    def _extract_end_date(market):
+        """
+        Extract the end datetime from the market metadata.
+
+        :param market: The Market object
+        :return: datetime object or None
+        """
+        # Try endDate first, then endDateIso
+        date_str = market.endDate or market.endDateIso
+
+        if date_str:
+            try:
+                # Parse ISO format datetime string
+                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                pass
+
+        return None
 
     ########################################
     # Order Management
