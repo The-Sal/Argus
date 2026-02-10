@@ -923,16 +923,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             f"clob_id '{clob_id}' not found in any market outcomes."
         )
 
-    # TODO: This is a bit tricky since we need to know the market the underlying asset
-    # ...
-    def _fetch_up_down_targets(self, args_obj: ArgsObject):
-        """
-        Gets the up/down targets for a market by querying polymarket's API.
-        :param args_obj:
-        :return:
-        """
-        pass
-
     def _handle_get_price_to_beat(self, args_obj: ArgsObject):
         """
         Handle request to get the price to beat for an Up/Down market.
@@ -1203,7 +1193,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # Order Management
     ########################################
 
-    # TODO: This will aid in `fetch_clob_id_information`
     def _resolve_market_from_token_id(self, token_id: str) -> PolymarketEvent:
         """
         Resolves a token_id (asset_id / clob_id) to its parent PolymarketEvent using the

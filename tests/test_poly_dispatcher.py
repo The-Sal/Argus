@@ -28,10 +28,12 @@ import sys
 import json
 import time
 import socket
-from argus.protocol import encode_packet, Protocol2Parser
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+print(sys.path)
 
+
+from argus.protocol import encode_packet, Protocol2Parser
 HOST = 'localhost'
 PORT = 9972
 
