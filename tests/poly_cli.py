@@ -17,8 +17,7 @@ import sys
 import json
 import time
 import socket
-import readline
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple, Optional
 
 
 # =============================================================================
