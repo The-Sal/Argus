@@ -136,6 +136,7 @@ class SvrExport:
         )
         self.packets_read = 0
         self.client_list = []
+        self._client_set = set()  # For O(1) membership checks
         self._client_write_locks = {}  # Per-client write locks for thread-safe writing
         self._client_list_lock = threading.Lock()  # Lock for client_list modifications
 
@@ -146,8 +147,10 @@ class SvrExport:
         """
         self.packets_read += 1
         with self._client_list_lock:
-            if (client, address) not in self.client_list:
-                self.client_list.append((client, address))
+            client_tuple = (client, address)
+            if client_tuple not in self._client_set:
+                self._client_set.add(client_tuple)
+                self.client_list.append(client_tuple)
             if client not in self._client_write_locks:
                 self._client_write_locks[client] = threading.Lock()
         return
@@ -188,8 +191,10 @@ class SvrExport:
             except socket.error:
                 print(f"Client {address} disconnected or error occurred. Removing from client list.")
                 with self._client_list_lock:
-                    if (client, address) in self.client_list:
-                        self.client_list.remove((client, address))
+                    client_tuple = (client, address)
+                    if client_tuple in self.client_list:
+                        self.client_list.remove(client_tuple)
+                    self._client_set.discard(client_tuple)
                     self._client_write_locks.pop(client, None)
             except Exception as e:
                 print(f"Error sending data to client {client}: {e}")
@@ -210,8 +215,10 @@ class SvrExport:
             except socket.error:
                 print(f"Client {address} disconnected or error occurred. Removing from client list.")
                 with self._client_list_lock:
-                    if (client, address) in self.client_list:
-                        self.client_list.remove((client, address))
+                    client_tuple = (client, address)
+                    if client_tuple in self.client_list:
+                        self.client_list.remove(client_tuple)
+                    self._client_set.discard(client_tuple)
                     self._client_write_locks.pop(client, None)
             except Exception as e:
                 print(f"Error sending data to client {client}: {e}")

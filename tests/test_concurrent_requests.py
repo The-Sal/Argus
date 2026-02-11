@@ -18,14 +18,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from argus.protocol import encode_packet
 
+# Configuration constants
 HOST = 'localhost'
 PORT = 9972
+CONNECTION_TIMEOUT = 30  # seconds
+RECV_BUFFER_SIZE = 131072  # 128KB
+NUM_CONCURRENT_PINGS = 10
+NUM_MIXED_REQUESTS_PER_TYPE = 3
 
 
 def connect() -> socket.socket:
     """Open a TCP connection to the dispatcher."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(30)
+    sock.settimeout(CONNECTION_TIMEOUT)
     sock.connect((HOST, PORT))
     return sock
 
@@ -49,7 +54,7 @@ def send_request(sock: socket.socket, action: str, data=None) -> float:
     needed = None
     
     while True:
-        chunk = sock.recv(131072)
+        chunk = sock.recv(RECV_BUFFER_SIZE)
         if not chunk:
             raise ConnectionError("Server closed connection before responding.")
         raw += chunk
@@ -78,7 +83,6 @@ def test_concurrent_pings():
     print("--- TEST: Concurrent Pings from Single Socket ---")
     sock = connect()
     
-    NUM_REQUESTS = 10
     results = []
     lock = threading.Lock()
     
@@ -91,8 +95,8 @@ def test_concurrent_pings():
     
     # Send all requests concurrently
     start_time = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=NUM_REQUESTS) as executor:
-        futures = [executor.submit(send_ping, i) for i in range(NUM_REQUESTS)]
+    with ThreadPoolExecutor(max_workers=NUM_CONCURRENT_PINGS) as executor:
+        futures = [executor.submit(send_ping, i) for i in range(NUM_CONCURRENT_PINGS)]
         
         # Wait for all to complete
         for future in as_completed(futures):
@@ -106,14 +110,14 @@ def test_concurrent_pings():
     sock.close()
     
     # Verify results
-    assert len(results) == NUM_REQUESTS, f"Expected {NUM_REQUESTS} responses, got {len(results)}"
+    assert len(results) == NUM_CONCURRENT_PINGS, f"Expected {NUM_CONCURRENT_PINGS} responses, got {len(results)}"
     
     for idx, elapsed, response in results:
         assert response['error'] is None, f"Request {idx} returned error: {response['error']}"
         assert response['data'] == 'pong', f"Request {idx} got unexpected response: {response['data']}"
     
     avg_time = sum(r[1] for r in results) / len(results)
-    print(f"\n  OK: All {NUM_REQUESTS} concurrent requests completed")
+    print(f"\n  OK: All {NUM_CONCURRENT_PINGS} concurrent requests completed")
     print(f"  Total time: {total_time*1000:.1f} ms")
     print(f"  Average RTT: {avg_time*1000:.1f} ms")
     print(f"  Min RTT: {min(r[1] for r in results)*1000:.1f} ms")
@@ -163,7 +167,7 @@ def test_mixed_concurrent_requests():
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = []
         # Send multiple of each type
-        for _ in range(3):
+        for _ in range(NUM_MIXED_REQUESTS_PER_TYPE):
             futures.append(executor.submit(send_ping))
             futures.append(executor.submit(send_balance))
             futures.append(executor.submit(send_search))
