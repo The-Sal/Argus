@@ -4,6 +4,7 @@ import time
 import tqdm
 import socket
 import logging
+import threading
 from dotenv import load_dotenv
 from utils3 import runAsThread, assertTypes
 from utils3.networking.sockets import UDSServer
@@ -135,12 +136,31 @@ class SvrExport:
         )
         self.packets_read = 0
         self.client_list = []
+        self._client_write_locks = {}  # Per-client write locks for thread-safe writing
+        self._client_list_lock = threading.Lock()  # Lock for client_list modifications
 
     def _on_recv(self, client: socket.socket, address: tuple, data: bytes):
-        """Handle Incoming data from a client. This method should be OVERRIDDEN by subclasses. and called as super() in the subclass."""
+        """
+        Handle Incoming data from a client. This method should be OVERRIDDEN by subclasses.
+        Each packet is now processed asynchronously to allow multiple requests in flight.
+        """
         self.packets_read += 1
-        self.client_list.append((client, address))
+        with self._client_list_lock:
+            if (client, address) not in self.client_list:
+                self.client_list.append((client, address))
+            if client not in self._client_write_locks:
+                self._client_write_locks[client] = threading.Lock()
         return
+
+    def get_client_write_lock(self, client: socket.socket) -> threading.Lock:
+        """
+        Get the write lock for a given client socket.
+        Creates one if it doesn't exist (shouldn't happen in normal flow).
+        """
+        with self._client_list_lock:
+            if client not in self._client_write_locks:
+                self._client_write_locks[client] = threading.Lock()
+            return self._client_write_locks[client]
 
     def transmit(self, some_data, protocol: int = TransferPROTOCOL.VERSION_1):
         """Transmits data to all connected clients using the specified protocol."""
@@ -157,12 +177,20 @@ class SvrExport:
     def transmit_mkt_data_with_protocol_1(self, json_data: dict):
         """Transmits data to all connected clients, encoded as a packet. Note: Only clients who've sent data to the server will receive this."""
         packet = encode_packet(json.dumps(json_data).encode('ascii'))
-        for client, address in self.client_list:
+        with self._client_list_lock:
+            clients_copy = list(self.client_list)
+        
+        for client, address in clients_copy:
             try:
-                client.sendall(packet)
+                write_lock = self.get_client_write_lock(client)
+                with write_lock:
+                    client.sendall(packet)
             except socket.error:
                 print(f"Client {address} disconnected or error occurred. Removing from client list.")
-                self.client_list.remove((client, address))
+                with self._client_list_lock:
+                    if (client, address) in self.client_list:
+                        self.client_list.remove((client, address))
+                    self._client_write_locks.pop(client, None)
             except Exception as e:
                 print(f"Error sending data to client {client}: {e}")
 
@@ -171,12 +199,20 @@ class SvrExport:
         if not isinstance(mkt_data, CapitalComMKTDataLive):
             raise TypeError("mkt_data must be an instance of CapitalComMKTDataLive")
         packet = transmit_mkt_data_with_protocol_2(mkt_data)
-        for client, address in self.client_list:
+        with self._client_list_lock:
+            clients_copy = list(self.client_list)
+        
+        for client, address in clients_copy:
             try:
-                client.sendall(packet)
+                write_lock = self.get_client_write_lock(client)
+                with write_lock:
+                    client.sendall(packet)
             except socket.error:
                 print(f"Client {address} disconnected or error occurred. Removing from client list.")
-                self.client_list.remove((client, address))
+                with self._client_list_lock:
+                    if (client, address) in self.client_list:
+                        self.client_list.remove((client, address))
+                    self._client_write_locks.pop(client, None)
             except Exception as e:
                 print(f"Error sending data to client {client}: {e}")
 
@@ -297,12 +333,25 @@ class MKTDispatcher(SvrExport):
         self.transmit(mkt_data, protocol=TransferPROTOCOL.VERSION_2)
 
     def _on_recv(self, client: socket.socket, address: tuple, data: bytes):
-        """Handles incoming data from a client. This method is overridden to handle client requests."""
+        """
+        Handles incoming data from a client.
+        Each packet is processed asynchronously to allow multiple requests in flight.
+        """
         logger.info(f"Received data from {address}: {data}")
         super()._on_recv(client, address, data)
         decoded_datas = decode_multiple_packets(data)
         logger.info(f"Decoded {len(decoded_datas)} packets from {address}.")
         for decoded_data in decoded_datas:
+            # Process each packet in a separate thread to allow concurrent requests
+            self._process_packet_async(client, address, decoded_data)
+
+    @runAsThread
+    def _process_packet_async(self, client: socket.socket, address: tuple, decoded_data: bytes):
+        """
+        Process a single packet asynchronously.
+        This allows multiple requests from the same client to be in flight simultaneously.
+        """
+        try:
             if not decoded_data:
                 print(f"Received empty or invalid packet from {address}.")
                 return
@@ -313,6 +362,10 @@ class MKTDispatcher(SvrExport):
             # {'action': 'resolve/stream', 'symbol': 'BTCUSD' }
             data = json.loads(decoded_data.decode('ascii'))
             self.handle_client_request(data, client)
+        except Exception as e:
+            logger.error(f"Error processing packet from {address}: {e}")
+            import traceback
+            traceback.print_exc()
 
     def handle_client_request(self, data: dict, client: socket.socket):
         """Handles client requests based on the action specified in the data."""
@@ -427,7 +480,9 @@ class MKTDispatcher(SvrExport):
 
         # Send the response back to the client
         response['object'] = 'Response'
-        client.sendall(encode_packet(json.dumps(response).encode('ascii')))
+        write_lock = self.get_client_write_lock(client)
+        with write_lock:
+            client.sendall(encode_packet(json.dumps(response).encode('ascii')))
 
 
 if __name__ == '__main__':
