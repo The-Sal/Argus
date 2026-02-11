@@ -45,7 +45,7 @@ def encode_packet(data: bytes) -> bytes:
         b'~0005|hello'
     """
     data_length = len(data)
-    if data_length > 2 ** 32 - 1:
+    if data_length > 9999:  # Limiting to 9999 for a 4-digit length header
         raise ValueError("Data length exceeds maximum allowed size.")
     return f"~{data_length:04d}|".encode('ascii') + data
 
@@ -195,8 +195,13 @@ def transmit_mkt_data_with_protocol_2(mkt_data) -> bytes:
     symbol_length_header = f'{len(symbol_bytes):04d}|'.encode('ascii')
     packet_without_heading = symbol_length_header + symbol_bytes + packet_data + b'L'
 
+    length_of_packet = len(packet_without_heading)
+
+    if length_of_packet > 9999:
+        raise ValueError("Packet length exceeds maximum allowed size of 9999 bytes")
+
     # Add main header
-    packet_length_header = f"~{len(packet_without_heading):04d}".encode('ascii')
+    packet_length_header = f"~{length_of_packet:04d}".encode('ascii')
     packet = packet_length_header + packet_without_heading
 
     return packet
