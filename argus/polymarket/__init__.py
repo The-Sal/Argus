@@ -137,10 +137,13 @@ class RoutingHelper:
         self._market_data_routing_table: dict[str, list[socket.socket]] = {}  # clob_id -> list[socket.socket]
         self._order_subscriptions: dict[socket.socket, list[str]] = {}  # socket.socket -> list[clob_id]
         self._lock = threading.Lock()
+        self._socket_write_locks: dict[socket.socket, threading.Lock] = {}  # Per-socket write locks
 
     def add_socket(self, sock: socket.socket):
         with self._lock:
             self._sockets.add(sock)
+            if sock not in self._socket_write_locks:
+                self._socket_write_locks[sock] = threading.Lock()
 
     def remove_socket(self, sock: socket.socket):
         """
@@ -150,6 +153,7 @@ class RoutingHelper:
         """
         with self._lock:
             self._sockets.discard(sock)
+            self._socket_write_locks.pop(sock, None)  # Remove the write lock
             subscribed_clob_ids = self._order_subscriptions.pop(sock, [])
             for clob_id in subscribed_clob_ids:
                 if clob_id in self._market_data_routing_table:
@@ -227,6 +231,18 @@ class RoutingHelper:
     def order_subscriptions(self):
         with self._lock:
             return dict(self._order_subscriptions)
+
+    def get_socket_write_lock(self, sock: socket.socket) -> threading.Lock:
+        """
+        Get the write lock for a given socket.
+        Creates one if it doesn't exist (shouldn't happen in normal flow).
+        :param sock: The socket to get the lock for
+        :return: Threading lock for the socket
+        """
+        with self._lock:
+            if sock not in self._socket_write_locks:
+                self._socket_write_locks[sock] = threading.Lock()
+            return self._socket_write_locks[sock]
 
 
 class ArgsObject:
@@ -444,8 +460,22 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # Callbacks
     #######################################
     def _handle_incoming_packets(self, client_socket: socket.socket, address, data: bytes):
+        """
+        Handle incoming packets from a client. Each packet is processed asynchronously
+        in its own thread to allow multiple requests in flight from the same client.
+        """
         packets = decode_multiple_packets(data)
         for packet in packets:
+            # Process each packet in a separate thread to allow concurrent requests
+            self._process_single_packet_async(client_socket, address, packet)
+
+    @runAsThread
+    def _process_single_packet_async(self, client_socket: socket.socket, address, packet: bytes):
+        """
+        Process a single packet asynchronously. This allows multiple requests from the
+        same client to be in flight simultaneously.
+        """
+        try:
             content = json.loads(packet.decode('utf-8'))
             logging.debug("Received data from Polymarket client: %s", content)
             try:
@@ -463,7 +493,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 }
 
             response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
-            client_socket.sendall(response_bytes)
+            
+            # Use per-socket write lock to ensure thread-safe writing
+            write_lock = self.get_socket_write_lock(client_socket)
+            with write_lock:
+                client_socket.sendall(response_bytes)
+        except Exception as e:
+            logging.error("Error processing packet: %s", e)
+            traceback.print_exc()
 
     def _on_fatal_error(self, error: dict):
         """
@@ -507,7 +544,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         for sock in self.sockets:
             try:
-                sock.sendall(error_packet)
+                write_lock = self.get_socket_write_lock(sock)
+                with write_lock:
+                    sock.sendall(error_packet)
             except (ConnectionResetError, BrokenPipeError) as e:
                 self.remove_socket(sock)
                 print_with_name('Removed socket due to error while broadcasting fatal error:', e)
@@ -570,7 +609,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # so it is safe to call from this WSS callback thread.
         for sock in clients_to_send:
             try:
-                sock.sendall(p2_obj)
+                write_lock = self.get_socket_write_lock(sock)
+                with write_lock:
+                    sock.sendall(p2_obj)
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 # OSError [Errno 9] Bad file descriptor occurs when the client
                 # has already closed the socket but the routing table still holds
@@ -649,7 +690,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         for sock in self.sockets:
             try:
-                sock.sendall(obj)
+                write_lock = self.get_socket_write_lock(sock)
+                with write_lock:
+                    sock.sendall(obj)
             except (ConnectionResetError, BrokenPipeError) as e:
                 self.remove_socket(sock)
                 print_with_name('Removed socket due to error while sending account update:', e)
