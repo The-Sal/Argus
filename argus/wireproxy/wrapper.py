@@ -39,10 +39,18 @@ def _load_all_proxy_mappings():
 
 
 def _setup_proxy_for_dispatcher(idx, verbose=True):
+    blind_mapping = os.environ.get('WIREPROXY_BLIND_BIND', 'false').lower() == 'true'
+
     mappings = _load_all_proxy_mappings()
     if str(idx) in mappings:
         if verbose:
-            print(__name__, f'Found WireProxy mapping for dispatcher {idx}, ensuring WireProxy daemon is running...')
+            print(__name__, f'Found WireProxy mapping for dispatcher {idx}.')
+        if blind_mapping:
+            if verbose:
+                print(__name__, f'WIREPROXY_BLIND_BIND is set to True, skipping '
+                                f'daemon state checks and blindly binding to {BIND_ADDRESS} for dispatcher {idx}')
+            return True
+
         ensure_daemon_running()
         config_name = mappings[str(idx)].split('.conf')[0]
         if verbose:

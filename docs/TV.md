@@ -160,64 +160,55 @@ Callback invoked with MarketData
 
 Historical OHLCV (Open, High, Low, Close, Volume) data retrieval.
 
-**Initialization:**
+**Method Signature:**
 ```python
-from argus.tv import ChartSession
-
-chart = ChartSession(
-    symbol="NASDAQ:AAPL",
-    interval="D",  # Daily candles
-    range_value=300,  # Number of bars
-    sendAuth=False
-)
-```
-
-**Supported Intervals:**
-- `1` - 1 minute
-- `5` - 5 minutes
-- `15` - 15 minutes
-- `60` - 1 hour
-- `240` - 4 hours
-- `D` - Daily
-- `W` - Weekly
-- `M` - Monthly
-
-**Get Historical Data:**
-```python
+chart = ChartSession()
 chart.setup()
 chart.post_setup()
 
-# Wait for data to arrive
-time.sleep(5)
-
-# Retrieve as pandas DataFrame
-df = chart.get_chart_data()
-
-print(df)
-#         time   open   high    low  close    volume
-# 0 1609459200  132.0  133.6  130.5  131.0  99310000
-# 1 1609545600  131.8  134.5  131.3  133.7 106260000
-# ...
+df = chart.get_symbol_data(
+    symbol="NASDAQ:AAPL",
+    interval="15",
+    total_ticks=20
+)
 ```
 
-**DataFrame Columns:**
-- `time` - Unix timestamp
-- `open` - Opening price
-- `high` - Highest price
-- `low` - Lowest price
-- `close` - Closing price
-- `volume` - Trading volume
+**Parameters:**
+- `symbol` (str) - TradingView symbol (e.g., `"NASDAQ:AAPL"`, `"BINANCE:BTCUSDT"`)
+- `interval` (str) - Timeframe to retrieve. Pass as string:
+- `total_ticks` (int) - Number of candles to retrieve
 
-**Processing:**
+**Interval Values - What to Pass:**
 
-The `ChartSession` accumulates chart data messages and converts them to a pandas DataFrame:
+Pass the interval as a **string** to the `interval` parameter:
 
-```python
-def get_chart_data(self) -> pd.DataFrame:
-    # Combine multiple data batches
-    # Convert to structured format
-    # Return as DataFrame
-```
+| Timeframe | Pass | Description |
+|-----------|------|-------------|
+| 1 minute | `"1"` | 1-minute candles |
+| 5 minutes | `"5"` | 5-minute candles |
+| **15 minutes** | **`"15"`** | 15-minute candles |
+| **1 hour** | **`"60"`** | 60-minute (1-hour) candles |
+| 4 hours | `"240"` | 240-minute (4-hour) candles |
+| **Daily** | **`"D"`** | Daily candles |
+| Weekly | `"W"` | Weekly candles |
+| Monthly | `"M"` | Monthly candles |
+
+**Return Value:**
+
+Returns a pandas DataFrame with columns:
+- `Date` - datetime object of the candle timestamp
+- `Open` - Opening price
+- `High` - Highest price in the period
+- `Low` - Lowest price in the period
+- `Close` - Closing price
+- `Volume` - Trading volume
+
+**Notes:**
+
+- The `get_symbol_data()` method handles connection setup, data retrieval, and conversion automatically
+- Data is returned as a pandas DataFrame with datetime objects instead of Unix timestamps
+- Works with both traditional stock exchanges and 24/7 cryptocurrency markets
+- Bitcoin and other crypto assets have consistent intervals without market gaps (no weekends/holidays)
 
 ### Multi-Symbol Support
 

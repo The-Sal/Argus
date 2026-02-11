@@ -1,8 +1,8 @@
 import os
 import time
 import logging
-import functools
 import requests
+import functools
 import traceback
 from termcolor import colored
 from argus.cache_sys import DomainCache
@@ -19,7 +19,8 @@ from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreat
 REST_CACHE = DomainCache('polymarket_direct.rest')
 endpoints = {
     'events': "https://gamma-api.polymarket.com/events?order=id&ascending=false&closed=false&limit={}&offset={}",
-    'geo_block_test': 'https://polymarket.com/api/geoblock'
+    'geo_block_test': 'https://polymarket.com/api/geoblock',
+    'page_data': 'https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json'
 }
 qw = '[{}]'.format(__name__)
 

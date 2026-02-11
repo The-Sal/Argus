@@ -208,6 +208,21 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `wireproxy/wrapper.py`
 - **Example**: `WIREPROXY_MAPPING_IB_NY=my_ny_config`
 
+### `WIREPROXY_BLIND_BIND`
+- **Purpose**: Skip daemon state checks and blindly bind to the WireProxy address
+- **Default**: `false`
+- **Required**: No
+- **Used in**: `wireproxy/wrapper.py`
+- **Behavior**: When `true`, skips checking if the WireProxy daemon is running and blindly binds to the configured address. Useful when the daemon is managed externally or for testing purposes.
+
+## IP Safety Check
+
+### `IPINFO_TOKEN`
+- **Purpose**: Authentication token for ipinfo.io API service used in IP safety checks
+- **Required**: No (optional, requests work without it but may be rate-limited)
+- **Used in**: `polymarket_direct/safe.py`
+- **Behavior**: When provided, adds Bearer token authentication to requests to ipinfo.io for IP geolocation lookups. Without a token, the service may have stricter rate limits.
+
 ## System-wide Variables
 
 ### `ARGUS_DISABLE_NOTIFICATIONS`

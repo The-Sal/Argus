@@ -19,7 +19,10 @@ class PolyMarketAccountEventWss:
     A WebSocket that exists just to listen to account events from the Polymarket CLOB.
     This is an authorised WSS connection to Polymarket and CLOB it is SEPARATE from `EnhancedPM`
     and does NOT provide any market data or order placement functionality. It does NOT hold
-    any state information.
+    any state information. WARNING: THIS CLASS DOES NOT IMPLEMENT IP Safety measures like the REST
+    API it's assumed everything is clear. It does, however, respect WireProxy settings. This is because
+    this class does not interact with the REST API or handle credential DERIVATION in any way,
+    it simply takes the auth dict as-is and passes it to the WebSocket for authentication.
     """
 
     def __init__(self, auth: dict, update_callback=None):

@@ -28,15 +28,16 @@ import logging
 import threading
 import traceback
 import dataclasses
-from utils3 import runAsThread
+from datetime import datetime
+from utils3 import runAsThread, Timer
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
-from argus._argus_utils import Introspective, throw_fuss
 from argus.cache_sys import DomainCache, FastCache
+from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
-from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
+from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
@@ -45,6 +46,7 @@ _CACHE = DomainCache('polymarket_dispatcher_v2', cache=_poly_cache)
 
 def print_with_name(*args, **kwargs):
     print("[{}]".format(__name__), *args, **kwargs)
+
 
 class P2ConvertClass:
     """
@@ -78,6 +80,7 @@ class P2ConvertClass:
     }
 
     """
+
     def __init__(self, ticker: str, market_slug: str,
                  asset_id: str, market_data: dict, order_book_depth: int):
         self.ticker = ticker
@@ -260,6 +263,31 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
     def __init__(self, private_key: str = None, proxy_funder: str = None,
                  host="localhost", port=9972):
+        """
+        Initializes the PolymarketDispatcher instance to handle incoming market data, account events,
+        and routing tasks across relevant components. Configures the REST API and WebSocket
+        connections for managing and processing Polymarket events effectively. Ensures proper
+        initialization of market caches and spawns background threads for continuous data updates.
+
+        :param private_key: The private key used for authentication with the PolyRestAPI. Defaults
+            to the value of the 'POLYMARKET_PRIVATE_KEY' environment variable if not explicitly provided.
+        :type private_key: Str, optional
+
+        :param proxy_funder: The address or identifier of the proxy funder for routing transactions
+            within the Polymarket system. Defaults to the value of the 'POLYMARKET_PROXY_FUNDER'
+            environment variable if not explicitly provided.
+        :type proxy_funder: Str, optional
+
+        :param host: The hostname or IP address on which the dispatcher server listens for incoming
+            connections. Defaults to 'localhost'.
+        :type host: Str, optional
+
+        :param port: The port number on which the dispatcher server listens for incoming connections.
+            Defaults to 9972.
+        :type port: Int, optional
+
+        """
+
         super().__init__()
         RoutingHelper.__init__(self)
         if private_key is None:
@@ -521,9 +549,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # If no clients are subscribed (e.g. last client disconnected between the
         # routing table read and this point), bail out early.  Continuing would
         # attempt to build a P2 packet from the update which can crash if the
-        # message type (e.g. last_trade_price) doesn't carry full order book data.
+        # message type (e.g., last_trade_price) doesn't carry full order book data.
         if not clients_to_send:
-            logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.", asset_id)
+            logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.",
+                            asset_id)
             return
 
         p2_obj = self.send_market_data_with_p2_encoding(
@@ -534,7 +563,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
 
         # Broadcast P2-encoded market data to all clients subscribed to this asset_id.
-        # On send failure (dead/disconnected client), remove the socket via remove_socket()
+        # On sent failure (dead/disconnected client), remove the socket via remove_socket()
         # which cascades cleanup through the routing table and triggers subscription_expired
         # if no clients remain for a given clob_id.
         # NOTE: remove_socket() and friends are thread-safe (all guarded by self._lock),
@@ -554,49 +583,55 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 traceback.print_exc()
 
     def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
-        _ = address
-        action = content.get('action', None)
-        data = content.get('data', None)
-        if action is None:
-            raise InvalidArgumentError("Received message without action field.")
+        with Timer(lambda x: print_with_name(f"Handled client message in {x:.4f} seconds: {content}")):
+            _ = address
+            action = content.get('action', None)
+            data = content.get('data', None)
+            if action is None:
+                raise InvalidArgumentError("Received message without action field.")
 
-        functions_available = {
-            # Market Data Subscriptions
-            'subscribe': self._handle_subscribe,
-            'subscribe_to_market_by_ticker': self._handle_subscribe_to_market_by_ticker,
+            functions_available = {
+                # Market Data Subscriptions
+                'subscribe': self._handle_subscribe,
+                'subscribe_to_market_by_ticker': self._handle_subscribe_to_market_by_ticker,
 
-            'unsubscribe': self._handle_unsubscribe,
-            'unsubscribe_from_market_by_ticker': self._handle_unsubscribe_from_market_by_ticker,
+                'unsubscribe': self._handle_unsubscribe,
+                'unsubscribe_from_market_by_ticker': self._handle_unsubscribe_from_market_by_ticker,
 
-            #'orderbook_snapshot': self._handle_orderbook_snapshot, TBD
+                'orderbook_snapshot': self._handle_orderbook_snapshot,
 
-            # Market Data Requests
-            'fetch_all_markets': self._handle_fetch_all_markets,
-            'fetch_all_tickers': self._handle_fetch_all_markets_ticker,
-            'fetch_market_by_ticker': self._handle_fetch_market_by_ticker,
-            'search_markets': self._handle_search_markets,
+                # Market Data Requests
+                'fetch_all_markets': self._handle_fetch_all_markets,
+                'fetch_all_tickers': self._handle_fetch_all_markets_ticker,
+                'fetch_market_by_ticker': self._handle_fetch_market_by_ticker,
+                'search_markets': self._handle_search_markets,
 
-            # Order Management
-            'place_order': self._handle_place_order,
-            'cancel_order': self._handle_cancel_order,
-            'get_order_status': self._handle_get_order_status,
-            'get_orders': self._handle_get_orders,
-            'get_balance': self._handle_get_balance,
+                'fetch_clob_id_information': self._fetch_clob_id_information,
 
-            # Utilities
-            'ping': self._handle_ping,
-        }
+                # Order Management
+                'place_order': self._handle_place_order,
+                'cancel_order': self._handle_cancel_order,
+                'get_order_status': self._handle_get_order_status,
+                'get_orders': self._handle_get_orders,
+                'get_balance': self._handle_get_balance,
 
-        func = functions_available.get(action, None)
-        if func is None:
-            raise InvalidArgumentError(f"Unknown action '{action}' received from client.")
+                # Crypto Utilities
+                'get_price_to_beat': self._handle_get_price_to_beat,
 
-        args = data if data is not None else {}
-        if func is not None:
-            # noinspection all
-            response = func(args_obj=ArgsObject(sock, args))
+                # Utilities
+                'ping': self._handle_ping,
+            }
 
-        return response
+            func = functions_available.get(action, None)
+            if func is None:
+                raise InvalidArgumentError(f"Unknown action '{action}' received from client.")
+
+            args = data if data is not None else {}
+            if func is not None:
+                # noinspection all
+                response = func(args_obj=ArgsObject(sock, args))
+
+            return response
 
     def _account_update_callback(self, update: OrderEvent):
         """
@@ -704,7 +739,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
             if clobs is None:
-                logging.warning("Market %s has no clobTokenIds, skipping subscription for this submarket.", market.markets[market_index].slug)
+                logging.warning("Market %s has no clobTokenIds, skipping subscription for this submarket.",
+                                market.markets[market_index].slug)
                 continue
             for clob_id in clobs:
                 try:
@@ -741,7 +777,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
             if clobs is None:
-                logging.warning("Market %s has no clobTokenIds, skipping unsubscription for this submarket.", market.markets[market_index].slug)
+                logging.warning("Market %s has no clobTokenIds, skipping unsubscription for this submarket.",
+                                market.markets[market_index].slug)
                 continue
             for clob_id in clobs:
                 try:
@@ -756,7 +793,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'unsubscribed': unsubscribed,
             'failed': failed
         }
-
 
     ########################################
     # Market Data Requests
@@ -824,6 +860,334 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             except ValueError:
                 pass
         return sorted_markets[:limit]
+
+    def _handle_orderbook_snapshot(self, args_obj: ArgsObject):
+        """
+        Trigger an orderbook snapshot for a given clob_id(s). The data will come over the normal
+        P2 channels. This is from a cache, NOT a live request to the CLOB. The endpoint
+        is designed for stale markets that are already SUBSCRIBED to get a snapshot on demand.
+        The endpoint will trigger a push of the latest order book with timestamp 0, which clients
+        can identify as an on-demand snapshot.
+
+        :param args_obj: Arg[0...n] of args_obj is expected to be the clob_id to fetch the snapshot for.
+        """
+
+        clobs = args_obj.args
+        successful = []
+        failed = []
+        for clob_id in clobs:
+            try:
+                self._order_book_update_callback(
+                    {
+                        clob_id: self.market_data.order_book_for_asset_id(asset_id=clob_id),
+                        'timestamp': 0  # Clients can identify this as a snapshot by the timestamp of 0
+                    }
+                )
+                successful.append(clob_id)
+            except Exception as e:
+                failed.append(clob_id)
+                print_with_name("Error triggering orderbook snapshot for clob_id {}: {}".format(clob_id, e))
+                traceback.print_exc()
+
+        return {
+            'successful': successful,
+            'failed': failed
+        }
+
+    def _fetch_clob_id_information(self, args_obj: ArgsObject):
+        """
+        Gets information about a clob_id by querying the internal market cache.
+        :param args_obj: [0] of args_obj is expected to be the clob_id to fetch information for.
+        :return:
+        """
+
+        clob_id = args_obj.args[0]
+        event = self._resolve_market_from_token_id(clob_id)
+        # Find the market and outcome associated with this clob_id
+        for market in event.markets:
+            if market.clobTokenIds and clob_id in market.clobTokenIds:
+                outcome_index = market.clobTokenIds.index(clob_id)
+                if market.outcomes and isinstance(market.outcomes, list):
+                    outcome = market.outcomes[outcome_index]
+                else:
+                    outcome = None
+                return {
+                    'event_name': event.title,
+                    'market_name': market.question,
+                    'outcome': outcome,
+                    'ticker': event.ticker,
+                    'market_slug': market.slug
+                }
+
+        raise PolyMarketDispatcherError(
+            f"clob_id '{clob_id}' not found in any market outcomes."
+        )
+
+    def _handle_get_price_to_beat(self, args_obj: ArgsObject):
+        """
+        Handle request to get the price to beat for an Up/Down market.
+
+        This method implements a dual-strategy approach to fetch the price to beat, ensuring maximum
+        reliability by attempting multiple methods in sequence. Both methods MUST be tried before
+        returning an error to the user.
+
+        DUAL METHOD STRATEGY:
+        --------------------
+
+        METHOD 1 - Frontend HTML Scraper (Primary):
+            Uses UnsafePolyMarket.get_price_to_beat(slug) to scrape the price directly from
+            Polymarket's frontend HTML. This method:
+            - Makes an HTTP GET request to https://polymarket.com/event/{market_slug}
+            - Parses the embedded JSON in the HTML page props to extract 'openPrice'
+            - Is more stable as it doesn't require forging API tokens or special headers
+            - Benefits from frontend caching via @_unsafe_api_cache.cache_decorator
+            - May fail if Polymarket changes their HTML structure or if the market slug is invalid
+
+        METHOD 2 - Crypto Price API (Fallback):
+            Uses UnsafePolyMarket.build_crypto_price_url_and_get_price() as a fallback when
+            the scraper fails. This method:
+            - Extracts metadata from the market (crypto symbol, variant, start/end dates)
+            - Builds a direct API URL to Polymarket's crypto price endpoint
+            - Returns the 'priceToBeat' field from the JSON response
+            - Requires proper parsing of market metadata from the ticker and resolution source
+            - Validates all required parameters before making the API call
+
+        METADATA EXTRACTION:
+        -------------------
+        The fallback method requires extracting the following from market metadata:
+        - Symbol: BTC, ETH, SOL (extracted from ticker or resolutionSource URL)
+        - Variant: 'fifteen', 'hourly', or 'daily' (parsed from ticker pattern like '15m', 'hour', etc.)
+        - Start Date: Event start time from market.eventStartTime or market.startDate
+        - End Date: Market end time from market.endDate
+
+        EXECUTION FLOW:
+        --------------
+        1. Validate ticker argument
+        2. Look up market in cache to get metadata
+        3. Attempt METHOD 1 (scraper)
+        4. If METHOD 1 fails, capture error and proceed to METHOD 2
+        5. If METHOD 2 succeeds, return price; otherwise return combined error
+
+        The input expected from the user is the ticker of the market, for example:
+        "bitcoin-up-or-down-february-10-4pm-et" or "btc-updown-15m-1769111100"
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            args_obj.args[0] is expected to be the market ticker string.
+        :return: float representing the price to beat
+        :raises InvalidArgumentError: If ticker argument is missing
+        :raises PolyMarketDispatcherError: If market not found or both methods fail
+        """
+        # Extract the ticker from the arguments
+        try:
+            ticker = args_obj.args[0]
+        except IndexError:
+            raise InvalidArgumentError("Ticker argument is required for get_price_to_beat.")
+        
+        # Look up the market in the cache to get metadata
+        with self._market_cache_lock:
+            market_event = self._all_markets_cache.get(ticker, None)
+        
+        if market_event is None:
+            raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
+        
+        # Import UnsafePolyMarket here to avoid circular imports
+        from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
+        
+        unsafe_api = UnsafePolyMarket()
+        
+        # Get the market slug from the first market in the event
+        # Most Up/Down events have a single market, so we use index 0
+        if not market_event.markets or len(market_event.markets) == 0:
+            raise PolyMarketDispatcherError(f"Market '{ticker}' has no submarkets.")
+        
+        market = market_event.markets[0]
+        market_slug = market.slug
+        
+        # Check if market_slug is available
+        if market_slug is None:
+            raise PolyMarketDispatcherError(f"Market '{ticker}' has no slug defined.")
+        
+        # METHOD 1: Try the scraper first (get_price_to_beat using market slug)
+        scraper_error = None
+        try:
+            price = unsafe_api.get_price_to_beat(market_slug)
+            if price is not None:
+                return price
+        except UnableToReachPolymarket as e:
+            scraper_error = str(e)
+            logging.warning(f"Scraper method failed for ticker '{ticker}': {scraper_error}")
+        except Exception as e:
+            scraper_error = str(e)
+            logging.warning(f"Unexpected error in scraper method for ticker '{ticker}': {scraper_error}")
+        
+        # METHOD 2: Fall back to crypto price API if scraper failed
+        # We need to extract metadata from the market to build the API call
+        try:
+            # Extract symbol from ticker or resolution source
+            symbol = self._extract_crypto_symbol(ticker, market_event)
+
+            # Get start and end dates from market metadata FIRST
+            # (needed for variant calculation)
+            start_date = self._extract_start_date(market)
+            end_date = self._extract_end_date(market)
+
+            # Extract variant (fifteen, hourly, daily) from market duration
+            variant = self._extract_variant(start_date, end_date)
+            
+            if symbol and variant and start_date and end_date:
+                price = unsafe_api.build_crypto_price_url_and_get_price(
+                    symbol=symbol,
+                    variant=variant,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+                if price is not None:
+                    return price
+            else:
+                missing = []
+                if not symbol:
+                    missing.append("symbol")
+                if not variant:
+                    missing.append("variant")
+                if not start_date:
+                    missing.append("start_date")
+                if not end_date:
+                    missing.append("end_date")
+                raise PolyMarketDispatcherError(
+                    f"Cannot use crypto price API for ticker '{ticker}': missing {', '.join(missing)}"
+                )
+                
+        except UnableToReachPolymarket as e:
+            # Both methods failed - return comprehensive error
+            raise PolyMarketDispatcherError(
+                f"Failed to get price to beat for ticker '{ticker}'. "
+                f"Scraper error: {scraper_error}. "
+                f"Crypto API error: {str(e)}"
+            )
+        except Exception as e:
+            # Unexpected error in fallback method
+            raise PolyMarketDispatcherError(
+                f"Failed to get price to beat for ticker '{ticker}'. "
+                f"Scraper error: {scraper_error}. "
+                f"Crypto API error: {str(e)}"
+            )
+
+    @staticmethod
+    def _extract_crypto_symbol(ticker: str, market_event) -> str:
+        """
+        Extract the crypto symbol (e.g., 'BTC', 'ETH') from the ticker or resolution source.
+
+        :param ticker: The market ticker string
+        :param market_event: The PolymarketEvent object
+        :return: Uppercase crypto symbol or None if cannot extract
+        """
+        # Map of common crypto abbreviations in tickers to symbols
+        crypto_map = {
+            'btc': 'BTC',
+            'bitcoin': 'BTC',
+            'eth': 'ETH',
+            'ethereum': 'ETH',
+            'sol': 'SOL',
+            'solana': 'SOL',
+        }
+
+        # Try to extract from ticker first (e.g., "btc-updown-15m-1769111100")
+        ticker_lower = ticker.lower()
+        for key, symbol in crypto_map.items():
+            if key in ticker_lower:
+                return symbol
+
+        # Try to extract from resolution source (e.g., "https://data.chain.link/streams/btc-usd")
+        resolution_source = market_event.resolutionSource or ''
+        if 'btc' in resolution_source.lower():
+            return 'BTC'
+        elif 'eth' in resolution_source.lower():
+            return 'ETH'
+        elif 'sol' in resolution_source.lower():
+            return 'SOL'
+
+        return None
+
+    @staticmethod
+    def _extract_variant(start_date, end_date) -> str:
+        """
+        Calculate the variant type (fifteen, hourly, daily) from the market duration.
+
+        Instead of parsing human-readable slugs like "bitcoin-up-or-down-february-10-5pm-et",
+        we calculate the duration between start and end dates to determine the market type.
+
+        :param start_date: The market start datetime
+        :param end_date: The market end datetime
+        :return: Variant string ('fifteen', 'hourly', 'daily') or None if cannot determine
+        """
+        if start_date is None or end_date is None:
+            return None
+
+        try:
+            # Calculate duration
+            duration = end_date - start_date
+            duration_minutes = duration.total_seconds() / 60
+
+            # Determine variant based on duration
+            # 15-minute markets: ~15 minutes
+            if 10 <= duration_minutes <= 20:
+                return 'fifteen'
+
+            # Hourly markets: ~60 minutes (with some tolerance)
+            if 50 <= duration_minutes <= 70:
+                return 'hourly'
+
+            # Daily markets: ~24 hours (1440 minutes)
+            if 1380 <= duration_minutes <= 1500:
+                return 'daily'
+
+            # Log warning for unclassified durations
+            logging.warning(f"Could not determine variant for duration of {duration_minutes:.1f} minutes")
+            return None
+
+        except (TypeError, AttributeError) as e:
+            logging.warning(f"Error calculating variant from dates: {e}")
+            return None
+
+    @staticmethod
+    def _extract_start_date(market):
+        """
+        Extract the start datetime from the market metadata.
+
+        :param market: The Market object
+        :return: datetime object or None
+        """
+        # Try eventStartTime first, then startDate, then startDateIso
+        date_str = market.eventStartTime or market.startDate or market.startDateIso
+
+        if date_str:
+            try:
+                # Parse ISO format datetime string
+                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                pass
+
+        return None
+
+    @staticmethod
+    def _extract_end_date(market):
+        """
+        Extract the end datetime from the market metadata.
+
+        :param market: The Market object
+        :return: datetime object or None
+        """
+        # Try endDate first, then endDateIso
+        date_str = market.endDate or market.endDateIso
+
+        if date_str:
+            try:
+                # Parse ISO format datetime string
+                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            except (ValueError, AttributeError):
+                pass
+
+        return None
 
     ########################################
     # Order Management
@@ -993,7 +1357,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         packet = encode_packet(json_data)
         return packet
 
-    def send_market_data_with_p2_encoding(self, market_data: dict, ticker: str, market_slug: str, asset_id: str) -> bytes:
+    def send_market_data_with_p2_encoding(self, market_data: dict, ticker: str, market_slug: str,
+                                          asset_id: str) -> bytes:
         """
         Encodes market data into bytes using a custom P2 encoding format.
         The P2 encoding format's ticker field is formatted like <Event-Ticker><Market-Slug><Asset_id>.
