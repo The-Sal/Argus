@@ -372,7 +372,7 @@ Direct UDS connection:
 import socket
 import json
 from argus.capital import encode_packet
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 # Connect to UDS
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -452,7 +452,7 @@ packet = encode_packet(b'{"action": "stream_epic", "epic": "BTCUSD"}')
 
 **Decoding Helper:**
 ```python
-from argus.capital._svr_utils import decode_packet
+from argus.protocol import decode_packet
 data = decode_packet(packet)  # Returns bytes
 ```
 
@@ -491,7 +491,7 @@ Where:
 
 **Parsing:**
 ```python
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 parser = Protocol2Parser([
     'bid', 'bid_size', 'ask', 'ask_size',

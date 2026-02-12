@@ -588,7 +588,7 @@ If migrating from the legacy `polymarket` dispatcher (https://github.com/The-Sal
 1. **Import Path:**
    ```python
    # Old
-   from argus.polymarket import PolyDispatcher
+   from argus.polymarket import PolymarketDispatcher
 
    # New
    from argus.polymarket_direct import EnhancedPM
@@ -597,17 +597,14 @@ If migrating from the legacy `polymarket` dispatcher (https://github.com/The-Sal
 2. **Initialization:**
    ```python
    # Old
-   dispatcher = PolyDispatcher()
+   dispatcher = PolymarketDispatcher()
 
    # New
-   client = EnhancedPM(None, None, dry_mode=True)
+   client = EnhancedPM()
    ```
 
 3. **Data Models:**
    ```python
-   # Old
-   from argus.polymarket import PMarket
-
    # New
    from argus.polymarket_direct._types import PolymarketEvent, Market
    ```
@@ -626,7 +623,7 @@ If migrating from the legacy `polymarket` dispatcher (https://github.com/The-Sal
 | Legacy | New | Description |
 |--------|-----|-------------|
 | Market | Event | Top-level entity |
-| PMarket | Market | Individual prediction |
+| - | Market | Individual prediction market |
 | - | Outcome | Binary result (Yes/No) |
 | - | CLOB Token ID | Asset identifier |
 

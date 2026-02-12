@@ -263,7 +263,7 @@ Direct TCP connection to dispatcher:
 
 ```python
 import socket
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 # Connect to dispatcher
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -363,7 +363,7 @@ Where:
 
 **Parsing:**
 ```python
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 parser = Protocol2Parser([
     'bid', 'bid_size', 'ask', 'ask_size',
@@ -390,7 +390,7 @@ result = parser.parse(packet)
 
 ```python
 import socket
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 # Connect to dispatcher
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

@@ -201,7 +201,7 @@ For maximum safety in production trading:
 
 ```python
 import os
-from argus.polymarket_direct import PolyRestAPI
+from argus.polymarket_direct.rest import PolyRestAPI
 
 # Stage 1-2 controls
 os.environ['POLYMARKET_PARANOID'] = 'true'  # Hard-fail on bad regions

@@ -135,7 +135,7 @@ The main dispatcher for Interactive Brokers market data.
 | Command | Description |
 |---------|-------------|
 | `add=SYMBOL` | Subscribe to a ticker |
-| `remove=SYMBOL` | Unsubscribe from a ticker |
+| `conid=CONTRACT_ID` | Subscribe using contract ID |
 
 **Note:** The dispatcher sends `$` (ping byte) to clients as a health check, but clients cannot send ping commands.
 
@@ -244,7 +244,7 @@ python runtime.py ib.core --port 9972
 **Client Example:**
 ```python
 import socket
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 s = socket.socket()
 s.connect(('localhost', 9972))
@@ -300,7 +300,7 @@ python runtime.py ib.forecast --port 9972
 
 ### Caching
 
-Both dispatchers use the IB Cache system (`~/.argus/ib_cache.pkl`):
+Both dispatchers use the shared Argus Cache system (`~/.argus/capital_cache.pkl`) via `DomainCache`:
 
 **Cached Operations:**
 - `IBNetworker.search_contract()` - Contract search results
@@ -312,11 +312,6 @@ Both dispatchers use the IB Cache system (`~/.argus/ib_cache.pkl`):
 @_IB_Cache.cache_decorator('IBNetworker.search_contract')
 def search_contract(self, contract_name):
     # Expensive API call cached automatically
-```
-
-**Disable Caching:**
-```bash
-export ARGUS_CACHES_DISABLED=1
 ```
 
 ### Notifications
@@ -353,9 +348,6 @@ s.connect(('localhost', 9972))
 # Subscribe
 s.sendall(b'add=AAPL')
 s.sendall(b'add=TSLA')
-
-# Unsubscribe
-s.sendall(b'remove=AAPL')
 
 # Receive Protocol 2 data
 while True:
@@ -401,7 +393,7 @@ def handle_market_data(self, message):
 ```python
 def handle_client(self, conn, addr):
     # New client connected
-    # Parse commands: add=SYMBOL, remove=SYMBOL
+    # Parse commands: add=SYMBOL, conid=CONTRACT_ID
     # Stream Protocol 2 data
 ```
 
@@ -552,11 +544,10 @@ class STK_Position:
 ### 4. Platform-Specific Features
 
 **macOS Only:**
-- `ShortableSharesData` - Requires macOS file paths
 - iMessage notifications
 
 **Linux Support:**
-- All features except ShortableSharesData and iMessage
+- All features except iMessage notifications
 - Console-only notifications
 
 **Windows:**
@@ -569,13 +560,19 @@ class STK_Position:
 **Constraint:** IB cookie expires after inactivity.
 
 **Impact:**
-- Must manually retrieve new cookie from browser
-- No programmatic login (IBKR security policy)
+- Must manually retrieve new cookie from browser, OR
+- Use programmatic login via `ib/set_auth.py` (Selenium-based automation)
 
 **Mitigation:**
 - Heartbeat keeps session alive
 - Authentication checker re-authenticates if needed
 - Notifications alert on auth failure
+
+**Programmatic Login:**
+```bash
+# Automated cookie retrieval via Selenium
+python -m argus.ib.set_auth
+```
 
 ## Usage Examples
 
@@ -583,7 +580,7 @@ class STK_Position:
 
 ```python
 import socket
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 # Connect to dispatcher
 s = socket.socket()
@@ -647,7 +644,7 @@ while True:
 
 ```python
 import socket
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 s = socket.socket()
 s.connect(('localhost', 9972))
@@ -695,9 +692,10 @@ IB_COOKIE="your_ibkr_session_cookie"
 
 # Optional
 ARGUS_DISABLE_NOTIFICATIONS=0  # Set to 1 to disable
-ARGUS_CACHES_DISABLED=0        # Set to 1 to disable caching
 NOTIFICATION_NUMBER="+1234567890"  # For iMessage alerts (macOS)
 ```
+
+See [ENVIRONMENT_VARIABLES.md](ENVIRONMENT_VARIABLES.md) for global Argus environment variables.
 
 ## Troubleshooting
 
@@ -720,7 +718,7 @@ NOTIFICATION_NUMBER="+1234567890"  # For iMessage alerts (macOS)
 **Symptoms:** "Cannot subscribe to more contracts (100/100)"
 
 **Solutions:**
-1. Unsubscribe from unused symbols: `s.sendall(b'remove=SYMBOL')`
+1. Disconnect clients to trigger automatic unsubscription
 2. Check for leaked subscriptions (clients disconnected without cleanup)
 3. Restart dispatcher to clear all subscriptions
 
@@ -735,8 +733,8 @@ NOTIFICATION_NUMBER="+1234567890"  # For iMessage alerts (macOS)
 
 **Solutions:**
 1. Search manually on IBKR web portal first
-2. Check cache: `~/.argus/ib_cache.pkl`
-3. Clear cache and retry: `rm ~/.argus/ib_cache.pkl`
+2. Check cache: `~/.argus/capital_cache.pkl`
+3. Clear cache and retry: `rm ~/.argus/capital_cache.pkl`
 
 ### Account Data Not Streaming
 
@@ -761,7 +759,7 @@ argus/ib/
 ├── fields.py                      # IBKR field definitions (31=LAST_PRICE, etc.)
 ├── _ib_utils.py                   # Data classes, LockedSession, FakeSocket
 ├── _forcast_utils.py              # Big/Mini/Micro contract classes
-└── _shortable_shares_data.py      # Shortable shares tracking (macOS only)
+└── _shortable_shares_data.py      # Shortable shares tracking (cross-platform)
 ```
 
 ## Summary

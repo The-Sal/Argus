@@ -391,7 +391,7 @@ export ARGUS_CACHES_DISABLED=1
 **Direct Cache Usage (Not Recommended):**
 
 ```python
-from argus.capital import DomainCache
+from argus.cache_sys import DomainCache
 
 cache = DomainCache('my_module')
 

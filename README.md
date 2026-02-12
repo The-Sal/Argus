@@ -51,7 +51,8 @@ While Argus **can** be imported like any other Python module, this is **not the 
 
 ```python
 # Supported but not recommended for production
-from argus.ib import IBWss, MKTDispatcher
+from argus.ib import MKTDispatcher
+from argus.ib.forecast import FXCDispatcher
 wss = IBWss(token="...")
 wss.subscribe_to_contracts([...])
 ```
@@ -64,7 +65,10 @@ The server-client architecture is preferred because:
 
 ## The Dispatcher Paradigm
 
-**Most modules in Argus follow the dispatcher paradigm** (exceptions: TradingView, NASDAQ, Polymarket modules use different architectures).
+**Most modules in Argus follow the dispatcher paradigm** (exceptions: TradingView and NASDAQ modules use different architectures).
+- **TradingView** - Direct callback-based client library
+- **NASDAQ** - Historical data scraper (not real-time)
+- **Polymarket** - Has both dispatcher (`polymarket`) and direct client (`polymarket_direct`) modes
 
 ### What is a Dispatcher?
 
@@ -85,6 +89,7 @@ A **Dispatcher** is a server that:
 | `ib.forecast` | IB Forecasting Contracts | TCP | 9972 | [IB.md](docs/IB.md) |
 | `capital.com` | Capital.com | Unix Socket | `/tmp/argus_capital.sock` | [CAPITAL.md](docs/CAPITAL.md) |
 | `binance` | Binance | TCP | 9982 | [BINANCE.md](docs/BINANCE.md) |
+| `polymarket` | Polymarket | TCP | 9972 | [POLYMARKET.md](docs/POLYMARKET.md) |
 
 
 ## Protocol 2 (P2): The Universal Data Format
@@ -126,7 +131,6 @@ _This is not consistent with every data source, some may use different ordering 
 ```
 
 **Decoded:**
-- Packet length: 71 bytes
 - Symbol length: 4 bytes
 - Symbol: `AAPL`
 - Bid: $150.25 × 1000
@@ -141,7 +145,7 @@ _This is not consistent with every data source, some may use different ordering 
 Use the built-in `Protocol2Parser`:
 
 ```python
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 parser = Protocol2Parser([
     'bid', 'bid_size', 'ask', 'ask_size',
@@ -208,10 +212,10 @@ Argus consists of several specialized modules, each providing access to differen
   - **Not a real-time data source** (utility for historical data collection)
 
 - **[Polymarket](docs/POLYMARKET.md)** - Prediction market data
-  - Legacy dispatcher (stub, see legacy branch)
-  - `EnhancedPM` (polymarket_direct) - Direct API integration with dry mode
+  - `PolymarketDispatcher` (`polymarket`) - TCP dispatcher with P1/P2 protocol support
+  - `EnhancedPM` (`polymarket_direct`) - Direct API integration (no dispatcher)
   - WebSocket subscriptions for market data
-  - **Does NOT follow dispatcher paradigm** (direct client library)
+  - Supports both dispatcher and direct client library modes
 
 ### Infrastructure
 
@@ -281,13 +285,16 @@ python runtime.py capital.com --capital-env demo
 
 # Binance
 python runtime.py binance --port 9982
+
+# Polymarket
+python runtime.py polymarket --port 9972
 ```
 
 ### Connecting a Client
 
 ```python
 import socket
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 # Connect to dispatcher
 s = socket.socket()
@@ -321,7 +328,7 @@ while True:
 
 ```python
 import socket
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 # Connect to IB dispatcher
 s = socket.socket()
@@ -348,7 +355,7 @@ while True:
 
 ```python
 import socket
-from argus.capital._svr_utils import Protocol2Parser
+from argus.protocol import Protocol2Parser
 
 s = socket.socket()
 s.connect(('localhost', 9982))

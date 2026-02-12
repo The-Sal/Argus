@@ -4,7 +4,7 @@ Argus runtime entrypoint.
 - Optional --host/--port are accepted and forwarded only to dispatchers that support them.
   Dispatchers have their own defaults; if not provided, nothing is passed.
 - Supports: macOS, Linux, (almost anything UNIX-based or UNIX-like) does NOT support Windows.
-- IB Dispatchers requires macOS due to ShortableShares() class implementation requires Finder
+- IB Dispatchers work on all platforms (Linux, macOS)
 - Push Notifications requires macOS due to the use of osascript to notify on machine-local notifications
 - Capital.com, Polymarket, Binance, TradingView (Chart+Quote), etc... work on all platforms.
 - DO NOT PASS AUTH CREDENTIALS VIA COMMAND LINE ARGS, use environment variables or .env file instead.
