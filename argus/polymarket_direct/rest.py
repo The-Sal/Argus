@@ -50,6 +50,8 @@ def retry(max_attempts=3, delay=0.35):
                             func.__qualname__, attempt, max_attempts, e
                         )
                         raise
+            return None
+
         return wrapper
     return decorator
 
@@ -160,7 +162,7 @@ class PolyRestAPI:
             if self.check_geo_blocked():
                 raise RuntimeError("The current IP is geo-blocked from accessing Polymarket.")
             else:
-                print(qw, "The current IP is NOT geo-blocked from accessing Polymarket. Happy trading!")
+                print(qw, colored("The current IP is NOT geo-blocked from accessing Polymarket. Happy trading!", 'green', attrs=['bold']))
         else:
             warning_msg = ("WARNING: YOU HAVE DISABLED POLYMARKET GEO-BLOCK PROTECTION CHECKS VIA THE "
                            "`POLYMARKET_PROTECTION` ENVIRONMENT VARIABLE (default: true). THIS WILL LEAD TO ORDERS NOT BEING REJECTED "
