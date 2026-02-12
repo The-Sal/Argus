@@ -32,10 +32,12 @@ from datetime import datetime
 from utils3 import runAsThread, Timer
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
+from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus.cache_sys import DomainCache, FastCache
 from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
+from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 
@@ -262,7 +264,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     """
 
     def __init__(self, private_key: str = None, proxy_funder: str = None,
-                 host="localhost", port=9972):
+                 host="localhost", port=9972, profile_proxy=-1):
         """
         Initializes the PolymarketDispatcher instance to handle incoming market data, account events,
         and routing tasks across relevant components. Configures the REST API and WebSocket
@@ -285,6 +287,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param port: The port number on which the dispatcher server listens for incoming connections.
             Defaults to 9972.
         :type port: Int, optional
+
+        :param profile_proxy: -1 (no profile), 0 (profile via proxy only), 1 (profile with proxy and local)
+        :type profile_proxy: Int, optional
 
         """
 
@@ -309,6 +314,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                                          fatal_callback=self._on_fatal_error)
         self.account_updates = wss.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
                                                              update_callback=self._account_update_callback)
+
+        # Proxy Profiling if enabled
+        if profile_proxy in [0, 1]:
+            profiler = ProxyPerformanceProfiler(print_callback=print_with_name)
+            profiler.run_profiling(BIND_ADDRESS, profile_proxy)
+            profiler.display_table(BIND_ADDRESS, profile_proxy)
 
         self._market_cache_lock = threading.Lock()
 
@@ -416,7 +427,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         self._build_asset_id_to_ticker_mapping()
 
-    # ALREADY LOCKED WITH `_market_cache_lock` DO NOT use inside with `_market_cache_lock` block
+    # ALREADY LOCKED WITH `_market_cache_lock` DO NOT use it inside with `_market_cache_lock` block
     def _build_asset_id_to_ticker_mapping(self):
         """
         Build a mapping of asset_id to ticker for a quick lookup when receiving market data updates.
@@ -431,7 +442,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 for index in range(len(markets)):
                     clobs: list[str] = markets[index].clobTokenIds
                     if clobs is None:
-                        logging.warning("Market %s has no clobTokenIds, skipping.", markets[index].slug)
+                        # logging.warning("Market %s has no clobTokenIds, skipping.", markets[index].slug)
                         continue
                     for clob_id in clobs:
                         # Store ticker and market index for later use in market data updates
@@ -982,31 +993,31 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             ticker = args_obj.args[0]
         except IndexError:
             raise InvalidArgumentError("Ticker argument is required for get_price_to_beat.")
-        
+
         # Look up the market in the cache to get metadata
         with self._market_cache_lock:
             market_event = self._all_markets_cache.get(ticker, None)
-        
+
         if market_event is None:
             raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
-        
+
         # Import UnsafePolyMarket here to avoid circular imports
         from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
-        
+
         unsafe_api = UnsafePolyMarket()
-        
+
         # Get the market slug from the first market in the event
         # Most Up/Down events have a single market, so we use index 0
         if not market_event.markets or len(market_event.markets) == 0:
             raise PolyMarketDispatcherError(f"Market '{ticker}' has no submarkets.")
-        
+
         market = market_event.markets[0]
         market_slug = market.slug
-        
+
         # Check if market_slug is available
         if market_slug is None:
             raise PolyMarketDispatcherError(f"Market '{ticker}' has no slug defined.")
-        
+
         # METHOD 1: Try the scraper first (get_price_to_beat using market slug)
         scraper_error = None
         try:
@@ -1019,7 +1030,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         except Exception as e:
             scraper_error = str(e)
             logging.warning(f"Unexpected error in scraper method for ticker '{ticker}': {scraper_error}")
-        
+
         # METHOD 2: Fall back to crypto price API if scraper failed
         # We need to extract metadata from the market to build the API call
         try:
@@ -1033,7 +1044,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
             # Extract variant (fifteen, hourly, daily) from market duration
             variant = self._extract_variant(start_date, end_date)
-            
+
             if symbol and variant and start_date and end_date:
                 price = unsafe_api.build_crypto_price_url_and_get_price(
                     symbol=symbol,
@@ -1056,7 +1067,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 raise PolyMarketDispatcherError(
                     f"Cannot use crypto price API for ticker '{ticker}': missing {', '.join(missing)}"
                 )
-                
+
         except UnableToReachPolymarket as e:
             # Both methods failed - return comprehensive error
             raise PolyMarketDispatcherError(
@@ -1385,6 +1396,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             )
         )
 
+    @runAsThread
     def run(self):
         self.dispatcher_svr.start()
 

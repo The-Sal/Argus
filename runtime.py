@@ -29,7 +29,7 @@ def main(argv=None):
     parser.add_argument('--port', dest='port', type=int, help='Listening port (if supported by dispatcher)')
     parser.add_argument('--capital-env', dest='capital_env', choices=['demo', 'live'], help='Capital.com environment (demo or live)')
     parser.add_argument('--wait-for-pong', dest='wait_for_pong', action='store_true', help='Wait for pong before starting interactive mode (if supported by dispatcher)')
-    parser.add_argument('--profile-proxy', dest='profile_proxy', action='store_true', help='Profile WireProxy performance (if supported by dispatcher)')
+    parser.add_argument('--profile-proxy', dest='profile_proxy', choices=['none', 'proxy-only', 'proxy-and-local'], help='Profile WireProxy performance for Polymarket (none, proxy-only, or proxy-and-local)')
 
     args = parser.parse_args(argv)
 
@@ -61,6 +61,9 @@ def main(argv=None):
             polymarket_kwargs['host'] = args.host
         if args.port is not None:
             polymarket_kwargs['port'] = args.port
+        if args.profile_proxy:
+            profile_proxy_map = {'none': -1, 'proxy-only': 0, 'proxy-and-local': 1}
+            polymarket_kwargs['profile_proxy'] = profile_proxy_map[args.profile_proxy]
         dispatcher = PolymarketDispatcher(**polymarket_kwargs)
         # dispatcher supports wait till pong
         if args.wait_for_pong:
