@@ -469,6 +469,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 # because encoding can fail!
                 response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
             except Exception as e:
+
+                throw_fuss(
+                    msg=traceback.format_exc(),
+                    notify=False
+                )
+
                 msg = {
                     'action': content.get('action', None),
                     'data': None,
