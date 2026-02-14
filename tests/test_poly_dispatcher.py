@@ -142,22 +142,41 @@ def test_search_markets_btc(sock: socket.socket):
 
 def test_fetch_all_tickers(sock: socket.socket) -> list:
     """
-    Fetch the full ticker list from the cache. Returns the list so subsequent
-    tests can use it to pick a market to subscribe to.
+    Fetch the full ticker list from the cache using pagination.
+    Returns the list so subsequent tests can use it to pick a market to subscribe to.
     """
-    print("--- TEST: fetch_all_tickers ---")
-    resp, dt = send_and_recv(sock, 'fetch_all_tickers', timeout=30)
-    assert resp['error'] is None, f"fetch_all_tickers returned error: {resp['error']}"
-    tickers = resp['data']
-    assert isinstance(tickers, list), f"Expected list, got: {type(tickers)}"
-    assert len(tickers) > 0, "Expected at least one ticker in the cache"
-    print(f"  Total tickers in cache: {len(tickers)}")
-    for t in tickers[:5]:
+    print("--- TEST: fetch_all_tickers (paginated) ---")
+    all_tickers = []
+    offset = 0
+    limit = 200  # Reduced from 1000 to avoid payload size limits
+    total_rtt = 0.0
+    page_count = 0
+
+    while True:
+        resp, dt = send_and_recv(sock, 'fetch_all_tickers', [limit, offset], timeout=30)
+        assert resp['error'] is None, f"fetch_all_tickers returned error: {resp['error']}"
+        page = resp['data']
+        assert isinstance(page, list), f"Expected list, got: {type(page)}"
+
+        print(f"    Page {page_count + 1}: received {len(page)} tickers")
+
+        if not page:
+            break
+
+        all_tickers.extend(page)
+        total_rtt += dt
+        page_count += 1
+        offset += limit
+
+    assert len(all_tickers) > 0, "Expected at least one ticker in the cache"
+    print(f"  Total tickers in cache: {len(all_tickers)}")
+    print(f"  Pages fetched: {page_count}")
+    for t in all_tickers[:5]:
         print(f"  -> {t}")
-    print(f"  OK  (showing first 5 of {len(tickers)})")
-    print(f"  RTT: {dt*1000:.1f} ms")
+    print(f"  OK  (showing first 5 of {len(all_tickers)})")
+    print(f"  Total RTT: {total_rtt*1000:.1f} ms")
     print()
-    return tickers
+    return all_tickers
 
 
 def find_active_market_clob_id(sock: socket.socket, tickers: list) -> tuple[str, str]:

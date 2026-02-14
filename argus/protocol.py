@@ -46,7 +46,7 @@ def encode_packet(data: bytes) -> bytes:
     """
     data_length = len(data)
     if data_length > 9999:  # Limiting to 9999 for a 4-digit length header
-        raise ValueError("Data length exceeds maximum allowed size.")
+        raise ValueError("Data length exceeds maximum allowed size. Your data length: {}".format(data_length))
     return f"~{data_length:04d}|".encode('ascii') + data
 
 

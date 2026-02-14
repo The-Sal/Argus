@@ -143,11 +143,24 @@ class ArgusClient:
         return list(resp.get('data') or []), dt
     
     def fetch_all_tickers(self) -> Tuple[List[str], float]:
-        """Fetch all tickers from cache."""
-        resp, dt = self.send_request('fetch_all_tickers', timeout=60)
-        if resp.get('error'):
-            raise Exception(f"Fetch tickers failed: {resp['error']}")
-        return list(resp.get('data') or []), dt
+        """Fetch all tickers from cache using pagination."""
+        all_tickers = []
+        offset = 0
+        limit = 200  # Reduced from 1000 to avoid payload size limits
+        total_dt = 0.0
+
+        while True:
+            resp, dt = self.send_request('fetch_all_tickers', [limit, offset], timeout=60)
+            if resp.get('error'):
+                raise Exception(f"Fetch tickers failed: {resp['error']}")
+            page = list(resp.get('data') or [])
+            if not page:
+                break
+            all_tickers.extend(page)
+            total_dt += dt
+            offset += limit
+
+        return all_tickers, total_dt
     
     def fetch_market_by_ticker(self, ticker: str) -> Tuple[dict, float]:
         """Fetch market details by ticker."""

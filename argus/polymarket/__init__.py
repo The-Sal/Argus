@@ -466,14 +466,16 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     'data': response,
                     'error': None
                 }
+                # because encoding can fail!
+                response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
             except Exception as e:
                 msg = {
                     'action': content.get('action', None),
                     'data': None,
                     'error': str(e)
                 }
+                response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
 
-            response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
             client_socket.sendall(response_bytes)
 
     def _on_fatal_error(self, error: dict):
@@ -661,7 +663,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for sock in self.sockets:
             try:
                 sock.sendall(obj)
-            except (ConnectionResetError, BrokenPipeError) as e:
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 self.remove_socket(sock)
                 print_with_name('Removed socket due to error while sending account update:', e)
             except Exception as e:
@@ -826,12 +828,29 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         Handle request to fetch all market tickers.
         :param args_obj: ArgsObject containing the socket and arguments.
-            Args is expected to be empty.
+            Args[0] is expected to be the limit of tickers to return (optional, default 100).
+            Args[1] is expected to be the offset for pagination (optional, default 0).
         :return:
         """
         _ = args_obj
         markets = self._all_markets_cache
-        return list(markets.keys())
+
+        offset = 0
+        limit = 100
+        if len(args_obj.args) > 1:
+            limit = int(args_obj.args[0])
+            offset = int(args_obj.args[1])
+        elif len(args_obj.args) > 0:
+            limit = int(args_obj.args[0])
+
+        items = list(markets.keys())
+        max_items = len(items)
+
+        max_limit = min(limit, max_items)
+        if offset >= max_items:
+            return []
+
+        return items[offset:offset + max_limit]
 
     def _handle_fetch_market_by_ticker(self, args_obj: ArgsObject):
         """

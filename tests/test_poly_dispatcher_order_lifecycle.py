@@ -281,15 +281,35 @@ def step_search_markets(sock: socket.socket):
 
 
 def step_fetch_all_tickers(sock: socket.socket) -> tuple[list, float]:
-    """4. Fetch every ticker from the dispatcher's market cache."""
-    separator("STEP 4: fetch_all_tickers")
-    resp, dt, pushes = send_and_recv(sock, 'fetch_all_tickers', timeout=30)
-    assert resp['error'] is None, f"fetch_all_tickers error: {resp['error']}"
-    tickers = resp['data']
-    assert isinstance(tickers, list) and len(tickers) > 0, "Expected non-empty ticker list"
-    print(f"  OK   {len(tickers)} tickers in cache")
-    print(f"  RTT: {fmt_ms(dt)}")
-    return tickers, dt
+    """4. Fetch every ticker from the dispatcher's market cache using pagination."""
+    separator("STEP 4: fetch_all_tickers (paginated)")
+    all_tickers = []
+    offset = 0
+    limit = 200  # Reduced from 1000 to avoid payload size limits
+    total_rtt = 0.0
+    page_count = 0
+
+    while True:
+        resp, dt, pushes = send_and_recv(sock, 'fetch_all_tickers', [limit, offset], timeout=30)
+        assert resp['error'] is None, f"fetch_all_tickers error: {resp['error']}"
+        page = resp['data']
+        assert isinstance(page, list), f"Expected list, got: {type(page)}"
+
+        print(f"    Page {page_count + 1}: received {len(page)} tickers")
+
+        if not page:
+            break
+
+        all_tickers.extend(page)
+        total_rtt += dt
+        page_count += 1
+        offset += limit
+
+    assert len(all_tickers) > 0, "Expected non-empty ticker list"
+    print(f"  OK   {len(all_tickers)} tickers in cache")
+    print(f"  Pages fetched: {page_count}")
+    print(f"  Total RTT: {fmt_ms(total_rtt)}")
+    return all_tickers, total_rtt
 
 
 def step_find_live_btc_event(sock: socket.socket, tickers: list) -> tuple[dict, str, float]:
