@@ -633,6 +633,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
                 # Utilities
                 'ping': self._handle_ping,
+                'rtt_to_exchange': self._handle_rtt_to_exchange,
             }
 
             func = functions_available.get(action, None)
@@ -1375,6 +1376,20 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         _ = args_obj
         response = 'pong'
         return response
+
+    def _handle_rtt_to_exchange(self, args_obj: ArgsObject) -> float:
+        """
+        Calculates the RTT to the exchange by measuring the time taken to
+        check the account balance via the rest api.
+        :param args_obj: Expects no arguments, just a trigger to perform the RTT check.
+        :return: A float representing the round-trip time in seconds from the dispatcher to the exchange and back.
+        """
+        time_now = time.time()
+        _ = args_obj
+        self.rest_api.get_balance()
+        time_after = time.time()
+        rtt = time_after - time_now
+        return rtt
 
     @staticmethod
     def send_with_p1_encoding(dict_data: dict) -> bytes:
