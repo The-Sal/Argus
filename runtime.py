@@ -1,3 +1,4 @@
+#! /usr/bin/env python3
 """
 Argus runtime entrypoint.
 - Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance
