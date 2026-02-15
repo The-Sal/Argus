@@ -948,12 +948,22 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     outcome = market.outcomes[outcome_index]
                 else:
                     outcome = None
+
+                aot_symbol_from_p2 = P2ConvertClass(
+                    ticker=event.ticker,
+                    market_slug=market.slug,
+                    asset_id=clob_id,
+                    market_data={},
+                    order_book_depth=0
+                )
+
                 return {
                     'event_name': event.title,
                     'market_name': market.question,
                     'outcome': outcome,
                     'ticker': event.ticker,
-                    'market_slug': market.slug
+                    'market_slug': market.slug,
+                    'aot_p2_symbol': aot_symbol_from_p2.symbol
                 }
 
         raise PolyMarketDispatcherError(
