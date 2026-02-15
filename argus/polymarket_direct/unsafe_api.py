@@ -105,8 +105,6 @@ class UnsafePolyMarket:
         #     "queryHash": "[\"crypto-prices\",\"price\",\"BTC\",\"2026-02-10T21:00:00Z\",\"fifteen\",\"2026-02-10T21:15:00Z\"]"
         # }
 
-        with open('oignaogbr.json', 'w') as f:
-            json.dump(json_data, f, indent=4)
 
         props = json_data.get('props', {})
         page_props = props.get('pageProps', {})
@@ -168,8 +166,15 @@ class UnsafePolyMarket:
         try:
             data = response.json()
             price_to_beat = data.get('priceToBeat', None)
+            open_price = data.get('openPrice', None)
             if price_to_beat is not None:
                 return price_to_beat
+            elif open_price is not None:
+                logging.warning(
+                    f"Price to beat not found in the response for URL {url}, but open price is available. "
+                    f"Using open price as a fallback. Response: {data}"
+                )
+                return open_price
             else:
                 raise UnableToReachPolymarket(f"Price to beat not found in the response for URL {url}. Response: {data}")
         except Exception as e:
