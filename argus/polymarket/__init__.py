@@ -295,6 +295,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         super().__init__()
         RoutingHelper.__init__(self)
+
+        # Configs dictionary for dispatcher settings
+        self._configs = {
+            'Print P2 packets': False,
+            'Show packet timestamps': True,
+        }
         if private_key is None:
             private_key = os.environ['POLYMARKET_PRIVATE_KEY']
 
@@ -580,6 +586,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             market_slug=self._all_markets_cache[ticker].markets[market_index].slug,
             asset_id=asset_id
         )
+
+        # Print P2 packets if config is enabled
+        if self._configs.get('Print P2 packets', False):
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            if self._configs.get('Show packet timestamps', True):
+                print(f"[{timestamp}] → ({len(p2_obj)} bytes): {p2_obj!r}")
+            else:
+                print(f"P2 Packet ({len(p2_obj)} bytes): {p2_obj!r}")
 
         # Broadcast P2-encoded market data to all clients subscribed to this asset_id.
         # On sent failure (dead/disconnected client), remove the socket via remove_socket()
@@ -1450,8 +1464,58 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     def run(self):
         self.dispatcher_svr.start()
 
+    def _toggle_print_p2_packets(self):
+        """Toggle the printing of raw P2 packets with timestamps."""
+        current = self._configs['Print P2 packets']
+        self._configs['Print P2 packets'] = not current
+        status = "ENABLED" if self._configs['Print P2 packets'] else "DISABLED"
+        print(f"[CONFIG] Print P2 packets: {status}")
+        return self._configs['Print P2 packets']
+
+    def _modify_configs_interactive(self):
+        """Modify the dispatcher configurations interactively."""
+        while True:
+            print("\nCurrent configurations:")
+            config_keys = list(self._configs.keys())
+            for i, key in enumerate(config_keys, start=1):
+                print(f"  {i}. {key}: {self._configs[key]}")
+            print("  0. Exit")
+            
+            choice = input("\nSelect configuration number to modify: ").strip()
+            
+            if choice == '0':
+                break
+            
+            try:
+                choice_idx = int(choice) - 1
+                if choice_idx < 0 or choice_idx >= len(config_keys):
+                    print(f"Invalid choice. Please select a number between 0 and {len(config_keys)}")
+                    continue
+                
+                key = config_keys[choice_idx]
+                current_value = self._configs[key]
+                
+                if isinstance(current_value, bool):
+                    self._configs[key] = not current_value
+                    print(f"Updated {key} to {self._configs[key]}")
+                else:
+                    new_value = input(f"Enter new value for {key} (current: {current_value}): ")
+                    if new_value.lower() == 'true':
+                        self._configs[key] = True
+                    elif new_value.lower() == 'false':
+                        self._configs[key] = False
+                    else:
+                        self._configs[key] = new_value
+                    print(f"Updated {key} to {self._configs[key]}")
+                    
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
     def interactive_mode(self):
-        self._interactive_ui({})
+        self._interactive_ui({
+            'Toggle print P2 packets': ('Toggle printing of raw P2 packets with timestamps', self._toggle_print_p2_packets),
+            'Modify dispatcher configurations': ('Modify dispatcher configurations interactively', self._modify_configs_interactive),
+        })
 
 
 if __name__ == '__main__':
