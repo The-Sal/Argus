@@ -26,7 +26,7 @@ class IPSafety:
         """
         response = self.session.get('https://ipinfo.io/json', headers=self.get_auth_headers(self))
         response.raise_for_status()
-        return response.jsonx()
+        return response.json()
 
     def is_ip_in_bad_region(self, ip_info: dict) -> bool:
         """
