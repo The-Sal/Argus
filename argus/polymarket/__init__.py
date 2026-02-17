@@ -1190,6 +1190,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             duration_minutes = duration.total_seconds() / 60
 
             # Determine variant based on duration
+
+            # 5-minute markets: ~5 minutes
+            if 3 <= duration_minutes <= 7:
+                return 'fiveminute'
+
             # 15-minute markets: ~15 minutes
             if 10 <= duration_minutes <= 20:
                 return 'fifteen'
