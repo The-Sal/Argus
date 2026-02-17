@@ -39,6 +39,7 @@ from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
+from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
@@ -461,7 +462,19 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # Callbacks
     #######################################
     def _handle_incoming_packets(self, client_socket: socket.socket, address, data: bytes):
-        packets = decode_multiple_packets(data)
+        try:
+            packets = decode_multiple_packets(data)
+        except Exception as e:
+            logging.error("Failed to decode incoming data from client %s: %s. Data: %s", address, e, data)
+            response = {
+                'action': None,
+                'data': None,
+                'error': f"Failed to decode incoming data: {str(e)}. YOU ARE NOT ENCODING PROPERLY OR YOU SENT MALFORMED DATA. Data must be encoded with the P1 protocol (JSON) and then P1 packet encoded. Original error: {str(e)}"
+            }
+            response_bytes = encode_packet(json.dumps(response).encode('utf-8'))
+            client_socket.sendall(response_bytes)
+            return
+
         for packet in packets:
             content = json.loads(packet.decode('utf-8'))
             logging.debug("Received data from Polymarket client: %s", content)
@@ -984,7 +997,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             f"clob_id '{clob_id}' not found in any market outcomes."
         )
 
-    def _handle_get_price_to_beat(self, args_obj: ArgsObject):
+    def _handle_get_price_to_beat_inner(self, args_obj: ArgsObject):
         """
         Handle request to get the price to beat for an Up/Down market.
 
@@ -1052,7 +1065,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
 
         # Import UnsafePolyMarket here to avoid circular imports
-        from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 
         unsafe_api = UnsafePolyMarket()
 
@@ -1132,6 +1144,24 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 f"Scraper error: {scraper_error}. "
                 f"Crypto API error: {str(e)}"
             )
+
+    def _handle_get_price_to_beat(self, args_obj: ArgsObject):
+        """
+        Wrapper for _handle_get_price_to_beat_inner to add retry logic
+        """
+        max_tries = 5
+        for attempt in range(1, max_tries + 1):
+            time.sleep(attempt*0.5)
+            logging.info(f"Attempt {attempt} to get price to beat for ticker '{args_obj.args[0]}'")
+            try:
+                return self._handle_get_price_to_beat_inner(args_obj)
+            except PolyMarketDispatcherError as e:
+                logging.warning(f"Attempt {attempt} to get price to beat failed: {e}")
+                if attempt >= max_tries:
+                    raise e
+
+        logging.warning('This code block should never be reached due to the retry logic, investigate if it is. pos=_handle_get_price_to_beat')
+        return None
 
     @staticmethod
     def _extract_crypto_symbol(ticker: str, market_event) -> str:
