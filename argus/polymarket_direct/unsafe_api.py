@@ -105,8 +105,6 @@ class UnsafePolyMarket:
         #     "queryHash": "[\"crypto-prices\",\"price\",\"BTC\",\"2026-02-10T21:00:00Z\",\"fifteen\",\"2026-02-10T21:15:00Z\"]"
         # }
 
-        with open('oignaogbr.json', 'w') as f:
-            json.dump(json_data, f, indent=4)
 
         props = json_data.get('props', {})
         page_props = props.get('pageProps', {})
@@ -161,6 +159,7 @@ class UnsafePolyMarket:
         event_start_time = self._format_utc_iso(start_date)
         end_date_iso = self._format_utc_iso(end_date)
         url = self.build_crypto_price_url(symbol, event_start_time, variant, end_date_iso)
+        logging.info(f"Built crypto price URL: {url}")
         response = self.session.get(url)
         if response.status_code != 200:
             raise UnableToReachPolymarket(f"Unable to reach Polymarket for URL {url}. Status code: {response.status_code}")
@@ -168,8 +167,15 @@ class UnsafePolyMarket:
         try:
             data = response.json()
             price_to_beat = data.get('priceToBeat', None)
+            open_price = data.get('openPrice', None)
             if price_to_beat is not None:
                 return price_to_beat
+            elif open_price is not None:
+                logging.warning(
+                    f"Price to beat not found in the response for URL {url}, but open price is available. "
+                    f"Using open price as a fallback. Response: {data}"
+                )
+                return open_price
             else:
                 raise UnableToReachPolymarket(f"Price to beat not found in the response for URL {url}. Response: {data}")
         except Exception as e:
@@ -210,5 +216,12 @@ if __name__ == '__main__':
     # https://polymarket.com/event/btc-updown-15m-1770757200
     # https://polymarket.com/event/btc-updown-15m-1770758100
     # https://polymarket.com/event/bitcoin-up-or-down-february-10-4pm-et
-    print(updown.get_price_to_beat("bitcoin-up-or-down-february-10-4pm-et"))
-
+    # print(updown.get_price_to_beat("bitcoin-up-or-down-february-10-4pm-et"))
+    # https://polymarket.com/event/
+    print(updown.get_price_to_beat('btc-updown-5m-1771299600'))
+    print(updown.build_crypto_price_url(
+        symbol='btc',
+        event_start_time='2026-02-17T03:25:00Z',
+        end_date='2026-02-17T03:30:00Z',
+        variant='fiveminute'
+    ))

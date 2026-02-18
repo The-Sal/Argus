@@ -39,6 +39,7 @@ from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket._classes import PolyMarketDispatcherError, InvalidArgumentError
+from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
@@ -295,6 +296,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         super().__init__()
         RoutingHelper.__init__(self)
+
+        # Configs dictionary for dispatcher settings
+        self._configs = {
+            'Print P2 packets': False,
+            'Show packet timestamps': True,
+        }
         if private_key is None:
             private_key = os.environ['POLYMARKET_PRIVATE_KEY']
 
@@ -455,7 +462,19 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # Callbacks
     #######################################
     def _handle_incoming_packets(self, client_socket: socket.socket, address, data: bytes):
-        packets = decode_multiple_packets(data)
+        try:
+            packets = decode_multiple_packets(data)
+        except Exception as e:
+            logging.error("Failed to decode incoming data from client %s: %s. Data: %s", address, e, data)
+            response = {
+                'action': None,
+                'data': None,
+                'error': f"Failed to decode incoming data: {str(e)}. YOU ARE NOT ENCODING PROPERLY OR YOU SENT MALFORMED DATA. Data must be encoded with the P1 protocol (JSON) and then P1 packet encoded. Original error: {str(e)}"
+            }
+            response_bytes = encode_packet(json.dumps(response).encode('utf-8'))
+            client_socket.sendall(response_bytes)
+            return
+
         for packet in packets:
             content = json.loads(packet.decode('utf-8'))
             logging.debug("Received data from Polymarket client: %s", content)
@@ -580,6 +599,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             market_slug=self._all_markets_cache[ticker].markets[market_index].slug,
             asset_id=asset_id
         )
+
+        # Print P2 packets if config is enabled
+        if self._configs.get('Print P2 packets', False):
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+            if self._configs.get('Show packet timestamps', True):
+                print(f"[{timestamp}] → ({len(p2_obj)} bytes): {p2_obj!r}")
+            else:
+                print(f"P2 Packet ({len(p2_obj)} bytes): {p2_obj!r}")
 
         # Broadcast P2-encoded market data to all clients subscribed to this asset_id.
         # On sent failure (dead/disconnected client), remove the socket via remove_socket()
@@ -948,19 +975,29 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     outcome = market.outcomes[outcome_index]
                 else:
                     outcome = None
+
+                aot_symbol_from_p2 = P2ConvertClass(
+                    ticker=event.ticker,
+                    market_slug=market.slug,
+                    asset_id=clob_id,
+                    market_data={},
+                    order_book_depth=0
+                )
+
                 return {
                     'event_name': event.title,
                     'market_name': market.question,
                     'outcome': outcome,
                     'ticker': event.ticker,
-                    'market_slug': market.slug
+                    'market_slug': market.slug,
+                    'aot_p2_symbol': aot_symbol_from_p2.symbol
                 }
 
         raise PolyMarketDispatcherError(
             f"clob_id '{clob_id}' not found in any market outcomes."
         )
 
-    def _handle_get_price_to_beat(self, args_obj: ArgsObject):
+    def _handle_get_price_to_beat_inner(self, args_obj: ArgsObject):
         """
         Handle request to get the price to beat for an Up/Down market.
 
@@ -1028,7 +1065,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
 
         # Import UnsafePolyMarket here to avoid circular imports
-        from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 
         unsafe_api = UnsafePolyMarket()
 
@@ -1109,6 +1145,24 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 f"Crypto API error: {str(e)}"
             )
 
+    def _handle_get_price_to_beat(self, args_obj: ArgsObject):
+        """
+        Wrapper for _handle_get_price_to_beat_inner to add retry logic
+        """
+        max_tries = 5
+        for attempt in range(1, max_tries + 1):
+            time.sleep(attempt*0.5)
+            logging.info(f"Attempt {attempt} to get price to beat for ticker '{args_obj.args[0]}'")
+            try:
+                return self._handle_get_price_to_beat_inner(args_obj)
+            except PolyMarketDispatcherError as e:
+                logging.warning(f"Attempt {attempt} to get price to beat failed: {e}")
+                if attempt >= max_tries:
+                    raise e
+
+        logging.warning('This code block should never be reached due to the retry logic, investigate if it is. pos=_handle_get_price_to_beat')
+        return None
+
     @staticmethod
     def _extract_crypto_symbol(ticker: str, market_event) -> str:
         """
@@ -1166,6 +1220,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             duration_minutes = duration.total_seconds() / 60
 
             # Determine variant based on duration
+
+            # 5-minute markets: ~5 minutes
+            if 3 <= duration_minutes <= 7:
+                return 'fiveminute'
+
             # 15-minute markets: ~15 minutes
             if 10 <= duration_minutes <= 20:
                 return 'fifteen'
@@ -1440,8 +1499,58 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     def run(self):
         self.dispatcher_svr.start()
 
+    def _toggle_print_p2_packets(self):
+        """Toggle the printing of raw P2 packets with timestamps."""
+        current = self._configs['Print P2 packets']
+        self._configs['Print P2 packets'] = not current
+        status = "ENABLED" if self._configs['Print P2 packets'] else "DISABLED"
+        print(f"[CONFIG] Print P2 packets: {status}")
+        return self._configs['Print P2 packets']
+
+    def _modify_configs_interactive(self):
+        """Modify the dispatcher configurations interactively."""
+        while True:
+            print("\nCurrent configurations:")
+            config_keys = list(self._configs.keys())
+            for i, key in enumerate(config_keys, start=1):
+                print(f"  {i}. {key}: {self._configs[key]}")
+            print("  0. Exit")
+            
+            choice = input("\nSelect configuration number to modify: ").strip()
+            
+            if choice == '0':
+                break
+            
+            try:
+                choice_idx = int(choice) - 1
+                if choice_idx < 0 or choice_idx >= len(config_keys):
+                    print(f"Invalid choice. Please select a number between 0 and {len(config_keys)}")
+                    continue
+                
+                key = config_keys[choice_idx]
+                current_value = self._configs[key]
+                
+                if isinstance(current_value, bool):
+                    self._configs[key] = not current_value
+                    print(f"Updated {key} to {self._configs[key]}")
+                else:
+                    new_value = input(f"Enter new value for {key} (current: {current_value}): ")
+                    if new_value.lower() == 'true':
+                        self._configs[key] = True
+                    elif new_value.lower() == 'false':
+                        self._configs[key] = False
+                    else:
+                        self._configs[key] = new_value
+                    print(f"Updated {key} to {self._configs[key]}")
+                    
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
     def interactive_mode(self):
-        self._interactive_ui({})
+        self._interactive_ui({
+            'Toggle print P2 packets': ('Toggle printing of raw P2 packets with timestamps', self._toggle_print_p2_packets),
+            'Modify dispatcher configurations': ('Modify dispatcher configurations interactively', self._modify_configs_interactive),
+        })
 
 
 if __name__ == '__main__':
