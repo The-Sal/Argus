@@ -7,7 +7,6 @@ import traceback
 from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
-from py_order_utils.signer import Signer
 from py_order_utils.model import OrderData
 from py_clob_client.constants import ZERO_ADDRESS
 from py_clob_client import BalanceAllowanceParams
