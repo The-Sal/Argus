@@ -277,7 +277,7 @@ class PolyRestAPI:
             E.g. {'errorMsg': '', 'orderID': '0xxxxxx', 'takingAmount': '', 'makingAmount': '', 'status': 'live', 'success': True}
         """
 
-        with Timer(logging.info("Time taken to build order: %.2f seconds")):
+        with Timer(lambda x: logging.info('place_order took %.2f seconds', x)):
             order = self.build_order(
                 token_id=token_id,
                 market=market,
