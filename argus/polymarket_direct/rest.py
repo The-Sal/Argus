@@ -277,7 +277,9 @@ class PolyRestAPI:
             E.g. {'errorMsg': '', 'orderID': '0xxxxxx', 'takingAmount': '', 'makingAmount': '', 'status': 'live', 'success': True}
         """
 
-        with Timer(lambda x: logging.info('place_order took %.2f seconds', x)):
+        time_taken_break_down = []
+
+        with Timer(lambda x: time_taken_break_down.append(x)):
             order = self.build_order(
                 token_id=token_id,
                 market=market,
@@ -286,10 +288,12 @@ class PolyRestAPI:
                 side=side
             )
 
-        result = self.clob.post_order(
-            order=order,
-            orderType=order_type
-        )
+        with Timer(lambda x: time_taken_break_down.append(x)):
+            result = self.clob.post_order(
+                order=order,
+                orderType=order_type
+            )
+
         logging.info('Order placed: %s', result)
         if result['success']:
             order_id = result['orderID']
@@ -303,7 +307,12 @@ class PolyRestAPI:
                 'order_type': order_type,
                 'result': result
             }
+            total_time_taken = sum(time_taken_break_down)
             print(qw, colored(f"Order placed successfully. Order ID: {order_id}", 'green', attrs=['bold']))
+            msg = f"{qw} Latency breakdown for placing order:\n"
+            msg += f"{qw}  ({(time_taken_break_down[0]/total_time_taken)*100}%) Building order: {time_taken_break_down[0]:.2f} seconds\n"
+            msg += f"{qw}  ({(time_taken_break_down[1]/total_time_taken)*100}%) Posting order: {time_taken_break_down[1]:.2f} seconds\n"
+            print(colored(msg, 'yellow'))
         else:
             raise OrderException(f"Failed to place order: {result.get('errorMsg', 'Unknown error')}, response={result}")
 
