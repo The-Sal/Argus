@@ -8,15 +8,14 @@ Tests each available WireGuard configuration by:
 4. Comparing results and displaying best performer
 """
 
-import sys
 import json
 import time
 import socket
 import subprocess
 import statistics
 from termcolor import colored
+from argus.wireproxy import WireProxy
 from typing import Dict, List, Optional, Tuple
-from argus.wireproxy import WireProxy, WireProxyServer
 from argus.wireproxy.__main__ import send_server_command, ensure_daemon_running, check_daemon_running
 
 
