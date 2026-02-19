@@ -4,6 +4,7 @@ import logging
 import requests
 import functools
 import traceback
+from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
 from py_clob_client import BalanceAllowanceParams
@@ -14,6 +15,7 @@ from py_clob_client.order_builder.constants import BUY, SELL
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
+
 
 
 REST_CACHE = DomainCache('polymarket_direct.rest')
@@ -274,13 +276,16 @@ class PolyRestAPI:
         :return: A dictionary containing the result of the order placement.
             E.g. {'errorMsg': '', 'orderID': '0xxxxxx', 'takingAmount': '', 'makingAmount': '', 'status': 'live', 'success': True}
         """
-        order = self.build_order(
-            token_id=token_id,
-            market=market,
-            price=price,
-            size=size,
-            side=side
-        )
+
+        with Timer(logging.info("Time taken to build order: %.2f seconds")):
+            order = self.build_order(
+                token_id=token_id,
+                market=market,
+                price=price,
+                size=size,
+                side=side
+            )
+
         result = self.clob.post_order(
             order=order,
             orderType=order_type

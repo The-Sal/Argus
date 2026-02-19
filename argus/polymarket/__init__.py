@@ -628,6 +628,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 self.remove_socket(sock)
                 traceback.print_exc()
 
+    #######################################
+    # MAIN CLIENT MESSAGE HANDLER
+    #######################################
     def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
         with Timer(lambda x: print_with_name(f"Handled client message in {x:.4f} seconds: {content}")):
             _ = address
