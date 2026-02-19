@@ -534,6 +534,7 @@ class WireProxy:
                 print("  (Daemon is running but no WireProxy instance is active)")
 
     def command_line(self):
+        from argus.wireproxy.brute_polymarket import brute_polymarket_configs
         commands = [
             ('Add Config', 'Add a WireGuard configuration to Argus', self._add_confs),
             ('Bulk Import', 'Import all configs from a directory', self._bulk_import),
@@ -542,6 +543,7 @@ class WireProxy:
             ('Start Server', 'Start the WireProxy server', self._start_server_interactive),
             ('Stop Server', 'Stop the WireProxy server', self._stop_server_interactive),
             ('Server Status', 'Check WireProxy server status', self._server_status_interactive),
+            ('Polymarket Benchmark', 'Benchmark all configs against dispatcher URLs', brute_polymarket_configs)
         ]
 
         while True:

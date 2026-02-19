@@ -11,6 +11,7 @@ Usage:
     python3 -m argus.wireproxy --start-server <conf> # Start WireProxy server
     python3 -m argus.wireproxy --stop-server # Stop WireProxy server
     python3 -m argus.wireproxy --server-status # Check server status
+    python3 -m argus.wireproxy --brute-polymarket # Test all VPNs against Polymarket
 """
 
 import sys
@@ -178,6 +179,12 @@ Examples:
         help='Run the WireProxyServer daemon (keeps running until stopped)'
     )
 
+    parser.add_argument(
+        '--brute-polymarket',
+        action='store_true',
+        help='Test all VPN configurations against Polymarket geoblock endpoint'
+    )
+
     args = parser.parse_args()
 
     # Initialize WireProxy
@@ -285,6 +292,10 @@ Examples:
             if result.get('log_file'):
                 print(f"  Log File: {result.get('log_file')}")
             sys.exit(0)
+
+    elif args.brute_polymarket:
+        from argus.wireproxy.brute_polymarket import brute_polymarket_configs
+        sys.exit(brute_polymarket_configs())
 
     elif args.server_status:
         # Check if daemon is running first
