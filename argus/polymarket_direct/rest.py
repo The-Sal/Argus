@@ -7,12 +7,18 @@ import traceback
 from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
+from py_order_utils.model import OrderData
+from py_clob_client.constants import ZERO_ADDRESS
 from py_clob_client import BalanceAllowanceParams
 from argus.polymarket_direct.safe import IPSafety
+from concurrent.futures import ThreadPoolExecutor
 from argus.wireproxy import wrapper as wp_wrappers
+from py_clob_client.config import get_contract_config
 from argus.polymarket_direct import _types as pm_types
 from py_clob_client.order_builder.constants import BUY, SELL
+from py_clob_client.order_builder.builder import ROUNDING_CONFIG
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
+from py_order_utils.builders.order_builder import OrderBuilder as UtilsOrderBuilder
 from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
 
@@ -25,9 +31,6 @@ endpoints = {
     'page_data': 'https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json'
 }
 qw = '[{}]'.format(__name__)
-
-
-
 
 
 def retry(max_attempts=3, delay=0.35):
@@ -55,6 +58,7 @@ def retry(max_attempts=3, delay=0.35):
             return None
 
         return wrapper
+
     return decorator
 
 
@@ -109,14 +113,19 @@ class PolyRestAPI:
                 - 'traceback': The traceback string of the exception
 
         """
+
         self.private_key = private_key
         self.proxy_funder = proxy_funder
         self.session = requests.Session()
         wp_wrappers.update_request_session_proxy(idx='POLYMARKET', session=self.session)
         self._make_httpx_clob_client()
         self.safety = IPSafety()
+        self._thread_pool = ThreadPoolExecutor(max_workers=5)
 
         if os.environ.get('POLYMARKET_NO_SAFETY_CHECK', 'false') != 'true': self.ip_safety_check()
+
+        self._rapid_order_build = os.environ.get('POLYMARKET_RAPID_ORDER_BUILD', 'false') == 'true'
+
         self.clob = ClobClient(host, key=private_key, chain_id=chain_id, signature_type=1, funder=proxy_funder)
         self.clob.set_api_creds(self._create_or_derive_api_creds())
         self._div = divisor
@@ -328,6 +337,14 @@ class PolyRestAPI:
         type_side = mapped.get(side.lower())
         if type_side is None:
             raise ValueError("side must be either 'buy' or 'sell'")
+
+        if self._rapid_order_build:
+            logging.warning("Using rapid order builder for order creation. "
+                            "This may lead to faster order placements but could cause issues if the underlying "
+                            "assumptions about tick size and fee rate retrieval are violated. "
+                            "Make sure you understand the implications of this setting.")
+            return self._rapid_order_builder(token_id, market, price, size, type_side)
+
         order = self.clob.create_order(
             order_args=OrderArgs(
                 token_id=token_id,
@@ -342,6 +359,55 @@ class PolyRestAPI:
         )
 
         return order
+
+    def _rapid_order_builder(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float,
+                             side: str):
+        """
+        A more rapid order builder
+        """
+
+        # make these two calls on thread pools since they are independent and can be done in parallel to save time
+        tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
+        fee_rate_future = self._thread_pool.submit(self.clob.get_fee_rate_bps, token_id)
+
+        builder = self.clob.builder
+        neg_risk = market.negRisk
+        side = side.upper()
+        if side != 'BUY' and side != 'SELL':
+            raise ValueError("side must be either 'buy' or 'sell'")
+
+        side, maker_amount, taker_amount = builder.get_order_amounts(
+            side,
+            size,
+            price,
+            ROUNDING_CONFIG[tick_size_future.result()],
+        )
+
+        data = OrderData(
+            maker=builder.funder,
+            taker=ZERO_ADDRESS,
+            tokenId=token_id,
+            makerAmount=str(maker_amount),
+            takerAmount=str(taker_amount),
+            side=side,
+            feeRateBps=str(fee_rate_future.result()),
+            nonce=str(OrderArgs.nonce),
+            signer=builder.signer.address(),
+            expiration=str(OrderArgs.expiration),
+            signatureType=builder.sig_type,
+        )
+
+        contract_config = get_contract_config(
+            builder.signer.get_chain_id(), neg_risk
+        )
+
+        order_builder = UtilsOrderBuilder(
+            contract_config.exchange,
+            builder.signer.get_chain_id(),
+            builder.signer,
+        )
+
+        return order_builder.build_signed_order(data)
 
     @fatal_decorator('cancel_order')
     def cancel_order(self, order_id: str) -> dict:
@@ -424,6 +490,3 @@ class PolyRestAPI:
             "secret": creds.api_secret,
             "passphrase": creds.api_passphrase,
         }
-
-
-

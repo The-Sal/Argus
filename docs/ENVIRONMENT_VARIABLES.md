@@ -2,7 +2,7 @@
 
 This document lists all environment variables used throughout the Argus project and their purposes.
 
-## Polymarket Direct Integration
+## Polymarket 
 
 ### `POLYMARKET_PRIVATE_KEY`
 - **Purpose**: Private key for Polymarket authentication
@@ -139,6 +139,15 @@ This document lists all environment variables used throughout the Argus project 
 - **Required**: No
 - **Used in**: `polymarket_direct/rest.py`
 - **Behavior**: When `true`, triggers fuss notifications and macOS notifications for user account events received via WebSocket
+
+### `POLYMARKET_RAPID_ORDER_BUILD`
+- **Purpose**: Enable rapid order builder that reduces order placement latency by ~50%
+- **Default**: `false`
+- **Required**: No
+- **Used in**: `polymarket_direct/rest.py`
+- **Behavior**: When `true`, uses parallel API calls and bypasses SDK overhead for faster order building. Fetches tick_size and fee_rate concurrently via thread pool instead of sequentially
+- **Performance**: Reduces "building order" phase from ~0.23s to ~0.11s (~52% faster)
+- **Warning**: A warning is logged when enabled to alert users of potential risks if assumptions about tick size/fee rate are violated
 
 ### `MAX_SEEN_CORRELATION_IDS`
 - **Purpose**: Maximum number of seen correlation IDs to track for duplicate detection
