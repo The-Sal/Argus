@@ -369,13 +369,15 @@ class PolyMarketOrderBookWss:
         # how_long.stop()
 
     def _on_close(self, ws, close_status_code, close_msg):
-        self._defer_restore_state()
         self._allow_ping = False
         _ = ws
         logging.warning('Polymarket Order Book WebSocket closed. Code: %s, Message: %s', close_status_code,
                         close_msg)
         print("Attempting to reconnect Polymarket Order Book WebSocket...")
         if not self._internally_closed:
+            self._reset_threading_events()
+            self._defer_restore_state()
+
             self._reconnect_attempts += 1
             if self._reconnect_attempts > self._max_reconnect_attempts:
                 logging.error('Maximum reconnect attempts reached for Polymarket Order Book WebSocket. Giving up.')
@@ -386,6 +388,7 @@ class PolyMarketOrderBookWss:
 
     def _on_open(self, ws):
         _ = ws
+        self._reconnect_attempts = 0
         logging.info('Polymarket Order Book WebSocket opened.')
         initial_msg = json.dumps({"assets_ids": [], "type": "market"})
         self._market_ws.send(initial_msg)
@@ -527,7 +530,16 @@ class PolyMarketOrderBookWss:
         to previously subscribed asset IDs. Should only be called internally after a disconnect.
         :return:
         """
-        pass
+
+        self.wait_till_first_pong.wait()
+        asset_ids = self.asset_ids
+        if asset_ids:
+            logging.info('Restoring Polymarket Order Book WebSocket subscriptions for asset IDs: %s', asset_ids)
+            for asset_id in asset_ids:
+                self.subscribe_to_asset_id(asset_id)
+        else:
+            logging.info('No asset IDs to restore for Polymarket Order Book WebSocket.')
+
 
     def order_book_for_asset_id(self, asset_id: str):
         """
