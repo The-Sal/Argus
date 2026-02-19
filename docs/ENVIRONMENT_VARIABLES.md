@@ -140,6 +140,20 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket_direct/rest.py`
 - **Behavior**: When `true`, triggers fuss notifications and macOS notifications for user account events received via WebSocket
 
+### `MAX_SEEN_CORRELATION_IDS`
+- **Purpose**: Maximum number of seen correlation IDs to track for duplicate detection
+- **Default**: `100000`
+- **Required**: No
+- **Used in**: `polymarket/_classes.py`
+- **Behavior**: Limits the size of the correlation ID tracking set to prevent memory growth
+
+### `MAX_CORRELATION_ID_LENGTH`
+- **Purpose**: Maximum length of correlation IDs to store
+- **Default**: `40`
+- **Required**: No
+- **Used in**: `polymarket/_classes.py`
+- **Behavior**: Truncates correlation IDs to this length before storage
+
 ## Interactive Brokers Integration
 
 ### `IB_COOKIE`

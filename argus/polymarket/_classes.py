@@ -235,6 +235,12 @@ class CorrelationIDChecker:
     matching engines from getting confused. This class is thread-safe and uses a lock to ensure that multiple threads
     can check correlation IDs without running into race conditions. Automatically trims the dict of seen correlation
     IDs if it exceeds a certain size to prevent memory issues.
+
+
+    WARNING: This class is not going to stay in `argus.polymarket._classes` long-term. It will be moved
+    into a shared utility module once other parts of the codebase need similar functionality. DO NOT use this
+    class directly. polymarket/__init__.py will be updated automatically with the refactor once the class is moved.
+    The point is not to depend on it via `from argus.polymarket._classes import CorrelationIDChecker`
     """
 
     def __init__(self):
