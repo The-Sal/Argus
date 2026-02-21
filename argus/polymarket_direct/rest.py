@@ -383,6 +383,16 @@ class PolyRestAPI:
             ROUNDING_CONFIG[tick_size_future.result()],
         )
 
+        contract_config = get_contract_config(
+            builder.signer.get_chain_id(), neg_risk
+        )
+
+        order_builder = UtilsOrderBuilder(
+            contract_config.exchange,
+            builder.signer.get_chain_id(),
+            builder.signer,
+        )
+
         data = OrderData(
             maker=builder.funder,
             taker=ZERO_ADDRESS,
@@ -395,16 +405,6 @@ class PolyRestAPI:
             signer=builder.signer.address(),
             expiration=str(OrderArgs.expiration),
             signatureType=builder.sig_type,
-        )
-
-        contract_config = get_contract_config(
-            builder.signer.get_chain_id(), neg_risk
-        )
-
-        order_builder = UtilsOrderBuilder(
-            contract_config.exchange,
-            builder.signer.get_chain_id(),
-            builder.signer,
         )
 
         return order_builder.build_signed_order(data)
