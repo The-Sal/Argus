@@ -6,8 +6,8 @@ import threading
 import traceback
 from utils3 import runAsThread
 from websocket import WebSocketApp
-from argus.polymarket_direct import _types as pm_types
 from argus.wireproxy import wrapper as wp_wrappers
+from argus.polymarket_direct import _types as pm_types
 from argus.polymarket_direct.order_types import OrderEvent
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 
