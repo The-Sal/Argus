@@ -145,12 +145,16 @@ class PolymarketWSSBase:
 
                             ping_delta = abs(pings - pongs)
                             if ping_delta > 3:
-                                logging.warning('No PONG received for last 3 PINGs on %s WebSocket. Maximum delta=%d',
-                                                self._name, self._max_ping_pong_failures)
+                                logging.warning('No PONG received for last 3 PINGs on %s WebSocket. Maximum delta=%d Current delta=%d',
+                                                self._name, self._max_ping_pong_failures, ping_delta)
 
                             if ping_delta >= self._max_ping_pong_failures:
                                 logging.error(
                                     'Maximum PING-PONG failures reached. Reconnecting %s WebSocket...', self._name
+                                )
+                                throw_fuss(
+                                    msg=f"{self._name.upper()} WEBSOCKET PING-PONG FAILURE: No PONG received for {ping_delta} PINGs.",
+                                    notify=True
                                 )
                                 self._ws.close()
                     else:
