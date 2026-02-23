@@ -38,12 +38,12 @@ from argus.cache_sys import DomainCache, FastCache
 from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 from argus.polymarket._classes import (PolyMarketDispatcherError, InvalidArgumentError, RoutingHelper,
                                        ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker)
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')

@@ -4,25 +4,25 @@ import logging
 import requests
 import functools
 import traceback
-
-from py_clob_client.clob_types import PostOrdersArgs
 from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
-from py_order_utils.model import OrderData, SignedOrder
 from py_clob_client.constants import ZERO_ADDRESS
 from py_clob_client import BalanceAllowanceParams
 from argus.polymarket_direct.safe import IPSafety
 from concurrent.futures import ThreadPoolExecutor
 from argus.wireproxy import wrapper as wp_wrappers
+from py_clob_client.clob_types import PostOrdersArgs
 from py_clob_client.config import get_contract_config
 from argus.polymarket_direct import _types as pm_types
+from py_order_utils.model import OrderData, SignedOrder
 from py_clob_client.order_builder.constants import BUY, SELL
 from py_clob_client.order_builder.builder import ROUNDING_CONFIG
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_order_utils.builders.order_builder import OrderBuilder as UtilsOrderBuilder
 from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
+
 
 
 
