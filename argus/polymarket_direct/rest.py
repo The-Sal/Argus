@@ -4,10 +4,12 @@ import logging
 import requests
 import functools
 import traceback
+
+from py_clob_client.clob_types import PostOrdersArgs
 from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
-from py_order_utils.model import OrderData
+from py_order_utils.model import OrderData, SignedOrder
 from py_clob_client.constants import ZERO_ADDRESS
 from py_clob_client import BalanceAllowanceParams
 from argus.polymarket_direct.safe import IPSafety
@@ -326,6 +328,55 @@ class PolyRestAPI:
             raise OrderException(f"Failed to place order: {result.get('errorMsg', 'Unknown error')}, response={result}")
 
         return result
+
+    @fatal_decorator('place_built_orders')
+    def place_built_orders(self, orders: list[SignedOrder], order_type: OrderType = OrderType.GTC) -> dict:
+        """
+        Place already built and signed orders on the Polymarket CLOB.
+        :param order_type: The type of the orders (default: GTC).
+        :param orders: A list of already built and signed orders to place.
+        :return: The result from the CLOB API, containing order placement results.
+        """
+        postable_orders = map(lambda x: PostOrdersArgs(order=x, orderType=order_type), orders)
+        post: list[dict] = self.clob.post_orders(list(postable_orders))
+        # Example Response:
+        # [
+        #    {
+        #       "errorMsg":"invalid amount for a marketable BUY order ($0.01), min size: $1",
+        #       "orderID":"",
+        #       "takingAmount":"",
+        #       "makingAmount":"",
+        #       "status":"",
+        #       "success":true
+        #    }
+        #    ....
+        # ]
+
+        success = []
+        failed = []
+        for msg in post:
+            if msg['errorMsg']:
+                logging.warning('Failed to post built and signed order: %s', msg['errorMsg'])
+                failed.append(msg)
+            else:
+                order_id = msg.get('orderID', 'Unknown ID')
+                throw_fuss(
+                    msg=colored("Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id), 'green', attrs=['bold']),
+                    title="Successfully Posted Built and Signed Orders",
+                    notify=False
+                )
+                macos_notification_with_custom_sound(
+                    title="Successfully Posted Built and Signed Order",
+                    message="Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id),
+                    sound_name="Glass"
+                )
+                logging.info('Successfully posted built and signed order: %s', msg)
+                success.append(msg)
+
+        return {
+            'success': success,
+            'failed': failed
+        }
 
     @fatal_decorator('build_order')
     def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str):

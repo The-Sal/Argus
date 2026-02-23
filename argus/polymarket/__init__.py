@@ -43,6 +43,7 @@ from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPo
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 from argus.polymarket._classes import (PolyMarketDispatcherError, InvalidArgumentError, RoutingHelper,
                                        ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker)
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
@@ -469,6 +470,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
                 # Order Management
                 'place_order': self._handle_place_order,
+                'place_multiple_orders': self._handle_place_multiple_orders,
                 'cancel_order': self._handle_cancel_order,
                 'get_order_status': self._handle_get_order_status,
                 'get_orders': self._handle_get_orders,
@@ -1179,6 +1181,97 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             size=float(size),
             side=str(side),
         )
+        return result
+
+    def _handle_place_multiple_orders(self, args_obj: ArgsObject):
+        """
+        Handle multiple order placements in a single request. Expects a list of orders in the arguments,
+        where each order contains the same fields as required by _handle_place_order. This method builds
+        all orders concurrently using a thread pool, then places them as a batch via the REST API.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be a dict with:
+                'orders' (list): A list of order dicts, each containing:
+                    'token_id' (str): The asset_id / clob_id to trade.
+                    'price' (float): The price at which to place the order.
+                    'size' (float): The size (number of contracts) of the order.
+                    'side' (str): The side of the order ('buy' or 'sell').
+        :return: Dict from the CLOB API containing the batch order placement results.
+        """
+
+        args = args_obj.args
+        orders_list = args.get('orders', [])
+
+        if not orders_list:
+            raise InvalidArgumentError("'orders' list is required and cannot be empty for place_multiple_orders.")
+
+        if not isinstance(orders_list, list):
+            raise InvalidArgumentError("'orders' must be a list of order dictionaries.")
+
+        # Validate each order and resolve markets first (sequential since it uses cache)
+        order_specs = []
+        for order in orders_list:
+            token_id = order.get('token_id', None)
+            if token_id is None:
+                raise InvalidArgumentError("Each order must have a 'token_id' field.")
+
+            price = order.get('price', None)
+            if price is None:
+                raise InvalidArgumentError("Each order must have a 'price' field.")
+
+            size = order.get('size', None)
+            if size is None:
+                raise InvalidArgumentError("Each order must have a 'size' field.")
+
+            side = order.get('side', None)
+            if side is None:
+                raise InvalidArgumentError("Each order must have a 'side' field.")
+
+            market = self._resolve_market_from_token_id(token_id)
+            order_specs.append({
+                'token_id': token_id,
+                'market': market,
+                'price': float(price),
+                'size': float(size),
+                'side': str(side)
+            })
+
+        # Build orders concurrently using thread pool since build_order involves HTTP requests
+        built_orders = []
+        build_errors = []
+
+        with ThreadPoolExecutor(max_workers=min(len(order_specs), 10)) as executor:
+            future_to_order = {
+                executor.submit(
+                    self.rest_api.build_order,
+                    spec['token_id'],
+                    spec['market'],
+                    spec['price'],
+                    spec['size'],
+                    spec['side']
+                ): spec for spec in order_specs
+            }
+
+            for future in as_completed(future_to_order):
+                spec = future_to_order[future]
+                try:
+                    signed_order = future.result()
+                    built_orders.append(signed_order)
+                except Exception as e:
+                    build_errors.append({
+                        'token_id': spec['token_id'],
+                        'error': str(e)
+                    })
+
+        if build_errors:
+            raise PolyMarketDispatcherError(
+                f"Failed to build {len(build_errors)} order(s): {build_errors}"
+            )
+
+        if not built_orders:
+            raise PolyMarketDispatcherError("No orders were built successfully.")
+
+        result = self.rest_api.place_built_orders(built_orders)
         return result
 
     def _handle_cancel_order(self, args_obj: ArgsObject):
