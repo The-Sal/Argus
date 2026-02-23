@@ -61,7 +61,9 @@ def _make_httpx_clob_client():
 
 class EnhancedPM:
     """
-    A direct Polymarket integration that aims to fill the gaps left by the official py_clob_client.
+
+    WARNING: THIS CLASS WILL BE DEPRECIATED SOON.
+
     """
 
     def __init__(self,
@@ -69,6 +71,11 @@ class EnhancedPM:
                  host='https://clob.polymarket.com',
                  chain_id=137, order_book_depth=1, dry_mode='XXX',
                  max_socket_retries=100):
+
+        logging.warning(
+            "The 'EnhancedPM' class in 'argus.polymarket_direct' is deprecated and will be removed in a future release. "
+            "Please use the dispatcher (PolymarketDispatcher) or move towards the modules (rest.py/wss.py) of polymarket_direct"
+        )
 
         if dry_mode != 'XXX':
             msg = ("In Argus version 0.0.9 `dry_mode` parameter will be depreciated. You have"
