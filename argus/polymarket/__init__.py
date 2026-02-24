@@ -102,6 +102,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._configs = {
             'Print P2 packets': False,
             'Show packet timestamps': True,
+            'Show P1 Packets': False,
         }
         if private_key is None:
             private_key = os.environ['POLYMARKET_PRIVATE_KEY']
@@ -311,6 +312,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 if correlation_id is not None:
                     msg['correlation_id'] = correlation_id
                 response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
+
+            if self._configs['Show P1 Packets']:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                if self._configs.get('Show packet timestamps', True):
+                    print(f"[{timestamp}] → ({len(response_bytes)} bytes): {response_bytes!r}")
+                else:
+                    print(f"P1 Packet ({len(response_bytes)} bytes): {response_bytes!r}")
 
             client_socket.sendall(response_bytes)
 
