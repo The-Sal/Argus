@@ -30,6 +30,8 @@ import traceback
 import subprocess
 import dataclasses
 from datetime import datetime
+
+from termcolor import colored
 from utils3 import runAsThread, Timer
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
@@ -1352,6 +1354,20 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         balance = self.rest_api.get_balance()
         return balance
 
+    def _handle_cancel_all_open_orders(self, args_obj: ArgsObject):
+        """
+        Handle a request to cancel all open orders for the account. Delegates to the REST API's
+        cancel_all_open_orders which returns a dict containing lists of canceled and not canceled order IDs.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be empty (no arguments required).
+        :return: Dict from the CLOB API, e.g.:
+            {'not_canceled': {'0x...': 'reason'}, 'canceled': ['0x...', '0x...']}
+        """
+        _ = args_obj
+        result = self.rest_api.cancel_all()
+        return result
+
     ########################################
     # Utilities
     ########################################
@@ -1469,15 +1485,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._interactive_ui({
             'Toggle print P2 packets': ('Toggle printing of raw P2 packets with timestamps',
                                         self._toggle_print_p2_packets),
-
             'Modify dispatcher configurations': ('Modify dispatcher configurations interactively',
                                                  self._modify_configs_interactive),
-
             'Clear console': ('Clear the console output', lambda: subprocess.check_call(['clear'])),
-
             'Clear correlation ids': ('Clear all correlation IDs from the dispatcher cache',
-                                      self._correlation_id_checker.clear_seen_ids)
-
+                                      self._correlation_id_checker.clear_seen_ids),
+            'Get all open orders': ('Fetch and display all open orders for the account', lambda: print(json.dumps(self._handle_get_orders(ArgsObject(args=[], sock=None)), indent=4))),
+            'Cancel all open orders': ('Cancel all open orders for the account', lambda: print(colored(json.dumps(self._handle_cancel_all_open_orders(ArgsObject(args=[], sock=None)), indent=4), color='yellow'))),
         })
 
 

@@ -539,6 +539,10 @@ class PolyRestAPI:
         balance = float(self.clob.get_balance_allowance(BalanceAllowanceParams(asset_type='COLLATERAL'))['balance'])
         return balance / self._div
 
+    @fatal_decorator('cancel_all')
+    def cancel_all(self):
+        return self.clob.cancel_all()
+
     @property
     def order_cache(self):
         """
@@ -559,3 +563,4 @@ class PolyRestAPI:
             "secret": creds.api_secret,
             "passphrase": creds.api_passphrase,
         }
+
