@@ -34,6 +34,13 @@ endpoints = {
 }
 qw = '[{}]'.format(__name__)
 
+class _FakeFuture:
+    def __init__(self, result):
+        self._result = result
+
+    def result(self):
+        return self._result
+
 
 def retry(max_attempts=3, delay=0.35):
     """Retry decorator for methods that may fail due to eventual consistency.
@@ -275,7 +282,7 @@ class PolyRestAPI:
 
     @fatal_decorator('place_order')
     def place_order(self, token_id: str, market: pm_types.PolymarketEvent,
-                    price: float, size: float, side: str, order_type: OrderType = OrderType.GTC) -> dict:
+                    price: float, size: float, side: str, order_type: OrderType = OrderType.GTC, tick_size: float = None) -> dict:
         """
         Place an order on the Polymarket CLOB.
         :param order_type: The type of the order (default: GTC).
@@ -284,6 +291,7 @@ class PolyRestAPI:
         :param price: The price at which to place the order.
         :param size: The size of the order.
         :param side: The side of the order ('buy' or 'sell').
+        :param tick_size: The tick size for the order. If not provided, it will be fetched from the CLOB.
         :return: A dictionary containing the result of the order placement.
             E.g. {'errorMsg': '', 'orderID': '0xxxxxx', 'takingAmount': '', 'makingAmount': '', 'status': 'live', 'success': True}
         """
@@ -296,7 +304,8 @@ class PolyRestAPI:
                 market=market,
                 price=price,
                 size=size,
-                side=side
+                side=side,
+                tick_size=tick_size
             )
 
         with Timer(lambda x: time_taken_break_down.append(x)):
@@ -306,7 +315,9 @@ class PolyRestAPI:
             )
 
         logging.info('Order placed: %s', result)
-        if result['success']:
+        if result['errorMsg'] == '' and result['success']:
+            # the success is always true even when there is a failure
+            # to submit the order
             order_id = result['orderID']
             self._order_cache['orders'].append(result)
             self._order_cache[order_id] = {
@@ -379,8 +390,11 @@ class PolyRestAPI:
         }
 
     @fatal_decorator('build_order')
-    def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str):
-        tick_size = self.get_tick_size(token_id)
+    def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str,
+                    tick_size: float = None) -> SignedOrder:
+        if tick_size is None:
+            tick_size = self.get_tick_size(token_id)
+
         mapped = {
             'buy': BUY,
             'sell': SELL
@@ -394,7 +408,7 @@ class PolyRestAPI:
                             "This may lead to faster order placements but could cause issues if the underlying "
                             "assumptions about tick size and fee rate retrieval are violated. "
                             "Make sure you understand the implications of this setting.")
-            return self._rapid_order_builder(token_id, market, price, size, type_side)
+            return self._rapid_order_builder(token_id, market, price, size, type_side, tick_size)
 
         order = self.clob.create_order(
             order_args=OrderArgs(
@@ -411,15 +425,19 @@ class PolyRestAPI:
 
         return order
 
-    def _rapid_order_builder(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float,
-                             side: str):
+    def _rapid_order_builder(self, token_id: str, market: pm_types.PolymarketEvent,
+                             price: float, size: float, side: str, tick_size: float = None):
         """
         A more rapid order builder
         """
 
         # make these two calls on thread pools since they are independent and can be done in parallel to save time
-        tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
         fee_rate_future = self._thread_pool.submit(self.clob.get_fee_rate_bps, token_id)
+        if tick_size is None:
+            tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
+        else:
+            tick_size_future = _FakeFuture(tick_size)
+
 
         builder = self.clob.builder
         neg_risk = market.negRisk

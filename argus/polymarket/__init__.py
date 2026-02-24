@@ -1173,6 +1173,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             raise InvalidArgumentError("'side' is required for place_order.")
 
         market = self._resolve_market_from_token_id(token_id)
+        tick_size = self.market_data.get_tick_size(asset_id=token_id)
 
         result = self.rest_api.place_order(
             token_id=token_id,
@@ -1180,6 +1181,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             price=float(price),
             size=float(size),
             side=str(side),
+            tick_size=tick_size
         )
         return result
 
