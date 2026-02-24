@@ -4,14 +4,16 @@ import time
 import logging
 import threading
 import traceback
+from concurrent.futures.thread import ThreadPoolExecutor
+
+import requests
+from py_clob_client.endpoints import GET_TICK_SIZE
 from utils3 import runAsThread
 from websocket import WebSocketApp
 from argus.wireproxy import wrapper as wp_wrappers
 from argus.polymarket_direct import _types as pm_types
 from argus.polymarket_direct.order_types import OrderEvent
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
-
-
 
 
 class PolymarketWSSBase:
@@ -91,13 +93,18 @@ class PolymarketWSSBase:
         self._allow_ping = False
         _ = ws
         logging.warning('%s WebSocket closed. Code: %s, Message: %s', self._name, close_status_code, close_msg)
-        print(f"Attempting to reconnect {self._name} WebSocket... {self._reconnect_attempts + 1}/{self._max_reconnect_attempts}")
+        print(
+            f"Attempting to reconnect {self._name} WebSocket... {self._reconnect_attempts + 1}/{self._max_reconnect_attempts}")
 
         if not self._internally_closed:
             self._on_reconnect_start()
             self._reconnect_attempts += 1
             if self._reconnect_attempts > self._max_reconnect_attempts:
                 logging.error('Maximum reconnect attempts reached for %s WebSocket. Giving up.', self._name)
+                throw_fuss(
+                    msg=f"{self._name.upper()} WEBSOCKET RECONNECTION FAILURE: Maximum reconnect attempts reached.",
+                    notify=True
+                )
                 return
             time.sleep(1)
             self._start_ws()
@@ -145,8 +152,9 @@ class PolymarketWSSBase:
 
                             ping_delta = abs(pings - pongs)
                             if ping_delta > 3:
-                                logging.warning('No PONG received for last 3 PINGs on %s WebSocket. Maximum delta=%d Current delta=%d',
-                                                self._name, self._max_ping_pong_failures, ping_delta)
+                                logging.warning(
+                                    'No PONG received for last 3 PINGs on %s WebSocket. Maximum delta=%d Current delta=%d',
+                                    self._name, self._max_ping_pong_failures, ping_delta)
 
                             if ping_delta >= self._max_ping_pong_failures:
                                 logging.error(
@@ -273,7 +281,20 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         # }
         # asset ID then indexes the above in the main dict below
         self._asset_id_to_order_book = {}
+        self._asset_id_to_misc_info = {}  # can be used to store other info about the asset if needed (e.g. tickSize)
+
+        # Note: tickSize is stored as a string
+
         self._order_book_update_callback = order_book_update_callback
+        self._dict_lock = threading.Lock()
+        self.session = requests.Session()
+        self._thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="PolyMarketOrderBookWssThreadPool")
+
+        wp_wrappers.update_request_session_proxy(
+            session=self.session,
+            idx='POLYMARKET',
+            verbose=False
+        )
 
         # Stats
         self._updates: list[float] = []  # timestamps of updates received
@@ -355,18 +376,38 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
 
         if event_type == 'book':
             # Snapshot: bids descending, asks ascending
-            self._asset_id_to_order_book[asset_id] = {
-                'bids': sorted(
-                    message['bids'], key=lambda x: float(x['price']), reverse=True
-                ),
-                'asks': sorted(
-                    message['asks'], key=lambda x: float(x['price'])
-                )
-            }
+            bid_sorted = sorted(message['bids'], key=lambda x: float(x['price']), reverse=True)
+            ask_sorted = sorted(message['asks'], key=lambda x: float(x['price']))
+
+            with self._dict_lock:
+                self._asset_id_to_order_book[asset_id] = {
+                    'bids': bid_sorted,
+                    'asks': ask_sorted
+                }
 
         elif event_type == 'price_change':
             # Single-asset delta
             self._update_order_book(asset_id, message)
+
+        elif event_type == 'tick_size_change':
+            # Tick size change - store in misc info dict for now, as it doesn't affect the order book structure
+            # {
+            #     "event_type": "tick_size_change",
+            #     "asset_id": "65818619657568813474341868652308942079804919287380422192892211131408793125422",
+            #     "market": "0xbd31dc8a20211944f6b70f31557f1001557b59905b7738480ca09bd4532f84af",
+            #     "old_tick_size": "0.01",
+            #     "new_tick_size": "0.001",
+            #     "timestamp": "100000000"
+            # }
+            with self._dict_lock:
+                possible_future = self._asset_id_to_misc_info.get(asset_id, {}).get('future_running')
+                if possible_future and not possible_future.done():
+                    possible_future.cancel()
+
+                self._asset_id_to_misc_info[asset_id] = {
+                    'tick_size': message.get('new_tick_size'),
+                    'future_running': None
+                }
 
         # Callback with a full book
         if self._order_book_update_callback:
@@ -375,29 +416,31 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
                 'timestamp': message['timestamp']
             })
 
+    # Warning: This method is already thread-locked. Do not call inside another lock or you will cause a deadlock.
     def _update_order_book(self, asset_id: str, change: dict) -> None:
         """Apply delta: add/update size at price, or delete if size=0."""
-        if asset_id not in self._asset_id_to_order_book:
-            return
+        with self._dict_lock:
+            if asset_id not in self._asset_id_to_order_book:
+                return
 
-        book = self._asset_id_to_order_book[asset_id]
-        price = change['price']
-        size = float(change['size']) if change['size'] != '0' else 0
-        side = 'bids' if change['side'] == 'BUY' else 'asks'
+            book = self._asset_id_to_order_book[asset_id]
+            price = change['price']
+            size = float(change['size']) if change['size'] != '0' else 0
+            side = 'bids' if change['side'] == 'BUY' else 'asks'
 
-        # Build price->size dict from the current list of dicts
-        price_to_size = {level['price']: float(level['size']) for level in book[side]}
+            # Build price->size dict from the current list of dicts
+            price_to_size = {level['price']: float(level['size']) for level in book[side]}
 
-        if size == 0:
-            price_to_size.pop(price, None)
-        else:
-            price_to_size[price] = size
+            if size == 0:
+                price_to_size.pop(price, None)
+            else:
+                price_to_size[price] = size
 
-        # Rebuild sorted list of dicts
-        book[side] = sorted(
-            [{'price': p, 'size': str(s)} for p, s in price_to_size.items()],
-            key=lambda x: float(x['price']), reverse=(side == 'bids')
-        )
+            # Rebuild sorted list of dicts
+            book[side] = sorted(
+                [{'price': p, 'size': str(s)} for p, s in price_to_size.items()],
+                key=lambda x: float(x['price']), reverse=(side == 'bids')
+            )
 
     def subscribe_to_asset_id(self, asset_id: str):
         self._ws.send(json.dumps({
@@ -405,6 +448,12 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             "type": "market",
             "operation": "subscribe"
         }))
+
+        with self._dict_lock:
+            self._asset_id_to_misc_info[asset_id] = {
+                'tick_size': None,
+                'future_running': self._future_get_tick_size(asset_id)
+            }
 
     def unsubscribe_from_asset_id(self, asset_id: str):
         """
@@ -420,8 +469,10 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             "type": "market",
             "operation": "unsubscribe"
         }))
-        if asset_id in self._asset_id_to_order_book:
-            del self._asset_id_to_order_book[asset_id]
+
+        with self._dict_lock:
+            if asset_id in self._asset_id_to_order_book:
+                del self._asset_id_to_order_book[asset_id]
 
     def subscribe_to_market(self, market: pm_types.PolymarketEvent):
         """
@@ -432,7 +483,7 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         if not market.markets:
             logging.warning('Market has no sub-markets; cannot subscribe.')
             return
-            
+
         if len(market.markets) > 1:
             logging.warning('Market has multiple sub-markets; This is unexpected behavior.')
             for m in market.markets:
@@ -442,7 +493,6 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         if first_market.clobTokenIds:
             for asset in first_market.clobTokenIds:
                 self.subscribe_to_asset_id(asset.id)
-
 
     def order_book_for_asset_id(self, asset_id: str):
         """
@@ -491,14 +541,79 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             if count > highest_10s:
                 highest_10s = count
         highest_msgs_per_sec = highest_10s / 10
-        logging.info('Polymarket Order Book WebSocket highest recorded: %.2f msgs/sec in any 10 second window.', highest_msgs_per_sec)
-
+        logging.info('Polymarket Order Book WebSocket highest recorded: %.2f msgs/sec in any 10 second window.',
+                     highest_msgs_per_sec)
 
     @runAsThread
     def _debug_print_stats_loop(self):
         while True:
             self.print_stats()
             time.sleep(10)
+
+    def _future_get_tick_size(self, asset_id: str):
+        """
+        Returns a future that will get the tick size for a specific asset id.
+        :return:
+        """
+
+        def _inner():
+            url = "{}{}?token_id={}".format("https://clob.polymarket.com", GET_TICK_SIZE, asset_id)
+            response = self.session.get(url)
+            response.raise_for_status()
+            data = response.json()
+            return str(data['minimum_tick_size'])  # this is exactly how py_clob does it
+
+        return self._thread_pool.submit(_inner)
+
+    def get_tick_size(self, asset_id: str, timeout=10):
+        """
+        Get the tick size for a specific asset ID, waiting for the future to complete if necessary.
+        There are 2 paths either the future is still running and the WSS has not pushed a new tickSize
+        in which case we will wait for the future, otherwise return the latest tickSize from the WSS update.
+
+        :param asset_id: The asset ID to get the tick size for.
+        :param timeout: How long to wait for the tick size future to complete before giving up and returning None.
+        :return: The tick size as a string, or None if it could not be retrieved in time.
+        """
+
+        with self._dict_lock:
+            misc_info = self._asset_id_to_misc_info.get(asset_id, {})
+            future = misc_info.get('future_running')
+
+        # if the future is still running and there is no tick size update from the WSS,
+        # wait for the future to complete and update the tick size in the misc info dict
+        if future and not future.done() and (not misc_info.get('tick_size')):
+            try:
+                tick_size = future.result(timeout=timeout)
+                with self._dict_lock:
+                    # one last check to see if the tick size was updated.
+                    if self._asset_id_to_misc_info[asset_id].get('tick_size'):
+                        # we don't need to set None because the WSS will update it when it gets the update, we just need to return the latest tick size
+                        return self._asset_id_to_misc_info[asset_id]['tick_size']
+
+                    self._asset_id_to_misc_info[asset_id]['future_running'] = None
+                    self._asset_id_to_misc_info[asset_id]['tick_size'] = tick_size
+
+            except Exception as e:
+                logging.error('Error retrieving tick size for asset ID %s: %s', asset_id, e)
+                return None
+
+        # if the future is done but there is still no tick size in the misc info dict,
+        # it means the WSS has not pushed a tick size update yet, so we return what the future got us
+        if future and future.result() and (not misc_info.get('tick_size')):
+            # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Is `technically` a local copy, but this is
+            # microseconds from when we got it since there's no blocking that occurred
+            with self._dict_lock:
+                self._asset_id_to_misc_info[asset_id]['future_running'] = None
+                self._asset_id_to_misc_info[asset_id]['tick_size'] = future.result()
+
+        # Finally, if the future is none, that means tick_size was updated.
+        with self._dict_lock:
+            return self._asset_id_to_misc_info[asset_id]['tick_size']
+
+        # just throw if the key doesn't exit, it should be
+        # impossible since subscribe_to_asset_id initializes the dict entry for the asset ID
+
 
 if __name__ == '__main__':
     __x = 0
@@ -514,7 +629,7 @@ if __name__ == '__main__':
             len(x[_HIDDEN_ASSET_ID]['bids']) if x.get(_HIDDEN_ASSET_ID) else 'N/A',
             len(x[_HIDDEN_ASSET_ID]['asks']) if x.get(_HIDDEN_ASSET_ID) else 'N/A'
         ))
-        print('-'*100)
+        print('-' * 100)
 
 
     wss = PolyMarketOrderBookWss(ev)
