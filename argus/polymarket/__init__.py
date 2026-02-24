@@ -1230,12 +1230,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 raise InvalidArgumentError("Each order must have a 'side' field.")
 
             market = self._resolve_market_from_token_id(token_id)
+            tick_size = self.market_data.get_tick_size(asset_id=token_id)
             order_specs.append({
                 'token_id': token_id,
                 'market': market,
                 'price': float(price),
                 'size': float(size),
-                'side': str(side)
+                'side': str(side),
+                'tick_size': tick_size
             })
 
         # Build orders concurrently using thread pool since build_order involves HTTP requests
@@ -1250,7 +1252,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     spec['market'],
                     spec['price'],
                     spec['size'],
-                    spec['side']
+                    spec['side'],
+                    tick_size=spec['tick_size']
                 ): spec for spec in order_specs
             }
 
