@@ -537,11 +537,41 @@ class PolyRestAPI:
     @fatal_decorator('get_balance')
     def get_balance(self) -> float:
         """
-        Get the balance of the account.
-        :return: The balance as a float.
+        Get the tradeable balance of the account.
+        
+        This calculates the available balance by:
+        1. Getting the gross on-chain wallet balance
+        2. Subtracting reserved collateral from all open BUY orders
+        
+        Only BUY orders reserve USDC collateral. The reserved amount is calculated
+        as (original_size - size_matched) * price for each open buy order.
+        
+        :return: The tradeable balance as a float in USDC.
         """
-        balance = float(self.clob.get_balance_allowance(BalanceAllowanceParams(asset_type='COLLATERAL'))['balance'])
-        return balance / self._div
+
+        # Step 1: Refresh the on-chain balance cache
+        self.clob.update_balance_allowance(
+            BalanceAllowanceParams(asset_type='COLLATERAL')
+        )
+        
+        # Step 2: Get gross wallet balance
+        raw = self.clob.get_balance_allowance(
+            BalanceAllowanceParams(asset_type='COLLATERAL')
+        )
+        gross_balance = float(raw['balance']) / self._div
+
+        # Step 3: Subtract all open-order reservations across ALL markets
+        open_orders = self.get_orders()  # Returns list of PolyMarketOrder objects
+        reserved = 0.0
+        for order in open_orders:
+            original_size = float(order.original_size)
+            size_matched = float(order.size_matched)
+            price = float(order.price)
+            # Only buy orders reserve USDC collateral
+            if order.side.upper() == 'BUY':
+                reserved += (original_size - size_matched) * price
+
+        return gross_balance - reserved
 
     @fatal_decorator('cancel_all')
     def cancel_all(self):
