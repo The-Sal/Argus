@@ -1005,6 +1005,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'ethereum': 'ETH',
             'sol': 'SOL',
             'solana': 'SOL',
+            'xrp': 'XRP',
+            'ripple': 'XRP',
         }
 
         # Try to extract from ticker first (e.g., "btc-updown-15m-1769111100")
@@ -1299,6 +1301,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 'order_id' (str): The ID of the order to cancel.
         :return: Dict from the CLOB API, e.g.:
             {'not_canceled': {}, 'canceled': ['0x...']}
+            or failure example:
+            {"canceled": Array [], "not_canceled": Object {"0x..": String("order can't be found - already canceled or matched")}}
+
         """
         args = args_obj.args
         order_id = args.get('order_id', None)
