@@ -10,10 +10,15 @@ from collections import OrderedDict
 class PolyMarketDispatcherError(Exception):
     pass
 
+class OrderExecutionError(PolyMarketDispatcherError):
+    pass
+
+class OrderExecutionDisabledError(OrderExecutionError):
+    pass
+
 
 class InvalidArgumentError(PolyMarketDispatcherError):
     pass
-
 
 class CorrelationIDError(PolyMarketDispatcherError):
     pass

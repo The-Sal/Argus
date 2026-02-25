@@ -2,18 +2,18 @@ import os
 import json
 import time
 import logging
+import requests
 import threading
 import traceback
-from concurrent.futures.thread import ThreadPoolExecutor
-
-import requests
-from py_clob_client.endpoints import GET_TICK_SIZE
 from utils3 import runAsThread
 from websocket import WebSocketApp
+from py_clob_client.endpoints import GET_TICK_SIZE
 from argus.wireproxy import wrapper as wp_wrappers
 from argus.polymarket_direct import _types as pm_types
-from argus.polymarket_direct.order_types import OrderEvent
+from concurrent.futures.thread import ThreadPoolExecutor
+from argus.polymarket_direct.order_types import OrderEvent, TradeEvent
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
+
 
 
 class PolymarketWSSBase:
@@ -245,7 +245,28 @@ class PolyMarketAccountEventWss(PolymarketWSSBase):
     def _on_message_impl(self, message: str):
         """Implementation-specific message handling."""
         content = json.loads(message)
-        update = OrderEvent.from_dict(content)
+
+        # Handle different message types
+        msg_type = content.get('type', '').upper()
+        
+        if msg_type == 'TRADE':
+            # Parse TRADE messages into TradeEvent
+            try:
+                update = TradeEvent.from_dict(content)
+            except KeyError as e:
+                print('WARNING: Received unexpected TRADE message format on Polymarket Account Event WebSocket: {}'.format(content))
+                raise
+            
+            logging.info('Polymarket Account Event WebSocket TRADE received: %s', update)
+            if self._update_callback:
+                self._update_callback(update)
+            return
+        
+        try:
+            update = OrderEvent.from_dict(content)
+        except KeyError as e:
+            print('WARNING: Received unexpected message format on Polymarket Account Event WebSocket: {}'.format(content))
+            raise
 
         if self._throw_fuss_on_user_events:
             throw_fuss(update.__repr__(), notify=False)

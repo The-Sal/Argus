@@ -30,7 +30,6 @@ import traceback
 import subprocess
 import dataclasses
 from datetime import datetime
-
 from termcolor import colored
 from utils3 import runAsThread, Timer
 from argus.polymarket_direct import wss
@@ -45,7 +44,8 @@ from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 from argus.polymarket._classes import (PolyMarketDispatcherError, InvalidArgumentError, RoutingHelper,
-                                       ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker)
+                                       ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker,
+                                       OrderExecutionDisabledError)
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
@@ -102,9 +102,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         # Configs dictionary for dispatcher settings
         self._configs = {
+            'Show P1 Packets': False,
             'Print P2 packets': False,
             'Show packet timestamps': True,
-            'Show P1 Packets': False,
+            'Block Order Execution': False,
+            # if this is true, when an order execution endpoint is called, an exception will be raised.
         }
         if private_key is None:
             private_key = os.environ['POLYMARKET_PRIVATE_KEY']
@@ -1167,6 +1169,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             {'errorMsg': '', 'orderID': '0x...', 'takingAmount': '', 'makingAmount': '',
              'status': 'live', 'success': True}
         """
+
+        if self._configs['Block Order Execution']:
+            raise PolyMarketDispatcherError("Order execution is currently blocked by server configuration.")
+
         args = args_obj.args
         token_id = args.get('token_id', None)
         if token_id is None:
@@ -1212,6 +1218,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     'side' (str): The side of the order ('buy' or 'sell').
         :return: Dict from the CLOB API containing the batch order placement results.
         """
+
+        if self._configs['Block Order Execution']:
+            raise PolyMarketDispatcherError("Order execution is currently blocked by server configuration.")
 
         args = args_obj.args
         orders_list = args.get('orders', [])
