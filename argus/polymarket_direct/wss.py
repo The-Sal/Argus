@@ -254,19 +254,16 @@ class PolyMarketAccountEventWss(PolymarketWSSBase):
             try:
                 update = TradeEvent.from_dict(content)
             except KeyError as e:
-                print('WARNING: Received unexpected TRADE message format on Polymarket Account Event WebSocket: {}'.format(content))
+                print('WARNING: Received unexpected TRADE message format on Polymarket '
+                      'Account Event WebSocket: {}'.format(content))
                 raise
-            
-            logging.info('Polymarket Account Event WebSocket TRADE received: %s', update)
-            if self._update_callback:
-                self._update_callback(update)
-            return
-        
-        try:
-            update = OrderEvent.from_dict(content)
-        except KeyError as e:
-            print('WARNING: Received unexpected message format on Polymarket Account Event WebSocket: {}'.format(content))
-            raise
+        else:
+            try:
+                update = OrderEvent.from_dict(content)
+            except KeyError as e:
+                print('WARNING: Received unexpected message format on '
+                      'Polymarket Account Event WebSocket: {}'.format(content))
+                raise
 
         if self._throw_fuss_on_user_events:
             throw_fuss(update.__repr__(), notify=False)

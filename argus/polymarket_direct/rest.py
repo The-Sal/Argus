@@ -367,14 +367,18 @@ class PolyRestAPI:
         failed = []
         for msg in post:
             if msg['errorMsg']:
-                logging.warning('Failed to post built and signed order: %s', msg['errorMsg'])
+                throw_fuss(
+                    msg=colored("Failed to post built and signed order: {}".format(msg['errorMsg']), 'red', attrs=['bold']),
+                    title="Failed to Post Built and Signed Order",
+                    notify=True
+                )
                 failed.append(msg)
             else:
                 order_id = msg.get('orderID', 'Unknown ID')
                 throw_fuss(
                     msg=colored("Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id), 'green', attrs=['bold']),
                     title="Successfully Posted Built and Signed Orders",
-                    notify=False
+                    notify=True
                 )
                 macos_notification_with_custom_sound(
                     title="Successfully Posted Built and Signed Order",

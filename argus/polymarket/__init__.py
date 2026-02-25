@@ -106,6 +106,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'Print P2 packets': False,
             'Show packet timestamps': True,
             'Block Order Execution': False,
+            'show response times': False,
             # if this is true, when an order execution endpoint is called, an exception will be raised.
         }
         if private_key is None:
@@ -455,7 +456,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # MAIN CLIENT MESSAGE HANDLER
     #######################################
     def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
-        with Timer(lambda x: print_with_name(f"Handled client message in {x:.4f} seconds: {content}")):
+
+        def _inline_timer(result):
+            if self._configs['show response times']:
+                print_with_name(f"Handled client message in {result:.4f} seconds: {content}")
+
+        with Timer(_inline_timer):
             _ = address
             action = content.get('action', None)
             data = content.get('data', None)
@@ -1297,6 +1303,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if not built_orders:
             raise PolyMarketDispatcherError("No orders were built successfully.")
 
+        logging.info(f"Successfully built {len(built_orders)} orders, placing batch order now. Orders: {built_orders}")
         result = self.rest_api.place_built_orders(built_orders)
         return result
 
