@@ -390,9 +390,10 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             if event_type == 'price_change' and 'price_changes' in message:
                 for change in message['price_changes']:
                     self._update_order_book(change['asset_id'], change)
-            return
 
-        if event_type == 'book':
+            # do not return from this scope pass through till callback.
+
+        elif event_type == 'book':
             # Snapshot: bids descending, asks ascending
             bid_sorted = sorted(message['bids'], key=lambda x: float(x['price']), reverse=True)
             ask_sorted = sorted(message['asks'], key=lambda x: float(x['price']))
@@ -402,7 +403,6 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
                     'bids': bid_sorted,
                     'asks': ask_sorted
                 }
-
         elif event_type == 'price_change':
             # Single-asset delta
             self._update_order_book(asset_id, message)
