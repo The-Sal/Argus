@@ -394,9 +394,10 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
                     if asset_id is None:
                         return
                     self._update_order_book(asset_id, change)
-                    if self._order_book_update_callback:
+                    order_book = self.order_book_for_asset_id(asset_id)
+                    if self._order_book_update_callback and order_book is not None:
                         self._order_book_update_callback({
-                            asset_id: self.order_book_for_asset_id(asset_id),
+                            asset_id: order_book,
                             'timestamp': message['timestamp']
                         })
 
