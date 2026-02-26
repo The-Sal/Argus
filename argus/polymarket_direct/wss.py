@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import bisect
 import logging
 import requests
 import threading
@@ -389,9 +390,15 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             # Handle price_change multi-asset
             if event_type == 'price_change' and 'price_changes' in message:
                 for change in message['price_changes']:
-                    self._update_order_book(change['asset_id'], change)
-
-            # do not return from this scope pass through till callback.
+                    asset_id = change['asset_id']
+                    if asset_id is None:
+                        return
+                    self._update_order_book(asset_id, change)
+                    if self._order_book_update_callback:
+                        self._order_book_update_callback({
+                            asset_id: self.order_book_for_asset_id(asset_id),
+                            'timestamp': message['timestamp']
+                        })
 
         elif event_type == 'book':
             # Snapshot: bids descending, asks ascending
@@ -436,7 +443,6 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
 
     # Warning: This method is already thread-locked. Do not call inside another lock or you will cause a deadlock.
     def _update_order_book(self, asset_id: str, change: dict) -> None:
-        """Apply delta: add/update size at price, or delete if size=0."""
         with self._dict_lock:
             if asset_id not in self._asset_id_to_order_book:
                 return
@@ -445,20 +451,27 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             price = change['price']
             size = float(change['size']) if change['size'] != '0' else 0
             side = 'bids' if change['side'] == 'BUY' else 'asks'
+            levels = book[side]
 
-            # Build price->size dict from the current list of dicts
-            price_to_size = {level['price']: float(level['size']) for level in book[side]}
+            # Find existing level with this price
+            idx = next((i for i, l in enumerate(levels) if l['price'] == price), None)
 
             if size == 0:
-                price_to_size.pop(price, None)
+                if idx is not None:
+                    levels.pop(idx)
             else:
-                price_to_size[price] = size
-
-            # Rebuild sorted list of dicts
-            book[side] = sorted(
-                [{'price': p, 'size': str(s)} for p, s in price_to_size.items()],
-                key=lambda x: float(x['price']), reverse=(side == 'bids')
-            )
+                if idx is not None:
+                    levels[idx]['size'] = str(size)  # update in place
+                else:
+                    # Insert in sorted position
+                    new_level = {'price': price, 'size': str(size)}
+                    insert_idx = bisect.bisect_left(
+                        [float(l['price']) for l in levels],
+                        float(price)
+                    )
+                    if side == 'bids':
+                        insert_idx = len(levels) - insert_idx  # bids are descending
+                    levels.insert(insert_idx, new_level)
 
     def subscribe_to_asset_id(self, asset_id: str):
         self._ws.send(json.dumps({

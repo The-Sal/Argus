@@ -399,7 +399,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         with self._market_cache_lock:
             ticker_market_index = self._asset_id_to_ticker.get(asset_id, None)
             if ticker_market_index is None:
-                logging.warning("Received market data update for unknown asset_id: %s", asset_id)
+                logging.warning("Received market data update for unknown asset_id: %s, dict: %s", asset_id, update)
                 return
         ticker, market_index = ticker_market_index
 
@@ -413,8 +413,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # attempt to build a P2 packet from the update which can crash if the
         # message type (e.g., last_trade_price) doesn't carry full order book data.
         if not clients_to_send:
-            logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.",
-                            asset_id)
+            # the rational for commeting this out is that the price_changes message
+            # contains for clob's we did not sub for, so we will get a LOT of these warnings.
+            # logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.",
+            #                 asset_id)
             return
 
         p2_obj = self.send_market_data_with_p2_encoding(
