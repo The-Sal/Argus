@@ -530,8 +530,7 @@ def account_monitor_mode(client: ArgusClient, assets: List[str]):
 
 def generate_mock_events():
     """Generate mock account events for testing the UI."""
-    import random
-    
+
     mock_events = [
         {
             'type': 'PLACEMENT',
