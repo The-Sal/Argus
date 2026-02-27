@@ -16,7 +16,6 @@ Usage:
 Press Ctrl+C to exit gracefully.
 """
 
-import os
 import sys
 import json
 import time
@@ -24,8 +23,7 @@ import socket
 import signal
 import argparse
 from datetime import datetime
-from dataclasses import dataclass
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional
 
 # =============================================================================
 # Protocol Implementation
