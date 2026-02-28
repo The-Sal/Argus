@@ -146,7 +146,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # now we will get asset_id from the market data wss, but we need
         # to match the asset_id to the ticker and market index so we can route the data and also decode the market data correctly.
         self._asset_id_to_ticker = {}
-        # ^^^ is locked with '_market_cache_lock' since it is only updated in the market cache refresh function and read in the market data update callback, which are both protected by the same lock.
+        # ^^^ is locked with '_market_cache_lock' since it is only updated in the market cache refresh
+        # function and read in the market data update callback, which are both protected by the same lock.
 
         self._orderbook_depth = int(os.environ.get('POLYMARKET_ORDERBOOK_DEPTH', 10))
 
@@ -1179,7 +1180,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
 
         if self._configs['Block Order Execution']:
-            raise PolyMarketDispatcherError("Order execution is currently blocked by server configuration.")
+            raise OrderExecutionDisabledError("Order execution is currently blocked by server configuration.")
 
         args = args_obj.args
         token_id = args.get('token_id', None)
@@ -1228,7 +1229,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
 
         if self._configs['Block Order Execution']:
-            raise PolyMarketDispatcherError("Order execution is currently blocked by server configuration.")
+            raise OrderExecutionDisabledError("Order execution is currently blocked by server configuration.")
 
         args = args_obj.args
         orders_list = args.get('orders', [])
@@ -1273,6 +1274,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         built_orders = []
         build_errors = []
 
+        start_time = time.time()
         with ThreadPoolExecutor(max_workers=min(len(order_specs), 10)) as executor:
             future_to_order = {
                 executor.submit(
@@ -1305,8 +1307,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if not built_orders:
             raise PolyMarketDispatcherError("No orders were built successfully.")
 
-        logging.info(f"Successfully built {len(built_orders)} orders, placing batch order now. Orders: {built_orders}")
+        logging.info(colored(f"Successfully Built {len(built_orders)} orders in {time.time() - start_time:.4f} seconds. Placing batch order now.", 'yellow'))
+        time_two = time.time()
         result = self.rest_api.place_built_orders(built_orders)
+        logging.info(colored(f"Batch order placement completed in {time.time() - time_two:.4f} seconds.", 'yellow'))
         return result
 
     def _handle_cancel_order(self, args_obj: ArgsObject):
