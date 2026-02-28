@@ -6,6 +6,8 @@ import logging
 import requests
 import threading
 import traceback
+
+from termcolor import colored
 from utils3 import runAsThread
 from websocket import WebSocketApp
 from py_clob_client.endpoints import GET_TICK_SIZE
@@ -309,11 +311,14 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         self.session = requests.Session()
         self._thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="PolyMarketOrderBookWssThreadPool")
 
-        wp_wrappers.update_request_session_proxy(
-            session=self.session,
-            idx='POLYMARKET',
-            verbose=False
-        )
+        if os.environ.get('POLYMARKET_UNSAFE_RAPID_CONNECTIONS', 'false').lower() == 'true':
+            print(colored("[{}] WARNING: UNSAFE RAPID CONNECTIONS IS ENABLED. THIS MAY BREAK WEBSOCKET CONNECTIONS.", color='yellow', attrs=['bold', 'blink']))
+        else:
+            wp_wrappers.update_request_session_proxy(
+                session=self.session,
+                idx='POLYMARKET',
+                verbose=False
+            )
 
         # Stats
         self._updates: list[float] = []  # timestamps of updates received

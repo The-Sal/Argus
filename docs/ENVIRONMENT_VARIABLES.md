@@ -149,6 +149,16 @@ This document lists all environment variables used throughout the Argus project 
 - **Performance**: Reduces "building order" phase from ~0.23s to ~0.11s (~52% faster)
 - **Warning**: A warning is logged when enabled to alert users of potential risks if assumptions about tick size/fee rate are violated
 
+
+### POLYMARKET_UNSAFE_RAPID_CONNECTIONS
+- **Purpose**: For endpoints that do not require authentication, bypass WireProxy to enable maximum performance without latency
+- **Default**: `false`
+- **Required**: No
+- **Used in**: `polymarket_direct/wss.py`
+- **Behavior**: When `true`, skips WireProxy for non-authenticated WebSocket connections (e.g., market data streams) to achieve lower latency. Only recommended if you are in a country where market data access is not baned
+- **Warning**: Enabling this in a geo-blocked region will result in connection failures. Use with caution and only if you are sure your IP is not blocked for market data access.
+
+
 ### `MAX_SEEN_CORRELATION_IDS`
 - **Purpose**: Maximum number of seen correlation IDs to track for duplicate detection
 - **Default**: `100000`
