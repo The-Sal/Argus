@@ -151,11 +151,11 @@ This document lists all environment variables used throughout the Argus project 
 
 
 ### POLYMARKET_UNSAFE_RAPID_CONNECTIONS
-- **Purpose**: For endpoints that do not require authentication, bypass WireProxy to enable maximum performance without latency
+- **Purpose**: For endpoints that do not require authentication, bypass WireProxy to enable maximum performance.
 - **Default**: `false`
 - **Required**: No
 - **Used in**: `polymarket_direct/wss.py`
-- **Behavior**: When `true`, skips WireProxy for non-authenticated WebSocket connections (e.g., market data streams) to achieve lower latency. Only recommended if you are in a country where market data access is not baned
+- **Behavior**: When `true`, all connections to Polymarket that do not require authenticationa are made directly without routing through WireProxy. These include changes across the rest and websocket layer of the dispatcher. This feature is not stable and its behavior maybe changed with future updates (i.e., supporting more 'usafe' connections. This works in tangent with WIREPROXY integration (and only makes sense if you are geo-blocked from placing orders). It selectively punches holes in the connections.
 - **Warning**: Enabling this in a geo-blocked region will result in connection failures. Use with caution and only if you are sure your IP is not blocked for market data access.
 
 
