@@ -1,20 +1,199 @@
 import os
 import json
 import time
+import bisect
 import logging
+import requests
 import threading
 import traceback
+
+from termcolor import colored
 from utils3 import runAsThread
 from websocket import WebSocketApp
+from py_clob_client.endpoints import GET_TICK_SIZE
 from argus.wireproxy import wrapper as wp_wrappers
 from argus.polymarket_direct import _types as pm_types
-from argus.polymarket_direct.order_types import OrderEvent
+from concurrent.futures.thread import ThreadPoolExecutor
+from argus.polymarket_direct.order_types import OrderEvent, TradeEvent
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 
 
 
+class PolymarketWSSBase:
+    """
+    Base class for Polymarket WebSocket connections.
+    Handles common boilerplate: reconnection, ping/pong, threading events.
+    Subclasses must provide: _name, _url, _create_ws_app(), _on_open_impl(), _on_message_impl()
+    """
 
-class PolyMarketAccountEventWss:
+    def __init__(self, name: str, url: str):
+        self._name = name
+        self._url = url
+        self._ws: WebSocketApp = None  # type: ignore
+
+        # Reconnection state
+        self._max_reconnect_attempts = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', '50'))
+        self._reconnect_attempts = 0
+        self._internally_closed = False
+        self._allow_ping = True
+
+        # Ping/pong tracking
+        self._ping_pong_lock = threading.Lock()
+        self._ping_pongs = (0, 0)  # (sent, received)
+        self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
+
+        # Prevent concurrent ping threads
+        self._pinging_lock = threading.Lock()
+
+        # Threading events
+        self._reset_threading_events()
+
+    def _reset_threading_events(self):
+        """Reset threading events to their initial cleared state."""
+        self.wait_till_socket_open = threading.Event()
+        self.wait_till_first_pong = threading.Event()
+
+    def _init_ws(self):
+        """Initialize the WebSocket connection. Subclasses must set self._ws."""
+        with self._ping_pong_lock:
+            self._ping_pongs = (0, 0)
+        self._create_ws_app()
+
+    def _create_ws_app(self):
+        """Create the WebSocketApp instance. Must be implemented by subclasses."""
+        raise NotImplementedError("Subclasses must implement _create_ws_app()")
+
+    def _on_open_base(self, ws):
+        """Handle WebSocket open event."""
+        _ = ws
+        self._reconnect_attempts = 0
+        logging.info('%s WebSocket opened.', self._name)
+        self._on_open_impl()
+        self.ping()
+        self.wait_till_socket_open.set()
+
+    def _on_open_impl(self):
+        """Implementation-specific open logic. Must be implemented by subclasses."""
+        raise NotImplementedError("Subclasses must implement _on_open_impl()")
+
+    def _on_message_base(self, ws, message):
+        """Handle WebSocket message."""
+        _ = ws
+        if message == "PONG":
+            logging.debug('%s WebSocket received PONG.', self._name)
+            with self._ping_pong_lock:
+                self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
+            self.wait_till_first_pong.set()
+            return
+        self._on_message_impl(message)
+
+    def _on_message_impl(self, message: str):
+        """Implementation-specific message handling. Must be implemented by subclasses."""
+        raise NotImplementedError("Subclasses must implement _on_message_impl()")
+
+    def _on_close_base(self, ws, close_status_code, close_msg):
+        """Handle WebSocket close event."""
+        self._allow_ping = False
+        _ = ws
+        logging.warning('%s WebSocket closed. Code: %s, Message: %s', self._name, close_status_code, close_msg)
+        print(
+            f"Attempting to reconnect {self._name} WebSocket... {self._reconnect_attempts + 1}/{self._max_reconnect_attempts}")
+
+        if not self._internally_closed:
+            self._on_reconnect_start()
+            self._reconnect_attempts += 1
+            if self._reconnect_attempts > self._max_reconnect_attempts:
+                logging.error('Maximum reconnect attempts reached for %s WebSocket. Giving up.', self._name)
+                throw_fuss(
+                    msg=f"{self._name.upper()} WEBSOCKET RECONNECTION FAILURE: Maximum reconnect attempts reached.",
+                    notify=True
+                )
+                return
+            time.sleep(1)
+            self._start_ws()
+        self._allow_ping = True
+
+    def _on_reconnect_start(self):
+        """Called when reconnection starts. Subclasses can override to restore state."""
+        pass
+
+    def _on_error_base(self, ws, error):
+        """Handle WebSocket error."""
+        _ = ws
+        throw_fuss(
+            msg=f"{self._name.upper()} WEBSOCKET ERROR:\n{traceback.format_exc()}",
+            notify=False
+        )
+        macos_notification_with_custom_sound(
+            title=f"{self._name.upper()} WEBSOCKET ERROR",
+            message=str(error),
+            sound_name="Basso"
+        )
+
+    @runAsThread
+    def ping(self):
+        """Send periodic PING messages and monitor PONG responses."""
+        if self._pinging_lock.locked():
+            logging.warning('Ping thread for %s WebSocket is already running. Not starting another.', self._name)
+            return
+
+        with self._pinging_lock:
+            while True:
+                try:
+                    if self._allow_ping:
+                        self._ws.send("PING")
+                        with self._ping_pong_lock:
+                            self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
+                            pings = self._ping_pongs[0]
+                            pongs = self._ping_pongs[1]
+
+                            if os.environ.get('POLYMARKET_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
+                                logging.info(
+                                    'Sending PING to %s WebSocket. Total PINGs: %d, Total PONGs: %d',
+                                    self._name, pings, pongs
+                                )
+
+                            ping_delta = abs(pings - pongs)
+                            if ping_delta > 3:
+                                logging.warning(
+                                    'No PONG received for last 3 PINGs on %s WebSocket. Maximum delta=%d Current delta=%d',
+                                    self._name, self._max_ping_pong_failures, ping_delta)
+
+                            if ping_delta >= self._max_ping_pong_failures:
+                                logging.error(
+                                    'Maximum PING-PONG failures reached. Reconnecting %s WebSocket...', self._name
+                                )
+                                throw_fuss(
+                                    msg=f"{self._name.upper()} WEBSOCKET PING-PONG FAILURE: No PONG received for {ping_delta} PINGs.",
+                                    notify=True
+                                )
+                                self._ws.close()
+                    else:
+                        logging.info('Ping to %s WebSocket is currently disabled.', self._name)
+                except Exception as e:
+                    logging.error("%s WebSocket ping failed: %s", self._name, e)
+                    with self._ping_pong_lock:
+                        self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
+                        logging.info("Incrementing PING count despite error. Total PINGs: %d, Total PONGs: %d",
+                                     self._ping_pongs[0], self._ping_pongs[1])
+                time.sleep(10)
+
+    def _start_ws_sync(self):
+        """Start the WebSocket connection synchronously (blocks current thread)."""
+        logging.info('Starting %s WebSocket...', self._name)
+        self._init_ws()
+        wp_wrappers.start_proxy_aware_ws(
+            idx='POLYMARKET',
+            websocket=self._ws,
+        )
+
+    @runAsThread
+    def _start_ws(self):
+        """Start the WebSocket connection in a new thread."""
+        self._start_ws_sync()
+
+
+class PolyMarketAccountEventWss(PolymarketWSSBase):
     """
     A WebSocket that exists just to listen to account events from the Polymarket CLOB.
     This is an authorised WSS connection to Polymarket and CLOB it is SEPARATE from `EnhancedPM`
@@ -33,76 +212,61 @@ class PolyMarketAccountEventWss:
 
         :param update_callback: A callback function that will be called with each OrderEvent received.
         """
-        self._auth = auth
-        self._update_callback = update_callback
-
         # auth dict validation
         keys_needed = ["apiKey", "secret", "passphrase"]
         for key in keys_needed:
-            if key not in self._auth:
+            if key not in auth:
                 raise ValueError(f"Auth dictionary must contain the key: {key}")
 
-        self.user_ws: WebSocketApp = None
-        self._max_reconnect_attempts = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', '50'))
-        self._reconnect_attempts = 0
-        self._internally_closed = False
-        self._allow_ping = True
-        self._reset_threading_events()
+        super().__init__(name="Polymarket Account Event", url='wss://ws-subscriptions-clob.polymarket.com/ws/user')
 
-        self._ping_pong_lock = threading.Lock()
-        self._ping_pongs = (0, 0)  # (sent, received)
-        self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
-
-        # In some cases we've seen concurrent pings causing issues
-        # that is since the ping function is a thread that runs forever;
-        # it should not be called twice ever while it's already running
-        self._pinging_lock = threading.Lock()
-
+        self._auth = auth
+        self._update_callback = update_callback
         self._throw_fuss_on_user_events = os.environ.get('POLYMARKET_USER_EVENTS_FUSS', 'false').lower() == 'true'
 
         self._start_ws()
 
-    def _reset_threading_events(self):
-        """
-        Reset threading events for socket open and first pong.
-        The 'default' state is 'clear' meaning the socket/ping is not ready.
-        :return:
-        """
-        self.wait_till_socket_open = threading.Event()
-        self.wait_till_first_pong = threading.Event()
-
-        # Don't set these - they should start cleared (not ready)
-
-    def _init_ws(self):
-        """
-        Initialize the WebSocket connection to Polymarket account events.
-        :return:
-        """
-        with self._ping_pong_lock:
-            self._ping_pongs = (0, 0)
-        self.user_ws = WebSocketApp(
-            url='wss://ws-subscriptions-clob.polymarket.com/ws/user',
-            on_open=self._on_open,
-            on_close=self._on_close,
-            on_error=self._on_error,
-            on_message=self._on_message
+    def _create_ws_app(self):
+        """Create the WebSocketApp instance."""
+        self._ws = WebSocketApp(
+            url=self._url,
+            on_open=self._on_open_base,
+            on_close=self._on_close_base,
+            on_error=self._on_error_base,
+            on_message=self._on_message_base
         )
 
-    ############################################
-    # WebSocket Event Handlers  & Utilities
-    ############################################
+    def _on_open_impl(self):
+        """Implementation-specific open logic."""
+        logging.info('Authenticating Polymarket Account Event WebSocket...')
+        self._ws.send(json.dumps({
+            "auth": self._auth,
+            "markets": [],
+            "type": "user",
+        }))
 
-    def _on_message(self, ws, message):
-        _ = ws
-        if message == "PONG":
-            logging.debug('Polymarket Account Event WebSocket received PONG.')
-            with self._ping_pong_lock:
-                self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
-            self.wait_till_first_pong.set()
-            return
-
+    def _on_message_impl(self, message: str):
+        """Implementation-specific message handling."""
         content = json.loads(message)
-        update = OrderEvent.from_dict(content)
+
+        # Handle different message types
+        msg_type = content.get('type', '').upper()
+        
+        if msg_type == 'TRADE':
+            # Parse TRADE messages into TradeEvent
+            try:
+                update = TradeEvent.from_dict(content)
+            except KeyError as e:
+                print('WARNING: Received unexpected TRADE message format on Polymarket '
+                      'Account Event WebSocket: {}'.format(content))
+                raise
+        else:
+            try:
+                update = OrderEvent.from_dict(content)
+            except KeyError as e:
+                print('WARNING: Received unexpected message format on '
+                      'Polymarket Account Event WebSocket: {}'.format(content))
+                raise
 
         if self._throw_fuss_on_user_events:
             throw_fuss(update.__repr__(), notify=False)
@@ -115,112 +279,8 @@ class PolyMarketAccountEventWss:
         if self._update_callback:
             self._update_callback(update)
 
-    def _on_close(self, ws, close_status_code, close_msg):
-        self._allow_ping = False
-        _ = ws
-        logging.warning('Polymarket Account Event WebSocket closed. Code: %s, Message: %s', close_status_code,
-                        close_msg)
-        print("Attempting to reconnect Polymarket Account Event WebSocket...")
-        if not self._internally_closed:
-            self._reconnect_attempts += 1
-            if self._reconnect_attempts > self._max_reconnect_attempts:
-                logging.error('Maximum reconnect attempts reached for Polymarket Account Event WebSocket. Giving up.')
-                return
-            time.sleep(1)
-            self._start_ws()
-        self._allow_ping = True
 
-    @staticmethod
-    def _on_error(ws, error):
-        _ = ws
-        throw_fuss(
-            msg="POLYMARKET USER ACCOUNT WEBSOCKET ERROR:\n{}".format(traceback.format_exc()),
-            notify=False
-        )
-        macos_notification_with_custom_sound(
-            title="POLYMARKET USER ACCOUNT WEBSOCKET ERROR",
-            message=str(error),
-            sound_name="Basso"
-        )
-
-    @runAsThread
-    def ping(self):
-
-        # check if already pinging
-        if self._pinging_lock.locked():
-            logging.warning('Ping thread for Polymarket Account Event WebSocket is already running. Not starting another.')
-            return
-
-        with self._pinging_lock:
-            while True:
-                try:
-                    if self._allow_ping:
-                        self.user_ws.send("PING")
-                        with self._ping_pong_lock:
-                            self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
-                            pings = self._ping_pongs[0]
-                            pongs = self._ping_pongs[1]
-
-                            if os.environ.get('POLYMARKET_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
-                                logging.info(
-                                    'Sending PING to Polymarket Account Event WebSocket. Total PINGs: %d, Total PONGs: %d',
-                                    pings, pongs
-                                )
-
-                            ping_delta = abs(pings - pongs)
-                            if ping_delta > 3:
-                                logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(
-                                    self._max_ping_pong_failures))
-
-                            if ping_delta >= self._max_ping_pong_failures:
-                                logging.error(
-                                    'Maximum PING-PONG failures reached. Reconnecting Polymarket Account Event WebSocket...'
-                                )
-                                self.user_ws.close()
-                    else:
-                        logging.info('Ping to Polymarket Account Event WebSocket is currently disabled.')
-                except Exception as e:
-                    logging.error("User WebSocket ping failed: %s", e)
-                    with self._ping_pong_lock:
-                        self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
-                        logging.info("Incrementing PING count despite error. Total PINGs: %d, Total PONGs: %d", )
-                    pass
-                time.sleep(10)
-
-    def _on_open(self, ws):
-        _ = ws
-        logging.info('Polymarket Account Event WebSocket opened.')
-        self.authenticate_ws_for_asset_ids()
-        self.ping()
-        self.wait_till_socket_open.set()
-
-    def authenticate_ws_for_asset_ids(self):
-        """
-        Authenticate the WebSocket connection.
-        :return:
-        """
-        logging.info('Authenticating Polymarket Account Event WebSocket...')
-        self.user_ws.send(json.dumps({
-            "auth": self._auth,
-            "markets": [],
-            "type": "user",
-        }))
-
-    @runAsThread
-    def _start_ws(self):
-        """
-        Start the WebSocket connection.
-        :return:
-        """
-        logging.info('Starting Polymarket Account Event WebSocket...')
-        self._init_ws()
-        wp_wrappers.start_proxy_aware_ws(
-            idx='POLYMARKET',
-            websocket=self.user_ws,
-        )
-
-
-class PolyMarketOrderBookWss:
+class PolyMarketOrderBookWss(PolymarketWSSBase):
     """
     A level 2 order book WebSocket for Polymarket markets.
 
@@ -233,6 +293,7 @@ class PolyMarketOrderBookWss:
     """
 
     def __init__(self, order_book_update_callback=None):
+        super().__init__(name="Polymarket Order Book", url='wss://ws-subscriptions-clob.polymarket.com/ws/market')
 
         # Where a singular order book is stored as:
         # {
@@ -241,109 +302,45 @@ class PolyMarketOrderBookWss:
         # }
         # asset ID then indexes the above in the main dict below
         self._asset_id_to_order_book = {}
+        self._asset_id_to_misc_info = {}  # can be used to store other info about the asset if needed (e.g. tickSize)
 
-        self._pinging_lock = threading.Lock()
+        # Note: tickSize is stored as a string
 
-        self._market_ws: WebSocketApp = None
-        self._reconnect_attempts = 0
-        self._max_reconnect_attempts = int(os.environ.get('POLYMARKET_MAX_SOCKET_RETRIES', '50'))
-        self._ping_pong_lock = threading.Lock()
-        self._ping_pongs = (0, 0)  # (sent, received)
-        self._max_ping_pong_failures = int(os.environ.get('POLYMARKET_MAX_PING_PONG_FAILURES', '3'))
-        self._internally_closed = False
-        self._allow_ping = True
-        self._reset_threading_events()
         self._order_book_update_callback = order_book_update_callback
+        self._dict_lock = threading.Lock()
+        self.session = requests.Session()
+        self._thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="PolyMarketOrderBookWssThreadPool")
+
+        if os.environ.get('POLYMARKET_UNSAFE_RAPID_CONNECTIONS', 'false').lower() == 'true':
+            print(colored("[{}] WARNING: UNSAFE RAPID CONNECTIONS IS ENABLED. THIS MAY BREAK WEBSOCKET CONNECTIONS.", color='yellow', attrs=['bold', 'blink']))
+        else:
+            wp_wrappers.update_request_session_proxy(
+                session=self.session,
+                idx='POLYMARKET',
+                verbose=False
+            )
 
         # Stats
         self._updates: list[float] = []  # timestamps of updates received
 
-    #############################################
-    # WebSocket Event Handlers  & Utilities
-    #############################################
-
-    def _reset_threading_events(self):
-        """
-        Reset threading events for socket open and first pong.
-        The 'default' state is 'clear' meaning the socket/ping is not ready.
-        :return:
-        """
-        self.wait_till_socket_open = threading.Event()
-        self.wait_till_first_pong = threading.Event()
-
-        # Don't set these - they should start cleared (not ready)
-
-    def _init_ws(self):
-        """
-        Initialize the WebSocket connection to Polymarket order book events.
-        :return:
-        """
-        with self._ping_pong_lock:
-            self._ping_pongs = (0, 0)
-        self._market_ws = WebSocketApp(
-            url='wss://ws-subscriptions-clob.polymarket.com/ws/market',
-            on_open=self._on_open,
-            on_close=self._on_close,
-            on_error=self._on_error,
-            on_message=self._on_message
+    def _create_ws_app(self):
+        """Create the WebSocketApp instance."""
+        self._ws = WebSocketApp(
+            url=self._url,
+            on_open=self._on_open_base,
+            on_close=self._on_close_base,
+            on_error=self._on_error_base,
+            on_message=self._on_message_base
         )
 
-    @runAsThread
-    def ping(self):
+    def _on_open_impl(self):
+        """Implementation-specific open logic."""
+        initial_msg = json.dumps({"assets_ids": [], "type": "market"})
+        self._ws.send(initial_msg)
 
-        # check if already pinging
-        if self._pinging_lock.locked():
-            logging.warning(
-                'Ping thread for Polymarket Account Event WebSocket is already running. Not starting another.')
-            return
-
-        with self._pinging_lock:
-            while True:
-                try:
-                    if self._allow_ping:
-                        self._market_ws.send("PING")
-                        with self._ping_pong_lock:
-                            self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
-                            pings = self._ping_pongs[0]
-                            pongs = self._ping_pongs[1]
-
-                            if os.environ.get('POLYMARKET_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
-                                logging.info(
-                                    'Sending PING to Polymarket Orderbook WebSocket. Total PINGs: %d, Total PONGs: %d',
-                                    pings, pongs
-                                )
-
-                            ping_delta = abs(pings - pongs)
-                            if ping_delta > 3:
-                                logging.warning('No PONG received for last 3 PINGs.... Maximum delta={}'.format(
-                                    self._max_ping_pong_failures))
-
-                            if ping_delta >= self._max_ping_pong_failures:
-                                logging.error(
-                                    'Maximum PING-PONG failures reached. Reconnecting Polymarket Account Event WebSocket...'
-                                )
-                                self._market_ws.close()
-                    else:
-                        logging.info('Ping to Polymarket Account Event WebSocket is currently disabled.')
-                except Exception as e:
-                    logging.error("User WebSocket ping failed: %s", e)
-                    with self._ping_pong_lock:
-                        self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
-                        logging.info("Incrementing PING count despite error. Total PINGs: %d, Total PONGs: %d", )
-                    pass
-                time.sleep(10)
-
-    def _on_message(self, ws, message):
+    def _on_message_impl(self, message: str):
+        """Implementation-specific message handling."""
         self._updates.append(time.time())
-        _ = ws
-        if message == "PONG":
-            logging.debug('Polymarket Order Book WebSocket received PONG.')
-            with self._ping_pong_lock:
-                self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
-            self.wait_till_first_pong.set()
-            return
-
-        # how_long.start()
 
         try:
             content = json.loads(message)
@@ -366,63 +363,25 @@ class PolyMarketOrderBookWss:
             print('WARNING: Error handling Polymarket Order Book WebSocket message: "{}"'.format(message))
             raise e
 
-        # how_long.stop()
-
-    def _on_close(self, ws, close_status_code, close_msg):
-        self._allow_ping = False
-        _ = ws
-        logging.warning('Polymarket Order Book WebSocket closed. Code: %s, Message: %s', close_status_code,
-                        close_msg)
-        print("Attempting to reconnect Polymarket Order Book WebSocket...")
-        if not self._internally_closed:
-            self._reset_threading_events()
-            self._defer_restore_state()
-
-            self._reconnect_attempts += 1
-            if self._reconnect_attempts > self._max_reconnect_attempts:
-                logging.error('Maximum reconnect attempts reached for Polymarket Order Book WebSocket. Giving up.')
-                return
-            time.sleep(1)
-            self._start_ws()
-        self._allow_ping = True
-
-    def _on_open(self, ws):
-        _ = ws
-        self._reconnect_attempts = 0
-        logging.info('Polymarket Order Book WebSocket opened.')
-        initial_msg = json.dumps({"assets_ids": [], "type": "market"})
-        self._market_ws.send(initial_msg)
-        self.ping()
-        self.wait_till_socket_open.set()
-
-    @staticmethod
-    def _on_error(ws, error):
-        _ = ws
-        throw_fuss(
-            msg="POLYMARKET ORDER BOOK WEBSOCKET ERROR:\n{}".format(traceback.format_exc()),
-            notify=False
-        )
-        macos_notification_with_custom_sound(
-            title="POLYMARKET ORDER BOOK WEBSOCKET ERROR",
-            message=str(error),
-            sound_name="Basso"
-        )
+    def _on_reconnect_start(self):
+        """Called when reconnection starts - restore subscriptions."""
+        self._reset_threading_events()
+        self._defer_restore_state()
 
     @runAsThread
-    def _start_ws(self) -> threading.Thread:
+    def _defer_restore_state(self):
         """
-        Start the WebSocket connection.
-        :return:
+        Waits for `wait_till_first_pong` to be cleared, then restores WebSocket subscriptions
+        to previously subscribed asset IDs. Should only be called internally after a disconnect.
         """
-        logging.info('Starting Polymarket Order Book WebSocket...')
-        self._init_ws()
-        wp_wrappers.start_proxy_aware_ws(
-            idx='POLYMARKET',
-            websocket=self._market_ws,
-        )
-
-        # the return of threading.Thread comes from @runAsThread ==> allows .join() if needed
-        # returns here will be ignored
+        self.wait_till_first_pong.wait()
+        asset_ids = self.asset_ids
+        if asset_ids:
+            logging.info('Restoring Polymarket Order Book WebSocket subscriptions for asset IDs: %s', asset_ids)
+            for asset_id in asset_ids:
+                self.subscribe_to_asset_id(asset_id)
+        else:
+            logging.info('No asset IDs to restore for Polymarket Order Book WebSocket.')
 
     ##############################################
     # Message Handlers & Logic
@@ -436,23 +395,50 @@ class PolyMarketOrderBookWss:
             # Handle price_change multi-asset
             if event_type == 'price_change' and 'price_changes' in message:
                 for change in message['price_changes']:
-                    self._update_order_book(change['asset_id'], change)
-            return
+                    asset_id = change['asset_id']
+                    if asset_id is None:
+                        return
+                    self._update_order_book(asset_id, change)
+                    order_book = self.order_book_for_asset_id(asset_id)
+                    if self._order_book_update_callback and order_book is not None:
+                        self._order_book_update_callback({
+                            asset_id: order_book,
+                            'timestamp': message['timestamp']
+                        })
 
-        if event_type == 'book':
+        elif event_type == 'book':
             # Snapshot: bids descending, asks ascending
-            self._asset_id_to_order_book[asset_id] = {
-                'bids': sorted(
-                    message['bids'], key=lambda x: float(x['price']), reverse=True
-                ),
-                'asks': sorted(
-                    message['asks'], key=lambda x: float(x['price'])
-                )
-            }
+            bid_sorted = sorted(message['bids'], key=lambda x: float(x['price']), reverse=True)
+            ask_sorted = sorted(message['asks'], key=lambda x: float(x['price']))
 
+            with self._dict_lock:
+                self._asset_id_to_order_book[asset_id] = {
+                    'bids': bid_sorted,
+                    'asks': ask_sorted
+                }
         elif event_type == 'price_change':
             # Single-asset delta
             self._update_order_book(asset_id, message)
+
+        elif event_type == 'tick_size_change':
+            # Tick size change - store in misc info dict for now, as it doesn't affect the order book structure
+            # {
+            #     "event_type": "tick_size_change",
+            #     "asset_id": "65818619657568813474341868652308942079804919287380422192892211131408793125422",
+            #     "market": "0xbd31dc8a20211944f6b70f31557f1001557b59905b7738480ca09bd4532f84af",
+            #     "old_tick_size": "0.01",
+            #     "new_tick_size": "0.001",
+            #     "timestamp": "100000000"
+            # }
+            with self._dict_lock:
+                possible_future = self._asset_id_to_misc_info.get(asset_id, {}).get('future_running')
+                if possible_future and not possible_future.done():
+                    possible_future.cancel()
+
+                self._asset_id_to_misc_info[asset_id] = {
+                    'tick_size': message.get('new_tick_size'),
+                    'future_running': None
+                }
 
         # Callback with a full book
         if self._order_book_update_callback:
@@ -461,36 +447,50 @@ class PolyMarketOrderBookWss:
                 'timestamp': message['timestamp']
             })
 
+    # Warning: This method is already thread-locked. Do not call inside another lock or you will cause a deadlock.
     def _update_order_book(self, asset_id: str, change: dict) -> None:
-        """Apply delta: add/update size at price, or delete if size=0."""
-        if asset_id not in self._asset_id_to_order_book:
-            return
+        with self._dict_lock:
+            if asset_id not in self._asset_id_to_order_book:
+                return
 
-        book = self._asset_id_to_order_book[asset_id]
-        price = change['price']
-        size = float(change['size']) if change['size'] != '0' else 0
-        side = 'bids' if change['side'] == 'BUY' else 'asks'
+            book = self._asset_id_to_order_book[asset_id]
+            price = change['price']
+            size = float(change['size']) if change['size'] != '0' else 0
+            side = 'bids' if change['side'] == 'BUY' else 'asks'
+            levels = book[side]
 
-        # Build price->size dict from the current list of dicts
-        price_to_size = {level['price']: float(level['size']) for level in book[side]}
+            # Find existing level with this price
+            idx = next((i for i, l in enumerate(levels) if l['price'] == price), None)
 
-        if size == 0:
-            price_to_size.pop(price, None)
-        else:
-            price_to_size[price] = size
-
-        # Rebuild sorted list of dicts
-        book[side] = sorted(
-            [{'price': p, 'size': str(s)} for p, s in price_to_size.items()],
-            key=lambda x: float(x['price']), reverse=(side == 'bids')
-        )
+            if size == 0:
+                if idx is not None:
+                    levels.pop(idx)
+            else:
+                if idx is not None:
+                    levels[idx]['size'] = str(size)  # update in place
+                else:
+                    # Insert in sorted position
+                    new_level = {'price': price, 'size': str(size)}
+                    insert_idx = bisect.bisect_left(
+                        [float(l['price']) for l in levels],
+                        float(price)
+                    )
+                    if side == 'bids':
+                        insert_idx = len(levels) - insert_idx  # bids are descending
+                    levels.insert(insert_idx, new_level)
 
     def subscribe_to_asset_id(self, asset_id: str):
-        self._market_ws.send(json.dumps({
+        self._ws.send(json.dumps({
             "assets_ids": [asset_id],
             "type": "market",
             "operation": "subscribe"
         }))
+
+        with self._dict_lock:
+            self._asset_id_to_misc_info[asset_id] = {
+                'tick_size': None,
+                'future_running': self._future_get_tick_size(asset_id)
+            }
 
     def unsubscribe_from_asset_id(self, asset_id: str):
         """
@@ -501,13 +501,15 @@ class PolyMarketOrderBookWss:
         :param asset_id: The asset ID to unsubscribe from.
         :return:
         """
-        self._market_ws.send(json.dumps({
+        self._ws.send(json.dumps({
             "assets_ids": [asset_id],
             "type": "market",
             "operation": "unsubscribe"
         }))
-        if asset_id in self._asset_id_to_order_book:
-            del self._asset_id_to_order_book[asset_id]
+
+        with self._dict_lock:
+            if asset_id in self._asset_id_to_order_book:
+                del self._asset_id_to_order_book[asset_id]
 
     def subscribe_to_market(self, market: pm_types.PolymarketEvent):
         """
@@ -515,31 +517,19 @@ class PolyMarketOrderBookWss:
         :param market: The PolymarketEvent market to subscribe to.
         :return:
         """
+        if not market.markets:
+            logging.warning('Market has no sub-markets; cannot subscribe.')
+            return
+
         if len(market.markets) > 1:
             logging.warning('Market has multiple sub-markets; This is unexpected behavior.')
             for m in market.markets:
                 logging.warning('Sub-market: %s', m)
 
-        for asset in market.markets[0].clobTokenIds:
-            self.subscribe_to_asset_id(asset.id)
-
-    @runAsThread
-    def _defer_restore_state(self):
-        """
-        Waits for `wait_till_first_pong` to be cleared, then restores WebSocket subscriptions
-        to previously subscribed asset IDs. Should only be called internally after a disconnect.
-        :return:
-        """
-
-        self.wait_till_first_pong.wait()
-        asset_ids = self.asset_ids
-        if asset_ids:
-            logging.info('Restoring Polymarket Order Book WebSocket subscriptions for asset IDs: %s', asset_ids)
-            for asset_id in asset_ids:
-                self.subscribe_to_asset_id(asset_id)
-        else:
-            logging.info('No asset IDs to restore for Polymarket Order Book WebSocket.')
-
+        first_market = market.markets[0]
+        if first_market.clobTokenIds:
+            for asset in first_market.clobTokenIds:
+                self.subscribe_to_asset_id(asset.id)
 
     def order_book_for_asset_id(self, asset_id: str):
         """
@@ -564,7 +554,7 @@ class PolyMarketOrderBookWss:
         :return:
         """
         if main_thread:
-            self._start_ws().join()
+            self._start_ws_sync()
         else:
             self._start_ws()
 
@@ -588,14 +578,79 @@ class PolyMarketOrderBookWss:
             if count > highest_10s:
                 highest_10s = count
         highest_msgs_per_sec = highest_10s / 10
-        logging.info('Polymarket Order Book WebSocket highest recorded: %.2f msgs/sec in any 10 second window.', highest_msgs_per_sec)
-
+        logging.info('Polymarket Order Book WebSocket highest recorded: %.2f msgs/sec in any 10 second window.',
+                     highest_msgs_per_sec)
 
     @runAsThread
     def _debug_print_stats_loop(self):
         while True:
             self.print_stats()
             time.sleep(10)
+
+    def _future_get_tick_size(self, asset_id: str):
+        """
+        Returns a future that will get the tick size for a specific asset id.
+        :return:
+        """
+
+        def _inner():
+            url = "{}{}?token_id={}".format("https://clob.polymarket.com", GET_TICK_SIZE, asset_id)
+            response = self.session.get(url)
+            response.raise_for_status()
+            data = response.json()
+            return str(data['minimum_tick_size'])  # this is exactly how py_clob does it
+
+        return self._thread_pool.submit(_inner)
+
+    def get_tick_size(self, asset_id: str, timeout=10):
+        """
+        Get the tick size for a specific asset ID, waiting for the future to complete if necessary.
+        There are 2 paths either the future is still running and the WSS has not pushed a new tickSize
+        in which case we will wait for the future, otherwise return the latest tickSize from the WSS update.
+
+        :param asset_id: The asset ID to get the tick size for.
+        :param timeout: How long to wait for the tick size future to complete before giving up and returning None.
+        :return: The tick size as a string, or None if it could not be retrieved in time.
+        """
+
+        with self._dict_lock:
+            misc_info = self._asset_id_to_misc_info.get(asset_id, {})
+            future = misc_info.get('future_running')
+
+        # if the future is still running and there is no tick size update from the WSS,
+        # wait for the future to complete and update the tick size in the misc info dict
+        if future and not future.done() and (not misc_info.get('tick_size')):
+            try:
+                tick_size = future.result(timeout=timeout)
+                with self._dict_lock:
+                    # one last check to see if the tick size was updated.
+                    if self._asset_id_to_misc_info[asset_id].get('tick_size'):
+                        # we don't need to set None because the WSS will update it when it gets the update, we just need to return the latest tick size
+                        return self._asset_id_to_misc_info[asset_id]['tick_size']
+
+                    self._asset_id_to_misc_info[asset_id]['future_running'] = None
+                    self._asset_id_to_misc_info[asset_id]['tick_size'] = tick_size
+
+            except Exception as e:
+                logging.error('Error retrieving tick size for asset ID %s: %s', asset_id, e)
+                return None
+
+        # if the future is done but there is still no tick size in the misc info dict,
+        # it means the WSS has not pushed a tick size update yet, so we return what the future got us
+        if future and future.result() and (not misc_info.get('tick_size')):
+            # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Is `technically` a local copy, but this is
+            # microseconds from when we got it since there's no blocking that occurred
+            with self._dict_lock:
+                self._asset_id_to_misc_info[asset_id]['future_running'] = None
+                self._asset_id_to_misc_info[asset_id]['tick_size'] = future.result()
+
+        # Finally, if the future is none, that means tick_size was updated.
+        with self._dict_lock:
+            return self._asset_id_to_misc_info[asset_id]['tick_size']
+
+        # just throw if the key doesn't exit, it should be
+        # impossible since subscribe_to_asset_id initializes the dict entry for the asset ID
+
 
 if __name__ == '__main__':
     __x = 0
@@ -611,7 +666,7 @@ if __name__ == '__main__':
             len(x[_HIDDEN_ASSET_ID]['bids']) if x.get(_HIDDEN_ASSET_ID) else 'N/A',
             len(x[_HIDDEN_ASSET_ID]['asks']) if x.get(_HIDDEN_ASSET_ID) else 'N/A'
         ))
-        print('-'*100)
+        print('-' * 100)
 
 
     wss = PolyMarketOrderBookWss(ev)

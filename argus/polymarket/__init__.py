@@ -30,6 +30,7 @@ import traceback
 import subprocess
 import dataclasses
 from datetime import datetime
+from termcolor import colored
 from utils3 import runAsThread, Timer
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
@@ -38,11 +39,13 @@ from argus.cache_sys import DomainCache, FastCache
 from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 from argus.polymarket._classes import (PolyMarketDispatcherError, InvalidArgumentError, RoutingHelper,
-                                       ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker)
+                                       ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker,
+                                       OrderExecutionDisabledError)
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
@@ -99,8 +102,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         # Configs dictionary for dispatcher settings
         self._configs = {
+            'Show P1 Packets': False,
             'Print P2 packets': False,
             'Show packet timestamps': True,
+            'Block Order Execution': False,
+            'show response times': False,
+            # if this is true, when an order execution endpoint is called, an exception will be raised.
         }
         if private_key is None:
             private_key = os.environ['POLYMARKET_PRIVATE_KEY']
@@ -116,9 +123,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
 
         # All the below are already registered with WireProxy system
-        self.market_data = wss.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
         self.rest_api = rest.PolyRestAPI(private_key=private_key, proxy_funder=proxy_funder,
                                          fatal_callback=self._on_fatal_error)
+        self.market_data = wss.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
         self.account_updates = wss.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
                                                              update_callback=self._account_update_callback)
 
@@ -139,7 +146,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # now we will get asset_id from the market data wss, but we need
         # to match the asset_id to the ticker and market index so we can route the data and also decode the market data correctly.
         self._asset_id_to_ticker = {}
-        # ^^^ is locked with '_market_cache_lock' since it is only updated in the market cache refresh function and read in the market data update callback, which are both protected by the same lock.
+        # ^^^ is locked with '_market_cache_lock' since it is only updated in the market cache refresh
+        # function and read in the market data update callback, which are both protected by the same lock.
 
         self._orderbook_depth = int(os.environ.get('POLYMARKET_ORDERBOOK_DEPTH', 10))
 
@@ -311,6 +319,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     msg['correlation_id'] = correlation_id
                 response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
 
+            if self._configs['Show P1 Packets']:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                if self._configs.get('Show packet timestamps', True):
+                    print(f"[{timestamp}] → ({len(response_bytes)} bytes): {response_bytes!r}")
+                else:
+                    print(f"P1 Packet ({len(response_bytes)} bytes): {response_bytes!r}")
+
             client_socket.sendall(response_bytes)
 
     def _on_fatal_error(self, error: dict):
@@ -385,7 +400,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         with self._market_cache_lock:
             ticker_market_index = self._asset_id_to_ticker.get(asset_id, None)
             if ticker_market_index is None:
-                logging.warning("Received market data update for unknown asset_id: %s", asset_id)
+                logging.warning("Received market data update for unknown asset_id: %s, dict: %s", asset_id, update)
                 return
         ticker, market_index = ticker_market_index
 
@@ -399,8 +414,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # attempt to build a P2 packet from the update which can crash if the
         # message type (e.g., last_trade_price) doesn't carry full order book data.
         if not clients_to_send:
-            logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.",
-                            asset_id)
+            # the rational for commeting this out is that the price_changes message
+            # contains for clob's we did not sub for, so we will get a LOT of these warnings.
+            # logging.warning("No clients subscribed to market data for asset_id: %s, this should not be possible.",
+            #                 asset_id)
             return
 
         p2_obj = self.send_market_data_with_p2_encoding(
@@ -442,7 +459,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # MAIN CLIENT MESSAGE HANDLER
     #######################################
     def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
-        with Timer(lambda x: print_with_name(f"Handled client message in {x:.4f} seconds: {content}")):
+
+        def _inline_timer(result):
+            if self._configs['show response times']:
+                print_with_name(f"Handled client message in {result:.4f} seconds: {content}")
+
+        with Timer(_inline_timer):
             _ = address
             action = content.get('action', None)
             data = content.get('data', None)
@@ -469,6 +491,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
                 # Order Management
                 'place_order': self._handle_place_order,
+                'place_multiple_orders': self._handle_place_multiple_orders,
                 'cancel_order': self._handle_cancel_order,
                 'get_order_status': self._handle_get_order_status,
                 'get_orders': self._handle_get_orders,
@@ -993,6 +1016,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'ethereum': 'ETH',
             'sol': 'SOL',
             'solana': 'SOL',
+            'xrp': 'XRP',
+            'ripple': 'XRP',
         }
 
         # Try to extract from ticker first (e.g., "btc-updown-15m-1769111100")
@@ -1153,6 +1178,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             {'errorMsg': '', 'orderID': '0x...', 'takingAmount': '', 'makingAmount': '',
              'status': 'live', 'success': True}
         """
+
+        if self._configs['Block Order Execution']:
+            raise OrderExecutionDisabledError("Order execution is currently blocked by server configuration.")
+
         args = args_obj.args
         token_id = args.get('token_id', None)
         if token_id is None:
@@ -1171,6 +1200,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             raise InvalidArgumentError("'side' is required for place_order.")
 
         market = self._resolve_market_from_token_id(token_id)
+        tick_size = self.market_data.get_tick_size(asset_id=token_id)
 
         result = self.rest_api.place_order(
             token_id=token_id,
@@ -1178,7 +1208,109 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             price=float(price),
             size=float(size),
             side=str(side),
+            tick_size=tick_size
         )
+        return result
+
+    def _handle_place_multiple_orders(self, args_obj: ArgsObject):
+        """
+        Handle multiple order placements in a single request. Expects a list of orders in the arguments,
+        where each order contains the same fields as required by _handle_place_order. This method builds
+        all orders concurrently using a thread pool, then places them as a batch via the REST API.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be a dict with:
+                'orders' (list): A list of order dicts, each containing:
+                    'token_id' (str): The asset_id / clob_id to trade.
+                    'price' (float): The price at which to place the order.
+                    'size' (float): The size (number of contracts) of the order.
+                    'side' (str): The side of the order ('buy' or 'sell').
+        :return: Dict from the CLOB API containing the batch order placement results.
+        """
+
+        if self._configs['Block Order Execution']:
+            raise OrderExecutionDisabledError("Order execution is currently blocked by server configuration.")
+
+        args = args_obj.args
+        orders_list = args.get('orders', [])
+
+        if not orders_list:
+            raise InvalidArgumentError("'orders' list is required and cannot be empty for place_multiple_orders.")
+
+        if not isinstance(orders_list, list):
+            raise InvalidArgumentError("'orders' must be a list of order dictionaries.")
+
+        # Validate each order and resolve markets first (sequential since it uses cache)
+        order_specs = []
+        for order in orders_list:
+            token_id = order.get('token_id', None)
+            if token_id is None:
+                raise InvalidArgumentError("Each order must have a 'token_id' field.")
+
+            price = order.get('price', None)
+            if price is None:
+                raise InvalidArgumentError("Each order must have a 'price' field.")
+
+            size = order.get('size', None)
+            if size is None:
+                raise InvalidArgumentError("Each order must have a 'size' field.")
+
+            side = order.get('side', None)
+            if side is None:
+                raise InvalidArgumentError("Each order must have a 'side' field.")
+
+            market = self._resolve_market_from_token_id(token_id)
+            tick_size = self.market_data.get_tick_size(asset_id=token_id)
+            order_specs.append({
+                'token_id': token_id,
+                'market': market,
+                'price': float(price),
+                'size': float(size),
+                'side': str(side),
+                'tick_size': tick_size
+            })
+
+        # Build orders concurrently using thread pool since build_order involves HTTP requests
+        built_orders = []
+        build_errors = []
+
+        start_time = time.time()
+        with ThreadPoolExecutor(max_workers=min(len(order_specs), 10)) as executor:
+            future_to_order = {
+                executor.submit(
+                    self.rest_api.build_order,
+                    spec['token_id'],
+                    spec['market'],
+                    spec['price'],
+                    spec['size'],
+                    spec['side'],
+                    tick_size=spec['tick_size']
+                ): spec for spec in order_specs
+            }
+
+            for future in as_completed(future_to_order):
+                spec = future_to_order[future]
+                try:
+                    signed_order = future.result()
+                    built_orders.append(signed_order)
+                except Exception as e:
+                    build_errors.append({
+                        'token_id': spec['token_id'],
+                        'error': str(e)
+                    })
+
+        if build_errors:
+            raise PolyMarketDispatcherError(
+                f"Failed to build {len(build_errors)} order(s): {build_errors}"
+            )
+
+        if not built_orders:
+            raise PolyMarketDispatcherError("No orders were built successfully.")
+
+        logging.info(colored(f"Successfully Built {len(built_orders)} orders in {time.time() - start_time:.4f} seconds. Placing batch order now.", 'yellow'))
+        time_two = time.time()
+        result = self.rest_api.place_built_orders(built_orders)
+        logging.info(colored(f"Batch order placement completed in {time.time() - time_two:.4f} seconds.", 'yellow'))
         return result
 
     def _handle_cancel_order(self, args_obj: ArgsObject):
@@ -1191,6 +1323,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 'order_id' (str): The ID of the order to cancel.
         :return: Dict from the CLOB API, e.g.:
             {'not_canceled': {}, 'canceled': ['0x...']}
+            or failure example:
+            {"canceled": Array [], "not_canceled": Object {"0x..": String("order can't be found - already canceled or matched")}}
+
         """
         args = args_obj.args
         order_id = args.get('order_id', None)
@@ -1245,6 +1380,20 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         _ = args_obj
         balance = self.rest_api.get_balance()
         return balance
+
+    def _handle_cancel_all_open_orders(self, args_obj: ArgsObject):
+        """
+        Handle a request to cancel all open orders for the account. Delegates to the REST API's
+        cancel_all_open_orders which returns a dict containing lists of canceled and not canceled order IDs.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be empty (no arguments required).
+        :return: Dict from the CLOB API, e.g.:
+            {'not_canceled': {'0x...': 'reason'}, 'canceled': ['0x...', '0x...']}
+        """
+        _ = args_obj
+        result = self.rest_api.cancel_all()
+        return result
 
     ########################################
     # Utilities
@@ -1363,15 +1512,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._interactive_ui({
             'Toggle print P2 packets': ('Toggle printing of raw P2 packets with timestamps',
                                         self._toggle_print_p2_packets),
-
             'Modify dispatcher configurations': ('Modify dispatcher configurations interactively',
                                                  self._modify_configs_interactive),
-
             'Clear console': ('Clear the console output', lambda: subprocess.check_call(['clear'])),
-
             'Clear correlation ids': ('Clear all correlation IDs from the dispatcher cache',
-                                      self._correlation_id_checker.clear_seen_ids)
-
+                                      self._correlation_id_checker.clear_seen_ids),
+            'Get all open orders': ('Fetch and display all open orders for the account', lambda: print(json.dumps(self._handle_get_orders(ArgsObject(args=[], sock=None)), indent=4))),
+            'Cancel all open orders': ('Cancel all open orders for the account', lambda: print(colored(json.dumps(self._handle_cancel_all_open_orders(ArgsObject(args=[], sock=None)), indent=4), color='yellow'))),
         })
 
 

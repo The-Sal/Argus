@@ -209,7 +209,7 @@ class Introspective:
             print(f"Error calling method: {e}")
 
 
-def throw_fuss(msg: str, boarder="*", notify=True, title="Argus IBKR Alert") -> None:
+def throw_fuss(msg: str, boarder="=", notify=True, title="Argus IBKR Alert") -> None:
     """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
     try:
         environment_size = os.get_terminal_size().columns

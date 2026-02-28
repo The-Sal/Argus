@@ -10,10 +10,15 @@ from collections import OrderedDict
 class PolyMarketDispatcherError(Exception):
     pass
 
+class OrderExecutionError(PolyMarketDispatcherError):
+    pass
+
+class OrderExecutionDisabledError(OrderExecutionError):
+    pass
+
 
 class InvalidArgumentError(PolyMarketDispatcherError):
     pass
-
 
 class CorrelationIDError(PolyMarketDispatcherError):
     pass
@@ -22,6 +27,9 @@ class CorrelationIDLengthTooLongError(CorrelationIDError):
     pass
 
 class CorrelationIDAlreadySeenError(CorrelationIDError):
+    pass
+
+class UnableToEncodeMarketDataError(PolyMarketDispatcherError):
     pass
 
 def print_with_name(*args, **kwargs):
@@ -75,8 +83,13 @@ class P2ConvertClass:
 
     def transferable_2(self) -> bool:
         data_obj = self.market_data.get(self.asset_id, {})
-        bids = data_obj.get('bids', [])[:self.order_book_depth]
-        asks = data_obj.get('asks', [])[:self.order_book_depth]
+        try:
+            bids = data_obj.get('bids', [])[:self.order_book_depth]
+            asks = data_obj.get('asks', [])[:self.order_book_depth]
+        except (AttributeError, KeyError, TypeError) as e:
+            raise UnableToEncodeMarketDataError(
+                f"Market data for asset_id {self.asset_id} is not in the expected format. Cannot encode. Data: {data_obj}, e={e}"
+            )
 
         market_packet = str()
 

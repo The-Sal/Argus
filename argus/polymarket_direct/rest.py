@@ -7,20 +7,22 @@ import traceback
 from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
-from py_order_utils.model import OrderData
 from py_clob_client.constants import ZERO_ADDRESS
 from py_clob_client import BalanceAllowanceParams
 from argus.polymarket_direct.safe import IPSafety
 from concurrent.futures import ThreadPoolExecutor
 from argus.wireproxy import wrapper as wp_wrappers
+from py_clob_client.clob_types import PostOrdersArgs
 from py_clob_client.config import get_contract_config
 from argus.polymarket_direct import _types as pm_types
+from py_order_utils.model import OrderData, SignedOrder
 from py_clob_client.order_builder.constants import BUY, SELL
 from py_clob_client.order_builder.builder import ROUNDING_CONFIG
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_order_utils.builders.order_builder import OrderBuilder as UtilsOrderBuilder
 from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
+
 
 
 
@@ -31,6 +33,13 @@ endpoints = {
     'page_data': 'https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json'
 }
 qw = '[{}]'.format(__name__)
+
+class _FakeFuture:
+    def __init__(self, result):
+        self._result = result
+
+    def result(self):
+        return self._result
 
 
 def retry(max_attempts=3, delay=0.35):
@@ -229,7 +238,7 @@ class PolyRestAPI:
         proxy = wp_wrappers.start_proxy_and_return_bind('POLYMARKET')
         if proxy is not None:
             proxy = f'socks5://{proxy}'
-        _client = Client(http2=2, proxy=proxy)
+        _client = Client(http2=False, proxy=proxy)
         setattr(helpers, '_http_client', _client)
 
     ###########################################
@@ -273,7 +282,7 @@ class PolyRestAPI:
 
     @fatal_decorator('place_order')
     def place_order(self, token_id: str, market: pm_types.PolymarketEvent,
-                    price: float, size: float, side: str, order_type: OrderType = OrderType.GTC) -> dict:
+                    price: float, size: float, side: str, order_type: OrderType = OrderType.GTC, tick_size: float = None) -> dict:
         """
         Place an order on the Polymarket CLOB.
         :param order_type: The type of the order (default: GTC).
@@ -282,6 +291,7 @@ class PolyRestAPI:
         :param price: The price at which to place the order.
         :param size: The size of the order.
         :param side: The side of the order ('buy' or 'sell').
+        :param tick_size: The tick size for the order. If not provided, it will be fetched from the CLOB.
         :return: A dictionary containing the result of the order placement.
             E.g. {'errorMsg': '', 'orderID': '0xxxxxx', 'takingAmount': '', 'makingAmount': '', 'status': 'live', 'success': True}
         """
@@ -294,7 +304,8 @@ class PolyRestAPI:
                 market=market,
                 price=price,
                 size=size,
-                side=side
+                side=side,
+                tick_size=tick_size
             )
 
         with Timer(lambda x: time_taken_break_down.append(x)):
@@ -304,7 +315,9 @@ class PolyRestAPI:
             )
 
         logging.info('Order placed: %s', result)
-        if result['success']:
+        if result['errorMsg'] == '' and result['success']:
+            # the success is always true even when there is a failure
+            # to submit the order
             order_id = result['orderID']
             self._order_cache['orders'].append(result)
             self._order_cache[order_id] = {
@@ -327,9 +340,65 @@ class PolyRestAPI:
 
         return result
 
+    @fatal_decorator('place_built_orders')
+    def place_built_orders(self, orders: list[SignedOrder], order_type: OrderType = OrderType.GTC) -> dict:
+        """
+        Place already built and signed orders on the Polymarket CLOB.
+        :param order_type: The type of the orders (default: GTC).
+        :param orders: A list of already built and signed orders to place.
+        :return: The result from the CLOB API, containing order placement results.
+        """
+        postable_orders = map(lambda x: PostOrdersArgs(order=x, orderType=order_type), orders)
+        post: list[dict] = self.clob.post_orders(list(postable_orders))
+        # Example Response:
+        # [
+        #    {
+        #       "errorMsg":"invalid amount for a marketable BUY order ($0.01), min size: $1",
+        #       "orderID":"",
+        #       "takingAmount":"",
+        #       "makingAmount":"",
+        #       "status":"",
+        #       "success":true
+        #    }
+        #    ....
+        # ]
+
+        success = []
+        failed = []
+        for msg in post:
+            if msg['errorMsg']:
+                throw_fuss(
+                    msg=colored("Failed to post built and signed order: {}".format(msg['errorMsg']), 'red', attrs=['bold']),
+                    title="Failed to Post Built and Signed Order",
+                    notify=True
+                )
+                failed.append(msg)
+            else:
+                order_id = msg.get('orderID', 'Unknown ID')
+                throw_fuss(
+                    msg=colored("Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id), 'green', attrs=['bold']),
+                    title="Successfully Posted Built and Signed Orders",
+                    notify=True
+                )
+                macos_notification_with_custom_sound(
+                    title="Successfully Posted Built and Signed Order",
+                    message="Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id),
+                    sound_name="Glass"
+                )
+                logging.info('Successfully posted built and signed order: %s', msg)
+                success.append(msg)
+
+        return {
+            'success': success,
+            'failed': failed
+        }
+
     @fatal_decorator('build_order')
-    def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str):
-        tick_size = self.get_tick_size(token_id)
+    def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str,
+                    tick_size: float = None) -> SignedOrder:
+        if tick_size is None:
+            tick_size = self.get_tick_size(token_id)
+
         mapped = {
             'buy': BUY,
             'sell': SELL
@@ -343,7 +412,7 @@ class PolyRestAPI:
                             "This may lead to faster order placements but could cause issues if the underlying "
                             "assumptions about tick size and fee rate retrieval are violated. "
                             "Make sure you understand the implications of this setting.")
-            return self._rapid_order_builder(token_id, market, price, size, type_side)
+            return self._rapid_order_builder(token_id, market, price, size, type_side, tick_size)
 
         order = self.clob.create_order(
             order_args=OrderArgs(
@@ -360,15 +429,19 @@ class PolyRestAPI:
 
         return order
 
-    def _rapid_order_builder(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float,
-                             side: str):
+    def _rapid_order_builder(self, token_id: str, market: pm_types.PolymarketEvent,
+                             price: float, size: float, side: str, tick_size: float = None):
         """
         A more rapid order builder
         """
 
         # make these two calls on thread pools since they are independent and can be done in parallel to save time
-        tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
         fee_rate_future = self._thread_pool.submit(self.clob.get_fee_rate_bps, token_id)
+        if tick_size is None:
+            tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
+        else:
+            tick_size_future = _FakeFuture(tick_size)
+
 
         builder = self.clob.builder
         neg_risk = market.negRisk
@@ -383,6 +456,16 @@ class PolyRestAPI:
             ROUNDING_CONFIG[tick_size_future.result()],
         )
 
+        contract_config = get_contract_config(
+            builder.signer.get_chain_id(), neg_risk
+        )
+
+        order_builder = UtilsOrderBuilder(
+            contract_config.exchange,
+            builder.signer.get_chain_id(),
+            builder.signer,
+        )
+
         data = OrderData(
             maker=builder.funder,
             taker=ZERO_ADDRESS,
@@ -395,16 +478,6 @@ class PolyRestAPI:
             signer=builder.signer.address(),
             expiration=str(OrderArgs.expiration),
             signatureType=builder.sig_type,
-        )
-
-        contract_config = get_contract_config(
-            builder.signer.get_chain_id(), neg_risk
-        )
-
-        order_builder = UtilsOrderBuilder(
-            contract_config.exchange,
-            builder.signer.get_chain_id(),
-            builder.signer,
         )
 
         return order_builder.build_signed_order(data)
@@ -464,11 +537,45 @@ class PolyRestAPI:
     @fatal_decorator('get_balance')
     def get_balance(self) -> float:
         """
-        Get the balance of the account.
-        :return: The balance as a float.
+        Get the tradeable balance of the account.
+        
+        This calculates the available balance by:
+        1. Getting the gross on-chain wallet balance
+        2. Subtracting reserved collateral from all open BUY orders
+        
+        Only BUY orders reserve USDC collateral. The reserved amount is calculated
+        as (original_size - size_matched) * price for each open buy order.
+        
+        :return: The tradeable balance as a float in USDC.
         """
-        balance = float(self.clob.get_balance_allowance(BalanceAllowanceParams(asset_type='COLLATERAL'))['balance'])
-        return balance / self._div
+
+        # Step 1: Refresh the on-chain balance cache
+        self.clob.update_balance_allowance(
+            BalanceAllowanceParams(asset_type='COLLATERAL')
+        )
+        
+        # Step 2: Get gross wallet balance
+        raw = self.clob.get_balance_allowance(
+            BalanceAllowanceParams(asset_type='COLLATERAL')
+        )
+        gross_balance = float(raw['balance']) / self._div
+
+        # Step 3: Subtract all open-order reservations across ALL markets
+        open_orders = self.get_orders()  # Returns list of PolyMarketOrder objects
+        reserved = 0.0
+        for order in open_orders:
+            original_size = float(order.original_size)
+            size_matched = float(order.size_matched)
+            price = float(order.price)
+            # Only buy orders reserve USDC collateral
+            if order.side.upper() == 'BUY':
+                reserved += (original_size - size_matched) * price
+
+        return gross_balance - reserved
+
+    @fatal_decorator('cancel_all')
+    def cancel_all(self):
+        return self.clob.cancel_all()
 
     @property
     def order_cache(self):
@@ -490,3 +597,4 @@ class PolyRestAPI:
             "secret": creds.api_secret,
             "passphrase": creds.api_passphrase,
         }
+

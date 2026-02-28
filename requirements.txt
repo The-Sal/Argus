@@ -13,3 +13,4 @@ python-socks~=2.8.0
 httpx
 py-clob-client
 httpx[socks]
+py-order-utils

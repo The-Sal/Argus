@@ -13,6 +13,7 @@ Argus runtime entrypoint.
 """
 import sys
 import argus
+import logging
 import platform
 import argparse
 from dotenv import load_dotenv
@@ -31,8 +32,18 @@ def main(argv=None):
     parser.add_argument('--capital-env', dest='capital_env', choices=['demo', 'live'], help='Capital.com environment (demo or live)')
     parser.add_argument('--wait-for-pong', dest='wait_for_pong', action='store_true', help='Wait for pong before starting interactive mode (if supported by dispatcher)')
     parser.add_argument('--profile-proxy', dest='profile_proxy', choices=['none', 'proxy-only', 'proxy-and-local'], help='Profile WireProxy performance for Polymarket (none, proxy-only, or proxy-and-local)')
+    parser.add_argument('--log-level', dest='log_level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default='INFO', help='Set logging level (default: INFO)')
+    parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Enable verbose logging (same as --log-level DEBUG)')
 
     args = parser.parse_args(argv)
+
+    # Configure logging based on flags
+    log_level = logging.DEBUG if args.verbose else getattr(logging, args.log_level)
+    logging.basicConfig(
+        level=log_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
     if args.target == 'ib.forecast':
         from argus.ib.forecast import FXCDispatcher

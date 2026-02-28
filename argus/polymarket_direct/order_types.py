@@ -304,6 +304,120 @@ class TradeData:
 
 
 @dataclass
+class TradeEvent:
+    """Represents a trade event from the Polymarket CLOB WebSocket.
+
+    TradeEvent captures real-time trade execution events from the WebSocket feed.
+    Unlike the Trade class which is populated from REST API responses, TradeEvent
+    represents a WebSocket notification of a trade that has occurred.
+
+    Attributes:
+        id: Unique identifier for this trade.
+        taker_order_id: ID of the taker's order that triggered this trade.
+        market: Market identifier from Polymarket.
+        asset_id: Token ID representing the outcome being traded.
+        side: Direction of the trade ('BUY' or 'SELL').
+        size: Number of shares/contracts traded.
+        fee_rate_bps: Fee rate in basis points.
+        price: Execution price per share.
+        status: Trade status ('CONFIRMED', etc).
+        match_time: Unix timestamp when trade was executed.
+        last_update: Unix timestamp of last update.
+        outcome: Description of the outcome.
+        owner: Owner identifier.
+        trade_owner: Trade owner identifier (may differ from owner).
+        maker_address: Address of the market maker.
+        transaction_hash: Blockchain transaction hash.
+        bucket_index: Internal CLOB bucket index.
+        maker_orders: List of maker orders that filled this trade.
+        trader_side: Role in trade ('TAKER' or 'MAKER').
+        timestamp: Unix timestamp with milliseconds when event occurred.
+        event_type: Category of event ('trade').
+    """
+    id: str
+    taker_order_id: str
+    market: str
+    asset_id: str
+    side: str
+    size: str
+    fee_rate_bps: str
+    price: str
+    status: str
+    match_time: str
+    last_update: str
+    outcome: str
+    owner: str
+    trade_owner: str
+    maker_address: str
+    transaction_hash: str
+    bucket_index: int
+    maker_orders: List[dict] = field(default_factory=list)
+    trader_side: str = ""
+    timestamp: str = ""
+    event_type: str = "trade"
+
+    def __repr__(self) -> str:
+        return (f"TradeEvent(id={self.id!r}, taker_order_id={self.taker_order_id!r}, "
+                f"market={self.market!r}, asset_id={self.asset_id!r}, side={self.side!r}, "
+                f"size={self.size!r}, price={self.price!r}, status={self.status!r}, "
+                f"outcome={self.outcome!r}, trader_side={self.trader_side!r}, "
+                f"timestamp={self.timestamp!r})")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'TradeEvent':
+        """Create a TradeEvent from a dictionary (e.g., parsed JSON from WebSocket)."""
+        return cls(
+            id=data['id'],
+            taker_order_id=data['taker_order_id'],
+            market=data['market'],
+            asset_id=data['asset_id'],
+            side=data['side'],
+            size=data['size'],
+            fee_rate_bps=data['fee_rate_bps'],
+            price=data['price'],
+            status=data['status'],
+            match_time=data['match_time'],
+            last_update=data['last_update'],
+            outcome=data['outcome'],
+            owner=data['owner'],
+            trade_owner=data.get('trade_owner', data['owner']),
+            maker_address=data['maker_address'],
+            transaction_hash=data['transaction_hash'],
+            bucket_index=int(data['bucket_index']),
+            maker_orders=data.get('maker_orders', []),
+            trader_side=data.get('trader_side', ''),
+            timestamp=data.get('timestamp', ''),
+            event_type=data.get('event_type', 'trade')
+        )
+
+    def to_dict(self) -> dict:
+        """Convert the TradeEvent to a dictionary for serialization."""
+        return {
+            'id': self.id,
+            'taker_order_id': self.taker_order_id,
+            'market': self.market,
+            'asset_id': self.asset_id,
+            'side': self.side,
+            'size': self.size,
+            'fee_rate_bps': self.fee_rate_bps,
+            'price': self.price,
+            'status': self.status,
+            'match_time': self.match_time,
+            'last_update': self.last_update,
+            'outcome': self.outcome,
+            'owner': self.owner,
+            'trade_owner': self.trade_owner,
+            'maker_address': self.maker_address,
+            'transaction_hash': self.transaction_hash,
+            'bucket_index': self.bucket_index,
+            'maker_orders': self.maker_orders,
+            'trader_side': self.trader_side,
+            'timestamp': self.timestamp,
+            'event_type': self.event_type
+        }
+
+
+@dataclass
 class OrderEvent:
     """Represents an order lifecycle event from the Polymarket CLOB WebSocket or event stream.
 
@@ -377,7 +491,7 @@ class OrderEvent:
             market=data['market'],
             asset_id=data['asset_id'],
             side=data['side'],
-            order_owner=data['order_owner'],
+            order_owner=data.get('order_owner', ''),
             original_size=data['original_size'],
             size_matched=data['size_matched'],
             price=data['price'],
