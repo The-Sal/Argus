@@ -123,9 +123,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
 
         # All the below are already registered with WireProxy system
-        self.market_data = wss.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
         self.rest_api = rest.PolyRestAPI(private_key=private_key, proxy_funder=proxy_funder,
                                          fatal_callback=self._on_fatal_error)
+        self.market_data = wss.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
         self.account_updates = wss.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
                                                              update_callback=self._account_update_callback)
 
