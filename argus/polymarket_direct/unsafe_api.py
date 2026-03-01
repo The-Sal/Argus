@@ -15,9 +15,14 @@ exactly the data we want, but then we would be tying
 """
 import json
 import logging
+import os
+
 import requests
 from datetime import datetime
 from urllib.parse import urlencode
+
+from termcolor import colored
+
 from argus.cache_sys import DomainCache, CACHE
 from argus.wireproxy.wrapper import update_request_session_proxy
 
@@ -38,11 +43,16 @@ class UnsafePolyMarket:
 
     def __init__(self):
         self.session = requests.Session()
-        update_request_session_proxy(
-            idx='POLYMARKET',
-            session=self.session,
-            verbose=False
-        )
+
+        if os.environ.get('POLYMARKET_UNSAFE_RAPID_CONNECTIONS', 'false').lower() == 'false':
+            update_request_session_proxy(
+                idx='POLYMARKET',
+                session=self.session,
+                verbose=False
+            )
+        else:
+            print(colored(f"[{__name__}] POLYMARKET_UNSAFE_RAPID_CONNECTIONS is set to true. UnsafePolyMarket is not routing via WireProxy", "yellow", attrs=['blink']))
+
 
     @_unsafe_api_cache.cache_decorator(
         func_uuid='get_price_to_beat',

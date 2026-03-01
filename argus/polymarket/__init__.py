@@ -129,6 +129,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self.account_updates = wss.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
                                                              update_callback=self._account_update_callback)
 
+        self.unsafe_api = UnsafePolyMarket()
+
         # Proxy Profiling if enabled
         if profile_proxy in [0, 1]:
             profiler = ProxyPerformanceProfiler(print_callback=print_with_name)
@@ -900,9 +902,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if market_event is None:
             raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
 
-        # Import UnsafePolyMarket here to avoid circular imports
 
-        unsafe_api = UnsafePolyMarket()
 
         # Get the market slug from the first market in the event
         # Most Up/Down events have a single market, so we use index 0
@@ -919,7 +919,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # METHOD 1: Try the scraper first (get_price_to_beat using market slug)
         scraper_error = None
         try:
-            price = unsafe_api.get_price_to_beat(market_slug)
+            price = self.unsafe_api.get_price_to_beat(market_slug)
             if price is not None:
                 return price
         except UnableToReachPolymarket as e:
@@ -944,7 +944,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             variant = self._extract_variant(start_date, end_date)
 
             if symbol and variant and start_date and end_date:
-                price = unsafe_api.build_crypto_price_url_and_get_price(
+                price = self.unsafe_api.build_crypto_price_url_and_get_price(
                     symbol=symbol,
                     variant=variant,
                     start_date=start_date,

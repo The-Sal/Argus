@@ -312,7 +312,9 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         self._thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="PolyMarketOrderBookWssThreadPool")
 
         if os.environ.get('POLYMARKET_UNSAFE_RAPID_CONNECTIONS', 'false').lower() == 'true':
-            print(colored("[{}] WARNING: UNSAFE RAPID CONNECTIONS IS ENABLED. THIS MAY BREAK WEBSOCKET CONNECTIONS.", color='yellow', attrs=['bold', 'blink']))
+            print(colored("[{}] WARNING: UNSAFE RAPID CONNECTIONS IS ENABLED. "
+                          "THIS MAY BREAK WEBSOCKET CONNECTIONS.".format(__name__),
+                          color='yellow', attrs=['bold', 'blink']))
         else:
             wp_wrappers.update_request_session_proxy(
                 session=self.session,
@@ -442,10 +444,12 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
 
         # Callback with a full book
         if self._order_book_update_callback:
-            self._order_book_update_callback({
-                asset_id: self.order_book_for_asset_id(asset_id),
-                'timestamp': message['timestamp']
-            })
+            book = self.order_book_for_asset_id(asset_id)
+            if book is not None:
+                self._order_book_update_callback({
+                    asset_id: book,
+                    'timestamp': message['timestamp']
+                })
 
     # Warning: This method is already thread-locked. Do not call inside another lock or you will cause a deadlock.
     def _update_order_book(self, asset_id: str, change: dict) -> None:
