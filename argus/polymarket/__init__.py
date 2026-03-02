@@ -166,11 +166,23 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self.start_update_markets_cache_thread()
 
         self._correlation_id_checker = CorrelationIDChecker()
+        self._log_file = os.environ.get('POLYMARKET_DISPATCHER_LOG_FILE', os.path.expanduser('~/.argus/polymarket_dispatcher.log'))
+
+        with open(self._log_file, 'a') as f:
+            f.write(f"\n\n--- PolymarketDispatcher started at {datetime.now().isoformat()} ---\n")
+
+        self._log_file_lock = threading.Lock()
 
         logging.info("PolymarketDispatcher initialized on %s:%d", host, port)
         logging.info("Market cache refresh interval set to %d seconds", self._market_cache_refresh_interval)
         logging.info("Market API limit set to %d", self._market_api_limit)
         logging.info("Max seen markets initialized to %d", self._max_seen_markets)
+
+    @runAsThread
+    def async_write_log(self, message: str):
+        with self._log_file_lock:
+            with open(self._log_file, 'a') as f:
+                f.write(f"{datetime.now().isoformat()} ==> {message}\n")
 
     #######################################
     # Worker Threads & Functions
@@ -1311,6 +1323,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         time_two = time.time()
         result = self.rest_api.place_built_orders(built_orders)
         logging.info(colored(f"Batch order placement completed in {time.time() - time_two:.4f} seconds.", 'yellow'))
+        self.async_write_log(json.dumps({
+            'event': 'place_multiple_orders',
+            'num_orders': len(built_orders),
+            'build_time_seconds': time.time() - start_time,
+            'place_time_seconds': time.time() - time_two,
+            'result': result
+        }))
         return result
 
     def _handle_cancel_order(self, args_obj: ArgsObject):
