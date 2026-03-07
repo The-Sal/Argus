@@ -55,7 +55,7 @@ def _make_httpx_clob_client():
     proxy = start_proxy_and_return_bind('POLYMARKET')
     if proxy is not None:
         proxy = f'socks5://{proxy}'
-    _client = Client(http2=2, proxy=proxy)
+    _client = Client(http2=True, proxy=proxy)
     setattr(helpers, '_http_client', _client)
 
 
