@@ -1537,6 +1537,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'Clear correlation ids': ('Clear all correlation IDs from the dispatcher cache',
                                       self._correlation_id_checker.clear_seen_ids),
             'Get all open orders': ('Fetch and display all open orders for the account', lambda: print(json.dumps(self._handle_get_orders(ArgsObject(args=[], sock=None)), indent=4))),
+            'Get all orders': ('Fetch and display all orders for the account', lambda: print(json.dumps(self.rest_api.get_orders(), indent=4))),
             'Cancel all open orders': ('Cancel all open orders for the account', lambda: print(colored(json.dumps(self._handle_cancel_all_open_orders(ArgsObject(args=[], sock=None)), indent=4), color='yellow'))),
         })
 
