@@ -6,7 +6,6 @@ import logging
 import requests
 import threading
 import traceback
-
 from termcolor import colored
 from utils3 import runAsThread
 from websocket import WebSocketApp
@@ -16,6 +15,7 @@ from argus.polymarket_direct import _types as pm_types
 from concurrent.futures.thread import ThreadPoolExecutor
 from argus.polymarket_direct.order_types import OrderEvent, TradeEvent
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
+
 
 
 
