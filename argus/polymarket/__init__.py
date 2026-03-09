@@ -29,6 +29,7 @@ import threading
 import traceback
 import subprocess
 import dataclasses
+from collections import deque
 from datetime import datetime
 from termcolor import colored
 from utils3 import runAsThread, Timer
@@ -172,6 +173,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             f.write(f"\n\n--- PolymarketDispatcher started at {datetime.now().isoformat()} ---\n")
 
         self._log_file_lock = threading.Lock()
+
+        # Latency samples: time (ms) from WS packet arrival to sock.sendall() completion (market data only)
+        self._latency_samples: deque[float] = deque(maxlen=10_000)
 
         logging.info("PolymarketDispatcher initialized on %s:%d", host, port)
         logging.info("Market cache refresh interval set to %d seconds", self._market_cache_refresh_interval)
@@ -468,6 +472,32 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 print_with_name('Unexpected error sending market data for asset_id %s to socket: %s', asset_id, e)
                 self.remove_socket(sock)
                 traceback.print_exc()
+
+        # Record WS-arrival → sendall latency (ms)
+        recv_ts = getattr(self.market_data, '_last_msg_recv_ts', 0.0)
+        if recv_ts:
+            self._latency_samples.append((time.perf_counter() - recv_ts) * 1000)
+
+    def print_latency_stats(self):
+        """Print WS-arrival → sock.sendall propagation latency percentiles (market data only)."""
+        samples = sorted(self._latency_samples)
+        if not samples:
+            print_with_name("No latency samples yet.")
+            return
+        n = len(samples)
+        p = lambda pct: samples[min(int(pct / 100 * n), n - 1)]
+        print_with_name(
+            f"Propagation latency ({n} samples) — "
+            f"min={samples[0]:.3f}ms  p50={p(50):.3f}ms  "
+            f"p95={p(95):.3f}ms  p99={p(99):.3f}ms  max={samples[-1]:.3f}ms"
+        )
+
+    @runAsThread
+    def _latency_stats_loop(self, interval: int = 10):
+        """Repeatedly print latency stats every `interval` seconds (runs in background thread)."""
+        while True:
+            self.print_latency_stats()
+            time.sleep(interval)
 
     #######################################
     # MAIN CLIENT MESSAGE HANDLER
@@ -1539,6 +1569,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'Get all open orders': ('Fetch and display all open orders for the account', lambda: print(json.dumps(self._handle_get_orders(ArgsObject(args=[], sock=None)), indent=4))),
             'Get all orders': ('Fetch and display all orders for the account', lambda: print(json.dumps(self.rest_api.get_orders(), indent=4))),
             'Cancel all open orders': ('Cancel all open orders for the account', lambda: print(colored(json.dumps(self._handle_cancel_all_open_orders(ArgsObject(args=[], sock=None)), indent=4), color='yellow'))),
+            'Print latency stats': ('Print WS→client propagation latency percentiles (one-shot)', self.print_latency_stats),
+            'Start latency stats loop': ('Print latency stats every 10s in background', lambda: self._latency_stats_loop(10)),
         })
 
 

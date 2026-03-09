@@ -45,6 +45,9 @@ class PolymarketWSSBase:
         # Prevent concurrent ping threads
         self._pinging_lock = threading.Lock()
 
+        # Latency measurement: timestamp (perf_counter) of the most recently received non-PONG message
+        self._last_msg_recv_ts: float = 0.0
+
         # Threading events
         self._reset_threading_events()
 
@@ -85,6 +88,7 @@ class PolymarketWSSBase:
                 self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
             self.wait_till_first_pong.set()
             return
+        self._last_msg_recv_ts = time.perf_counter()
         self._on_message_impl(message)
 
     def _on_message_impl(self, message: str):
