@@ -500,6 +500,8 @@ def step_drain_and_summarise(sock: socket.socket):
             raw += chunk
     except socket.timeout:
         pass
+    except KeyboardInterrupt:
+        pass
 
     # Parse anything left in the buffer
     frames, _ = _extract_frames(raw)

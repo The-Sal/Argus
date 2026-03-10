@@ -13,18 +13,18 @@ Note: Technically we can and have the HAR files to reverse engineer and break do
 exactly the data we want, but then we would be tying
 
 """
+import os
 import json
 import logging
-import os
-
 import requests
 from datetime import datetime
-from urllib.parse import urlencode
-
 from termcolor import colored
-
+from urllib.parse import urlencode
 from argus.cache_sys import DomainCache, CACHE
 from argus.wireproxy.wrapper import update_request_session_proxy
+
+
+
 
 
 class UnsafeException(Exception):

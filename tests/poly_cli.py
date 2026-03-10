@@ -887,7 +887,7 @@ def subscribe_clob_latency_mode(client: ArgusClient, clob_id: str):
                         print("-" * 85)
             
             # Small sleep to prevent CPU spinning
-            time.sleep(0.01)
+            # time.sleep(0.01)
             
     except KeyboardInterrupt:
         print(f"\n\n🛑 Stopped by user.")
