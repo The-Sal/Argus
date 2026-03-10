@@ -329,6 +329,11 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         # Stats
         self._updates: list[float] = []  # timestamps of updates received
 
+        # Cache of the most recently received best_bid_ask values per asset.
+        # Written only from best_bid_ask events; read by the price_change dedup check.
+        # Structure: {asset_id: {'best_bid': str, 'best_ask': str}}
+        self._asset_id_to_best_bid_ask: dict = {}
+
     def _create_ws_app(self):
         """Create the WebSocketApp instance."""
         self._ws = WebSocketApp(
@@ -397,14 +402,29 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         event_type = message.get('event_type')
         asset_id = message.get('asset_id')
 
+        # Controls whether the bottom-of-function callback fires.
+        # Set to True when we've already fired it (best_bid_ask fast path) or
+        # determined it's a dedup (price_change that matches cached best_bid_ask state).
+        _skip_bottom_callback = False
+
         if not asset_id:
-            # Handle price_change multi-asset
+            # Multi-asset price_change: each change in the list is processed individually.
             if event_type == 'price_change' and 'price_changes' in message:
                 for change in message['price_changes']:
                     asset_id = change['asset_id']
                     if asset_id is None:
                         return
+
+                    # Only pay the dedup-check cost if this change touches the top of book —
+                    # deep-book changes can never be redundant with a best_bid_ask event.
+                    is_top = self._is_top_of_book_change(asset_id, change)
                     self._update_order_book(asset_id, change)
+
+                    # If best_bid_ask already fired a callback reflecting this exact
+                    # top-of-book state, skip to avoid double-firing for this asset.
+                    if is_top and self._matches_best_bid_ask_cache(asset_id):
+                        continue
+
                     order_book = self.order_book_for_asset_id(asset_id)
                     if self._order_book_update_callback and order_book is not None:
                         self._order_book_update_callback({
@@ -422,9 +442,47 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
                     'bids': bid_sorted,
                     'asks': ask_sorted
                 }
+
         elif event_type == 'price_change':
-            # Single-asset delta
+            # Single-asset delta.
+            # Check whether this change is at the top of book BEFORE updating so we
+            # compare against the pre-update best level (the level that best_bid_ask
+            # would have been tracking).
+            is_top = self._is_top_of_book_change(asset_id, message)
             self._update_order_book(asset_id, message)
+
+            # After update: if the change was at the top and the resulting best bid/ask
+            # matches what best_bid_ask already broadcast, suppress the bottom callback.
+            if is_top and self._matches_best_bid_ask_cache(asset_id):
+                _skip_bottom_callback = True
+
+        elif event_type == 'best_bid_ask':
+            # Fast path: Polymarket sends this dedicated event whenever the best bid or
+            # ask PRICE shifts (not merely size).  It arrives over the same TCP stream as
+            # price_change so ordering is preserved from source — best_bid_ask may arrive
+            # before or after the corresponding price_change, but we fire immediately
+            # either way and let the price_change handler dedup against this cache entry.
+            #
+            # Payload: {"event_type": "best_bid_ask", "asset_id": "...", "market": "0x...",
+            #           "best_bid": "0.73", "best_ask": "0.77", "spread": "0.04",
+            #           "timestamp": "1766789469958"}
+            with self._dict_lock:
+                self._asset_id_to_best_bid_ask[asset_id] = {
+                    'best_bid': message['best_bid'],
+                    'best_ask': message['best_ask'],
+                }
+
+            # Fire callback immediately with the current full L2 book.  The book may be
+            # very slightly stale if the corresponding price_change hasn't arrived yet,
+            # but this is the fastest possible notification that top-of-book has moved.
+            if self._order_book_update_callback:
+                book = self.order_book_for_asset_id(asset_id)
+                if book is not None:
+                    self._order_book_update_callback({
+                        asset_id: book,
+                        'timestamp': message['timestamp']
+                    })
+            return  # callback already fired; skip bottom
 
         elif event_type == 'tick_size_change':
             # Tick size change - store in misc info dict for now, as it doesn't affect the order book structure
@@ -446,8 +504,10 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
                     'future_running': None
                 }
 
-        # Callback with a full book
-        if self._order_book_update_callback:
+        # Bottom callback: fires for book snapshots, non-deduped price_changes, and
+        # tick_size_change events.  Skipped when best_bid_ask returned early or when
+        # a top-of-book price_change was already covered by a best_bid_ask callback.
+        if not _skip_bottom_callback and self._order_book_update_callback:
             book = self.order_book_for_asset_id(asset_id)
             if book is not None:
                 self._order_book_update_callback({
@@ -487,11 +547,60 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
                         insert_idx = len(levels) - insert_idx  # bids are descending
                     levels.insert(insert_idx, new_level)
 
+    def _is_top_of_book_change(self, asset_id: str, change: dict) -> bool:
+        """
+        Returns True if this price_change event touches the current best bid or best ask level.
+
+        This is called BEFORE _update_order_book so the comparison is against the pre-update
+        top of book. A change at the top is the only case where a best_bid_ask event could
+        arrive for the same state, making the subsequent price_change callback redundant.
+
+        We use string comparison here (same as the price values in the book) — no float
+        conversion needed since both sides come from Polymarket as strings.
+        """
+        with self._dict_lock:
+            book = self._asset_id_to_order_book.get(asset_id)
+            if not book:
+                return False
+            side = 'bids' if change.get('side') == 'BUY' else 'asks'
+            levels = book[side]
+            if not levels:
+                return False
+            # Change is at the top iff its price equals the current best level's price.
+            return change.get('price') == levels[0]['price']
+
+    def _matches_best_bid_ask_cache(self, asset_id: str) -> bool:
+        """
+        Returns True if the book's current best bid/ask matches the cached values from the
+        most recent best_bid_ask event.
+
+        Called AFTER _update_order_book so we compare the post-update book state against the
+        cache. If they match, best_bid_ask has already fired a callback reflecting this exact
+        top-of-book state, so the price_change callback can be safely suppressed (dedup).
+
+        If no best_bid_ask has been received yet for this asset, returns False — we never
+        suppress a callback without prior confirmation from the server.
+        """
+        with self._dict_lock:
+            cached = self._asset_id_to_best_bid_ask.get(asset_id)
+            if not cached:
+                # No best_bid_ask received yet for this asset; can't dedup.
+                return False
+            book = self._asset_id_to_order_book.get(asset_id)
+            if not book:
+                return False
+            bids = book.get('bids', [])
+            asks = book.get('asks', [])
+            current_best_bid = bids[0]['price'] if bids else None
+            current_best_ask = asks[0]['price'] if asks else None
+            return current_best_bid == cached['best_bid'] and current_best_ask == cached['best_ask']
+
     def subscribe_to_asset_id(self, asset_id: str):
         self._ws.send(json.dumps({
             "assets_ids": [asset_id],
             "type": "market",
-            "operation": "subscribe"
+            "operation": "subscribe",
+            "custom_feature_enabled": True
         }))
 
         with self._dict_lock:
