@@ -1,20 +1,34 @@
 # PolymarketEvent attributes that are actually read in polymarket/__init__.py
 # These are the only fields needed for the dispatcher to function correctly
-import logging
 import os
+import logging
 from typing import Any
 from dotenv import load_dotenv
 from types import SimpleNamespace
 
-# Event-level attributes
-EVENT_LEVEL_ATTRIBUTES = [
-    'ticker',
-    'title',
-    'resolutionSource',
-]
+class SlimmedPolymarketEvent(SimpleNamespace):
+    """A slimmed-down version of PolymarketEvent with a to_dict method."""
+    
+    def to_dict(self):
+        """Convert the SimpleNamespace back to a dictionary."""
+        result = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, list):
+                result[key] = [
+                    item.to_dict() if isinstance(item, SlimmedPolymarketEvent) else item
+                    for item in value
+                ]
+            elif isinstance(value, SlimmedPolymarketEvent):
+                result[key] = value.to_dict()
+            elif isinstance(value, SimpleNamespace):
+                result[key] = vars(value)
+            else:
+                result[key] = value
+        return result
+
 
 # Market-level attributes (within event.markets list)
-MARKET_LEVEL_ATTRIBUTES = [
+ATTRS = [
     'slug',
     'clobTokenIds',
     'question',
@@ -24,9 +38,15 @@ MARKET_LEVEL_ATTRIBUTES = [
     'startDateIso',
     'endDate',
     'endDateIso',
+    'ticker',
+    'title',
+    'resolutionSource',
+    'active',
+    'closed',
+    'negRisk'
 ]
 
-ALL_READ_ATTRIBUTES = EVENT_LEVEL_ATTRIBUTES + MARKET_LEVEL_ATTRIBUTES
+ALL_READ_ATTRIBUTES =  ATTRS
 READ_ATTRIBUTES_SET = set(ALL_READ_ATTRIBUTES)
 
 # Types considered primitives that can be removed if not in READ_ATTRIBUTES_SET
@@ -69,9 +89,9 @@ def traverse_and_slim(event) -> Any:
             }
             return result
         
-        # Handle objects (dataclasses, etc.) - create dummy SimpleNamespace
+        # Handle objects (dataclasses, etc.) - create dummy SlimmedPolymarketEvent
         else:
-            dummy = SimpleNamespace()
+            dummy = SlimmedPolymarketEvent()
             
             for attr in dir(obj):
                 if attr.startswith('_'):
@@ -79,15 +99,16 @@ def traverse_and_slim(event) -> Any:
                 
                 value = getattr(obj, attr, None)
                 
-                # Skip None values - they represent missing/unset attributes
-                if value is None:
-                    continue
-                
                 if callable(value):
                     continue
                 
                 # If it's a primitive and NOT in our allowed set, skip it
                 if isinstance(value, PRIMITIVE_TYPES) and attr not in READ_ATTRIBUTES_SET:
+                    continue
+                
+                # Skip None values only if they're NOT in our allowed set
+                # Attributes in READ_ATTRIBUTES_SET must always be preserved, even if None
+                if value is None and attr not in READ_ATTRIBUTES_SET:
                     continue
                 
                 # Recursively slim the value

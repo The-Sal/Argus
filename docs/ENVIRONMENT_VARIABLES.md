@@ -180,7 +180,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Required**: No
 - **Used in**: `polymarket/__init__.py`
 - **Behavior**: When `true`, the `_mem_slim` method is called on all `PolymarketEvent` objects to aggresively **REMOVE** attributes to save RAM
-- **Warning**: This is a very aggressive memory optimization that will mean incomplete API reponse if you request for the full object. It is destructive operations that strip attrs! 
+- **Warning**: This is a very aggressive memory optimization that will mean an incomplete API response if you request for the full object. It is destructive operations that strip attrs! 
 
 
 ### `POLYMARKET_PROTECTED_ATTRIBUTES`

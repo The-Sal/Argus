@@ -39,6 +39,7 @@ from utils3.networking.sockets import Server
 from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus.cache_sys import DomainCache, FastCache
 from argus._argus_utils import Introspective, throw_fuss
+from argus.polymarket._mem_slim import traverse_and_slim
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -48,7 +49,6 @@ from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_
 from argus.polymarket._classes import (PolyMarketDispatcherError, InvalidArgumentError, RoutingHelper,
                                        ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker,
                                        OrderExecutionDisabledError)
-from argus.polymarket._mem_slim import traverse_and_slim
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
