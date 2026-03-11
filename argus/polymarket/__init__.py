@@ -18,6 +18,7 @@ IMPORTANT — Account Update Delivery Requirement:
     to market data.  If your workflow depends on receiving account lifecycle
     events, you MUST subscribe to at least one asset_id before placing orders.
 """
+import gc
 import os
 import json
 import time
@@ -47,11 +48,11 @@ from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_
 from argus.polymarket._classes import (PolyMarketDispatcherError, InvalidArgumentError, RoutingHelper,
                                        ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker,
                                        OrderExecutionDisabledError)
+from argus.polymarket._mem_slim import traverse_and_slim
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
 _CACHE = DomainCache('polymarket_dispatcher_v2', cache=_poly_cache)
-
 
 
 class PolymarketDispatcher(Introspective, RoutingHelper):
@@ -167,7 +168,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self.start_update_markets_cache_thread()
 
         self._correlation_id_checker = CorrelationIDChecker()
-        self._log_file = os.environ.get('POLYMARKET_DISPATCHER_LOG_FILE', os.path.expanduser('~/.argus/polymarket_dispatcher.log'))
+        self._log_file = os.environ.get('POLYMARKET_DISPATCHER_LOG_FILE',
+                                        os.path.expanduser('~/.argus/polymarket_dispatcher.log'))
 
         with open(self._log_file, 'a') as f:
             f.write(f"\n\n--- PolymarketDispatcher started at {datetime.now().isoformat()} ---\n")
@@ -257,6 +259,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             return scoped_all_markets_cache
 
         markets_cached = fetch_all_markets_cached()
+
+        if os.environ.get('POLYMARKET_MEMORY_PRUNING', 'false').lower() == 'true':
+            for key, value in tqdm.tqdm(markets_cached.items(), desc="Pruning events data in cache", unit="events", dynamic_ncols=True):
+                markets_cached[key] = traverse_and_slim(value)
+
+        _poly_cache.unload_cache()
+        gc.collect()
+
         with self._market_cache_lock:
             self._all_markets_cache.update(markets_cached)
 
@@ -306,10 +316,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for packet in packets:
             content = json.loads(packet.decode('utf-8'))
             logging.debug("Received data from Polymarket client: %s", content)
-            correlation_id = content.get('correlation_id', None)  # Optional field for client-side tracking of requests/responses
+            correlation_id = content.get('correlation_id',
+                                         None)  # Optional field for client-side tracking of requests/responses
             try:
                 if correlation_id is not None:
-                    self._correlation_id_checker.check_correlation_id(correlation_id)  # throws if invalid, caught by the exception below
+                    self._correlation_id_checker.check_correlation_id(
+                        correlation_id)  # throws if invalid, caught by the exception below
 
                 response = self._handle_client_message(client_socket, address, content)
                 msg = {
@@ -944,8 +956,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if market_event is None:
             raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
 
-
-
         # Get the market slug from the first market in the event
         # Most Up/Down events have a single market, so we use index 0
         if not market_event.markets or len(market_event.markets) == 0:
@@ -1029,7 +1039,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         max_tries = 5
         for attempt in range(1, max_tries + 1):
-            time.sleep(attempt*0.5)
+            time.sleep(attempt * 0.5)
             logging.info(f"Attempt {attempt} to get price to beat for ticker '{args_obj.args[0]}'")
             try:
                 return self._handle_get_price_to_beat_inner(args_obj)
@@ -1038,7 +1048,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 if attempt >= max_tries:
                     raise e
 
-        logging.warning('This code block should never be reached due to the retry logic, investigate if it is. pos=_handle_get_price_to_beat')
+        logging.warning(
+            'This code block should never be reached due to the retry logic, investigate if it is. pos=_handle_get_price_to_beat')
         return None
 
     @staticmethod
@@ -1349,7 +1360,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if not built_orders:
             raise PolyMarketDispatcherError("No orders were built successfully.")
 
-        logging.info(colored(f"Successfully Built {len(built_orders)} orders in {time.time() - start_time:.4f} seconds. Placing batch order now.", 'yellow'))
+        logging.info(colored(
+            f"Successfully Built {len(built_orders)} orders in {time.time() - start_time:.4f} seconds. Placing batch order now.",
+            'yellow'))
         time_two = time.time()
         result = self.rest_api.place_built_orders(built_orders)
         logging.info(colored(f"Batch order placement completed in {time.time() - time_two:.4f} seconds.", 'yellow'))
@@ -1526,21 +1539,21 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             for i, key in enumerate(config_keys, start=1):
                 print(f"  {i}. {key}: {self._configs[key]}")
             print("  0. Exit")
-            
+
             choice = input("\nSelect configuration number to modify: ").strip()
-            
+
             if choice == '0':
                 break
-            
+
             try:
                 choice_idx = int(choice) - 1
                 if choice_idx < 0 or choice_idx >= len(config_keys):
                     print(f"Invalid choice. Please select a number between 0 and {len(config_keys)}")
                     continue
-                
+
                 key = config_keys[choice_idx]
                 current_value = self._configs[key]
-                
+
                 if isinstance(current_value, bool):
                     self._configs[key] = not current_value
                     print(f"Updated {key} to {self._configs[key]}")
@@ -1553,7 +1566,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     else:
                         self._configs[key] = new_value
                     print(f"Updated {key} to {self._configs[key]}")
-                    
+
             except ValueError:
                 print("Invalid input. Please enter a number.")
 
@@ -1566,11 +1579,17 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'Clear console': ('Clear the console output', lambda: subprocess.check_call(['clear'])),
             'Clear correlation ids': ('Clear all correlation IDs from the dispatcher cache',
                                       self._correlation_id_checker.clear_seen_ids),
-            'Get all open orders': ('Fetch and display all open orders for the account', lambda: print(json.dumps(self._handle_get_orders(ArgsObject(args=[], sock=None)), indent=4))),
-            'Get all orders': ('Fetch and display all orders for the account', lambda: print(json.dumps(self.rest_api.get_orders(), indent=4))),
-            'Cancel all open orders': ('Cancel all open orders for the account', lambda: print(colored(json.dumps(self._handle_cancel_all_open_orders(ArgsObject(args=[], sock=None)), indent=4), color='yellow'))),
-            'Print latency stats': ('Print WS→client propagation latency percentiles (one-shot)', self.print_latency_stats),
-            'Start latency stats loop': ('Print latency stats every 10s in background', lambda: self._latency_stats_loop(10)),
+            'Get all open orders': ('Fetch and display all open orders for the account', lambda: print(
+                json.dumps(self._handle_get_orders(ArgsObject(args=[], sock=None)), indent=4))),
+            'Get all orders': ('Fetch and display all orders for the account',
+                               lambda: print(json.dumps(self.rest_api.get_orders(), indent=4))),
+            'Cancel all open orders': ('Cancel all open orders for the account', lambda: print(
+                colored(json.dumps(self._handle_cancel_all_open_orders(ArgsObject(args=[], sock=None)), indent=4),
+                        color='yellow'))),
+            'Print latency stats': ('Print WS→client propagation latency percentiles (one-shot)',
+                                    self.print_latency_stats),
+            'Start latency stats loop': ('Print latency stats every 10s in background',
+                                         lambda: self._latency_stats_loop(10)),
         })
 
 

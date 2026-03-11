@@ -7,12 +7,15 @@ import traceback
 
 logger = logging.getLogger(__name__)
 
+
 class CacheError(Exception):
     """Custom exception for cache-related errors."""
     pass
 
+
 class NotKey(CacheError):
     """Exception raised when a key is not found in the cache."""
+
     def __init__(self, key: str):
         super().__init__(f"Key '{key}' not found in cache.")
         self.key = key
@@ -21,6 +24,7 @@ class NotKey(CacheError):
 class FastCache:
     """A super simple cache system that also saves to disk. Used to cache data from the Capital.com API,
     especially resolution-related data or any non-changing data that's wasteful to fetch repeatedly."""
+
     def __init__(self, cache_file: str = '~/.argus/capital_cache.pkl'):
         """Initializes the FastCache with a specified cache file."""
         self.cache_file = os.path.expanduser(cache_file)
@@ -35,6 +39,11 @@ class FastCache:
         if not self._loaded:
             self.load_cache()
             self._loaded = True
+
+    def unload_cache(self):
+        """Unloads the cache from memory. Useful for long-running processes that want to free up RAM."""
+        self.cache = {}
+        self._loaded = False
 
     def load_cache(self):
         """Loads the cache from the specified file."""
@@ -62,7 +71,6 @@ class FastCache:
             os.remove(self._backup_file) if os.path.exists(self._backup_file) else None
             if os.path.exists(self.cache_file):
                 os.rename(self.cache_file, self._backup_file)
-
 
             attempts = 0
             with open(self.cache_file, 'wb') as f:
@@ -97,11 +105,12 @@ class FastCache:
                         warning_given = True
 
 
-
 CACHE = FastCache()
+
 
 class DomainCache:
     """A cache for domain-specific data, such as symbols and their resolutions."""
+
     def __init__(self, domain: str, cache: FastCache = CACHE):
         """Initializes the DomainCache with a specified domain."""
         self.domain = domain
@@ -109,9 +118,11 @@ class DomainCache:
         self._checked = False  # Track if we've checked for domain existence
 
     def _check_domain(self):
+        self.cache.ensure_loaded()
+
         if self._checked:
             return
-        self.cache.ensure_loaded()
+
         if self.domain not in list(self.cache.cache.keys()):
             self.cache.cache[self.domain] = {}
             self.cache.save_cache()
@@ -155,7 +166,6 @@ class DomainCache:
             expiration_timestamp = time.time() + expiration
             self.cache.cache[self.domain][self.expiration_key(key)] = expiration_timestamp
 
-
         self.cache.save_cache()
 
     def delete(self, key: str):
@@ -180,6 +190,7 @@ class DomainCache:
             expiration (int, optional): Expiration time in seconds for the cached value.
             should_cache_function (callable, optional): A function that takes the result and returns True if it should be cached, False otherwise.
         """
+
         def decorator(func):
             def wrapper(*args, **kwargs):
                 # remove args that have 'object at' in them these are dynamic objects that should not be cached
@@ -197,7 +208,9 @@ class DomainCache:
                         self.set(key, result, expiration=expiration)
 
                     return result
+
             return wrapper
+
         return decorator
 
     # does not require `self._check_domain()` because it uses `self.delete()` which does the check

@@ -126,7 +126,14 @@ class PolyRestAPI:
         self.private_key = private_key
         self.proxy_funder = proxy_funder
         self.session = requests.Session()
+        self.raw_session: requests.Session = self.session
+
         wp_wrappers.update_request_session_proxy(idx='POLYMARKET', session=self.session)
+
+        if not os.environ.get('POLYMARKET_UNSAFE_RAPID_CONNECTIONS', 'false') == 'false':
+            # Escape wrapping
+            self.raw_session = requests.Session()
+
         self._make_httpx_clob_client()
         self.safety = IPSafety()
         self._thread_pool = ThreadPoolExecutor(max_workers=5)
@@ -247,7 +254,7 @@ class PolyRestAPI:
 
     def fetch_events(self, offset=0, limit=20, debug_raw_callback=None) -> list[pm_types.PolymarketEvent]:
         url = endpoints['events'].format(limit, offset)
-        response = self.session.get(url)
+        response = self.raw_session.get(url)
         response.raise_for_status()
         returns = []
         for event in response.json():
