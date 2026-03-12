@@ -488,6 +488,7 @@ def run_test():
             print()
             print("  Test completed, but no orders were placed.")
             print("  To fix: Increase order size or adjust price.")
+            print("  This can also be because those markets are about to expire.")
         elif success_count > 0:
             print("  Test completed successfully!")
             print("  The place_multiple_orders endpoint is working and uses")

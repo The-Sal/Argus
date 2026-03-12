@@ -192,14 +192,17 @@ def find_active_market_clob_id(sock: socket.socket, tickers: list) -> tuple[str,
     for ticker in tickers:
         resp, _ = send_and_recv(sock, 'fetch_market_by_ticker', [ticker])
         if resp['error'] is not None:
+            print(f"  Warning: fetch_market_by_ticker for '{ticker}' returned error: {resp['error']}")
             continue
         event = resp['data']
         # Event must be active and not closed
         if not event.get('active', False) or event.get('closed', True):
+            print(f"  Skipping '{ticker}' (active={event.get('active')}, closed={event.get('closed')})")
             continue
         # Look for a market within the event that has clobTokenIds
         markets = event.get('markets', [])
         if not markets:
+            print(f"  Skipping '{ticker}' (no markets found in event)")
             continue
         for mkt in markets:
             clob_ids = mkt.get('clobTokenIds', None)

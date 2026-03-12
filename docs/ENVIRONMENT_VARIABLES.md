@@ -173,6 +173,24 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket/_classes.py`
 - **Behavior**: Truncates correlation IDs to this length before storage
 
+
+### `POLYMARKET_MEMORY_PRUNING`
+- **Purpose**: Enable aggressive memory pruning using `_mem_slim` to strip attributes from objects
+- **Default**: `false`
+- **Required**: No
+- **Used in**: `polymarket/__init__.py`
+- **Behavior**: When `true`, the `_mem_slim` method is called on all `PolymarketEvent` objects to aggresively **REMOVE** attributes to save RAM
+- **Warning**: This is a very aggressive memory optimization that will mean an incomplete API response if you request for the full object. It is destructive operations that strip attrs! 
+
+
+### `POLYMARKET_PROTECTED_ATTRIBUTES`
+- **Purpose**: Comma-separated list of attribute names to preserve when slimming PolymarketEvent objects for memory optimization
+- **Default**: `ticker,title,resolutionSource,slug,clobTokenIds,question,outcomes,eventStartTime,startDate,startDateIso,endDate,endDateIso`
+- **Required**: No
+- **Used in**: `polymarket/_mem_slim.py`
+- **Behavior**: Controls which fields are retained when creating memory-slimmed versions of market data events. Removing attributes from this list will cause them to be stripped from cached market data, reducing memory usage but potentially breaking dependent code
+
+
 ## Interactive Brokers Integration
 
 ### `IB_COOKIE`

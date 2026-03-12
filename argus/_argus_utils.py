@@ -38,6 +38,7 @@ if platform.system() == "Darwin":
             f'display notification "{message}" with title "{title}" sound name "{sound_name}"'
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 else:
+    print('[_argus_utils] Note: You are currently on {}, this platform is probably supported but system notifications will not work.'.format(platform.system()))
 
     def system_notification(title: str, message: str) -> None:
         print('WARNING: SYSTEM NOTIFICATIONS ARE ONLY SUPPORTED ON macOS SYSTEMS.')
