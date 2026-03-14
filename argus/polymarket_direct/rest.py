@@ -1,8 +1,8 @@
 import os
 import time
 import logging
-import threading
 import requests
+import threading
 import functools
 import traceback
 from utils3 import Timer
