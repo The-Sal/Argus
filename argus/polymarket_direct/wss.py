@@ -737,6 +737,7 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         # if the future is still running and there is no tick size update from the WSS,
         # wait for the future to complete and update the tick size in the misc info dict
         if future and not future.done() and (not misc_info.get('tick_size')):
+            print(colored('[polymarket wss] Waiting for {} future to complete'.format(asset_id), color='yellow', attrs=['bold', 'blink']))
             try:
                 tick_size = future.result(timeout=timeout)
                 with self._dict_lock:
