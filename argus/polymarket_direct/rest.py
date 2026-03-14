@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import threading
 import requests
 import functools
 import traceback
@@ -18,8 +19,8 @@ from argus.polymarket_direct import _types as pm_types
 from py_order_utils.model import OrderData, SignedOrder
 from py_clob_client.order_builder.constants import BUY, SELL
 from py_clob_client.order_builder.builder import ROUNDING_CONFIG
+from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_order_utils.builders.order_builder import OrderBuilder as UtilsOrderBuilder
-from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound, MutexDict
 from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
 
@@ -150,12 +151,9 @@ class PolyRestAPI:
             'orders': []
         }
 
-        self._token_id_to_tick_size_cache = MutexDict() # token_id -> tick_size
-        self._tick_size_pool = ThreadPoolExecutor(max_workers=5)
-        self._aot_tick_size: bool = os.environ.get('POLYMARKET_AOT_TICK_SIZE', 'false') == 'true'
-        if self._aot_tick_size:
-            self.update_tick_size_forever(interval=int(os.environ.get('POLYMARKET_AOT_TICK_SIZE_INTERVAL', '5')))
-
+        self._fee_rate_lock = threading.Lock()
+        self._fee_rate_cache: dict[str, str] = {}
+        self._fee_rate_futures: dict = {}
 
         self.fatal_callback = fatal_callback
         if self.fatal_callback is None:
@@ -168,32 +166,6 @@ class PolyRestAPI:
     ###########################################
     # Utility Methods
     ###########################################
-
-    def add_asset_to_polling_list(self, asset_id):
-        """
-        Add an asset to the polling list
-        :param asset_id: The asset ID
-        :return:
-        """
-        print('[polymarket_direct.rest Adding {} to the polling list'.format(asset_id))
-        self._token_id_to_tick_size_cache[asset_id] = None
-
-    def remove_asset_from_polling_list(self, asset_id):
-        self._token_id_to_tick_size_cache.pop(asset_id, None)
-        print('[polymarket_direct.rest Removing {} from the polling list'.format(asset_id))
-
-    def _inner_update_tick_size(self, token_id):
-        tick_size = self.get_tick_size(token_id)
-        self._token_id_to_tick_size_cache[token_id] = tick_size
-
-    def update_tick_size_forever(self, interval=5):
-        pool = self._tick_size_pool
-        while True:
-            token_ids = self._token_id_to_tick_size_cache.keys()
-            for token_id in token_ids:
-                pool.submit(self._inner_update_tick_size, token_id)
-            time.sleep(interval)
-
 
     def ip_safety_check(self):
         print(qw, 'Starting Polymarket REST API client initialization...')
@@ -436,12 +408,6 @@ class PolyRestAPI:
     @fatal_decorator('build_order')
     def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str,
                     tick_size: float = None) -> SignedOrder:
-
-        if tick_size is None and self._aot_tick_size:
-            tick_size = self._token_id_to_tick_size_cache.get(token_id, None)
-            if tick_size is None:
-                print("[polymarket_direct.rest] AOT did not have a value for {}".format(token_id))
-
         if tick_size is None:
             tick_size = self.get_tick_size(token_id)
 
@@ -481,8 +447,7 @@ class PolyRestAPI:
         A more rapid order builder
         """
 
-        # make these two calls on thread pools since they are independent and can be done in parallel to save time
-        fee_rate_future = self._thread_pool.submit(self.clob.get_fee_rate_bps, token_id)
+        fee_rate = self.get_fee_rate(token_id)
         if tick_size is None:
             tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
         else:
@@ -519,7 +484,7 @@ class PolyRestAPI:
             makerAmount=str(maker_amount),
             takerAmount=str(taker_amount),
             side=side,
-            feeRateBps=str(fee_rate_future.result()),
+            feeRateBps=fee_rate,
             nonce=str(OrderArgs.nonce),
             signer=builder.signer.address(),
             expiration=str(OrderArgs.expiration),
@@ -527,6 +492,42 @@ class PolyRestAPI:
         )
 
         return order_builder.build_signed_order(data)
+
+    def prefetch_fee_rate(self, token_id: str):
+        """
+        Fire a background fetch for the fee rate for a given token_id.
+        Call this on market subscribe so the rate is cached before the first order.
+        """
+        with self._fee_rate_lock:
+            if token_id not in self._fee_rate_cache and token_id not in self._fee_rate_futures:
+                self._fee_rate_futures[token_id] = self._thread_pool.submit(
+                    self.clob.get_fee_rate_bps, token_id
+                )
+
+    def get_fee_rate(self, token_id: str) -> str:
+        """
+        Return the cached fee rate for a token_id, or block to fetch and cache it.
+        On a cache hit this is a lock + dict lookup (~0ms).
+        """
+        with self._fee_rate_lock:
+            if token_id in self._fee_rate_cache:
+                return self._fee_rate_cache[token_id]
+            print(qw, colored(f"Cache miss for fee rate of token_id {token_id}, fetching...", 'yellow', attrs=['bold']))
+            future = self._fee_rate_futures.pop(token_id, None)
+
+        # Block outside the lock so concurrent callers aren't serialized
+        # noinspection all
+        raw = future.result() if future is not None else None
+        if not raw:
+            raw = self.clob.get_fee_rate_bps(token_id)
+        if not raw:
+            raise ValueError(f"Could not retrieve fee rate for token_id {token_id}")
+        result = str(raw)
+
+        with self._fee_rate_lock:
+            self._fee_rate_cache[token_id] = result
+
+        return result
 
     @fatal_decorator('cancel_order')
     def cancel_order(self, order_id: str) -> dict:
