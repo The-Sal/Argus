@@ -512,8 +512,11 @@ class PolyRestAPI:
         with self._fee_rate_lock:
             if token_id in self._fee_rate_cache:
                 return self._fee_rate_cache[token_id]
-            print(qw, colored(f"Cache miss for fee rate of token_id {token_id}, fetching...", 'yellow', attrs=['bold']))
             future = self._fee_rate_futures.pop(token_id, None)
+            if future is None:
+                print(qw, colored(f"Cache miss for fee rate of token_id {token_id}, fetching...", 'yellow', attrs=['bold']))
+
+            print(qw, 'Future:', future)
 
         # Block outside the lock so concurrent callers aren't serialized
         # noinspection all
