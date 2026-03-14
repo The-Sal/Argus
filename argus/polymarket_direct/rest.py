@@ -18,8 +18,8 @@ from argus.polymarket_direct import _types as pm_types
 from py_order_utils.model import OrderData, SignedOrder
 from py_clob_client.order_builder.constants import BUY, SELL
 from py_clob_client.order_builder.builder import ROUNDING_CONFIG
-from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_order_utils.builders.order_builder import OrderBuilder as UtilsOrderBuilder
+from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound, MutexDict
 from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
 
@@ -150,6 +150,13 @@ class PolyRestAPI:
             'orders': []
         }
 
+        self._token_id_to_tick_size_cache = MutexDict() # token_id -> tick_size
+        self._tick_size_pool = ThreadPoolExecutor(max_workers=5)
+        self._aot_tick_size: bool = os.environ.get('POLYMARKET_AOT_TICK_SIZE', 'false') == 'true'
+        if self._aot_tick_size:
+            self.update_tick_size_forever(interval=int(os.environ.get('POLYMARKET_AOT_TICK_SIZE_INTERVAL', '5')))
+
+
         self.fatal_callback = fatal_callback
         if self.fatal_callback is None:
             def default_fatal_callback(info: dict):
@@ -161,6 +168,32 @@ class PolyRestAPI:
     ###########################################
     # Utility Methods
     ###########################################
+
+    def add_asset_to_polling_list(self, asset_id):
+        """
+        Add an asset to the polling list
+        :param asset_id: The asset ID
+        :return:
+        """
+        print('[polymarket_direct.rest Adding {} to the polling list'.format(asset_id))
+        self._token_id_to_tick_size_cache[asset_id] = None
+
+    def remove_asset_from_polling_list(self, asset_id):
+        self._token_id_to_tick_size_cache.pop(asset_id, None)
+        print('[polymarket_direct.rest Removing {} from the polling list'.format(asset_id))
+
+    def _inner_update_tick_size(self, token_id):
+        tick_size = self.get_tick_size(token_id)
+        self._token_id_to_tick_size_cache[token_id] = tick_size
+
+    def update_tick_size_forever(self, interval=5):
+        pool = self._tick_size_pool
+        while True:
+            token_ids = self._token_id_to_tick_size_cache.keys()
+            for token_id in token_ids:
+                pool.submit(self._inner_update_tick_size, token_id)
+            time.sleep(interval)
+
 
     def ip_safety_check(self):
         print(qw, 'Starting Polymarket REST API client initialization...')
@@ -403,6 +436,12 @@ class PolyRestAPI:
     @fatal_decorator('build_order')
     def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str,
                     tick_size: float = None) -> SignedOrder:
+
+        if tick_size is None and self._aot_tick_size:
+            tick_size = self._token_id_to_tick_size_cache.get(token_id, None)
+            if tick_size is None:
+                print("[polymarket_direct.rest] AOT did not have a value for {}".format(token_id))
+
         if tick_size is None:
             tick_size = self.get_tick_size(token_id)
 

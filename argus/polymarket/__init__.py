@@ -623,6 +623,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             try:
                 self.add_socket_to_subscription(sock, clob_id)
                 self.market_data.subscribe_to_asset_id(clob_id)
+                self.rest_api.add_asset_to_polling_list(clob_id)
                 subscribed.append(clob_id)
             except Exception as e:
                 failed.append(clob_id)
@@ -647,6 +648,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for clob_id in args_obj.args:
             try:
                 self.remove_socket_from_subscription(sock, clob_id)
+                self.rest_api.remove_asset_from_polling_list(clob_id)
                 unsubscribed.append(clob_id)
             except Exception as e:
                 failed.append(clob_id)
@@ -685,6 +687,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 try:
                     self.add_socket_to_subscription(sock, clob_id)
                     self.market_data.subscribe_to_asset_id(clob_id)
+                    self.rest_api.add_asset_to_polling_list(clob_id)
                     subscribed.append(clob_id)
                 except Exception as e:
                     failed.append(clob_id)
@@ -722,6 +725,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             for clob_id in clobs:
                 try:
                     self.remove_socket_from_subscription(sock, clob_id)
+                    self.rest_api.remove_asset_from_polling_list(clob_id)
                     unsubscribed.append(clob_id)
                 except Exception as e:
                     failed.append(clob_id)
