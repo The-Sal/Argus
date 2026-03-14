@@ -1,5 +1,6 @@
 from py_clob_client import ApiCreds
-from argus.polymarket_direct.rest import PolyMarketAccountEventWss, REST_CACHE
+from argus.polymarket_direct.rest import REST_CACHE
+from argus.polymarket_direct.wss import PolyMarketAccountEventWss
 
 
 def do_testing_thing():
