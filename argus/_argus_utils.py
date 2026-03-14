@@ -2,11 +2,9 @@
 import os
 import inspect
 import platform
-import threading
 import traceback
 import subprocess
 from utils3 import assertTypes
-from typing import Any, Iterator
 
 if platform.system() == "Darwin":
     # macOS specific Function
@@ -235,55 +233,3 @@ def throw_fuss(msg: str, boarder="=", notify=True, title="Argus IBKR Alert") -> 
             title=title,
             message=msg,
         )
-
-
-class MutexDict:
-    """A thread-safe dictionary with mutex protection."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._dict: dict[Any, Any] = {}
-
-    def __setitem__(self, key: Any, value: Any) -> None:
-        with self._lock:
-            self._dict[key] = value
-
-    def __getitem__(self, key: Any) -> Any:
-        with self._lock:
-            return self._dict[key]
-
-    def __delitem__(self, key: Any) -> None:
-        with self._lock:
-            del self._dict[key]
-
-    def __contains__(self, key: Any) -> bool:
-        with self._lock:
-            return key in self._dict
-
-    def __len__(self) -> int:
-        with self._lock:
-            return len(self._dict)
-
-    def __iter__(self) -> Iterator[Any]:
-        with self._lock:
-            return iter(list(self._dict.keys()))
-
-    def get(self, key: Any, default: Any = None) -> Any:
-        with self._lock:
-            return self._dict.get(key, default)
-
-    def pop(self, key: Any, *args) -> Any:
-        with self._lock:
-            return self._dict.pop(key, *args)
-
-    def items(self):
-        with self._lock:
-            return list(self._dict.items())
-
-    def keys(self):
-        with self._lock:
-            return list(self._dict.keys())
-
-    def values(self):
-        with self._lock:
-            return list(self._dict.values())
