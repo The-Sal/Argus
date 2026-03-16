@@ -552,6 +552,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 'get_order_status': self._handle_get_order_status,
                 'get_orders': self._handle_get_orders,
                 'get_balance': self._handle_get_balance,
+                'get_trades': self._handle_get_trades,
 
                 # Crypto Utilities
                 'get_price_to_beat': self._handle_get_price_to_beat,
@@ -1472,6 +1473,19 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         _ = args_obj
         orders = self.rest_api.get_orders()
         return [dataclasses.asdict(order) for order in orders]
+
+    def _handle_get_trades(self, args_obj: ArgsObject):
+        """
+        Handle a request to fetch all trades for the account. Delegates to the REST API's
+        get_trades and serializes each Trade dataclass to a dict.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be empty (no arguments required).
+        :return: List of dicts, each representing a Trade.
+        """
+        _ = args_obj
+        trades = self.rest_api.get_trades()
+        return [dataclasses.asdict(trade) for trade in trades.trades]
 
     def _handle_get_balance(self, args_obj: ArgsObject):
         """
