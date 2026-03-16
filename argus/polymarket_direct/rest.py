@@ -6,6 +6,19 @@ import threading
 import functools
 import traceback
 from utils3 import Timer
+
+# Line-by-line timing utility
+_timer_last = {}
+def _tick(label: str, location: str):
+    """Print elapsed time since last tick at this location."""
+    key = f"{label}:{location}"
+    now = time.perf_counter()
+    if key in _timer_last:
+        elapsed_ms = (now - _timer_last[key]) * 1000
+        print(f"[TIMER][{label}] {location}: +{elapsed_ms:.3f}ms")
+    else:
+        print(f"[TIMER][{label}] {location}: start")
+    _timer_last[key] = now
 from termcolor import colored
 from argus.cache_sys import DomainCache
 from py_clob_client.constants import ZERO_ADDRESS
@@ -360,8 +373,13 @@ class PolyRestAPI:
         :param orders: A list of already built and signed orders to place.
         :return: The result from the CLOB API, containing order placement results.
         """
+        _tick('place_built_orders', 'start')
         postable_orders = map(lambda x: PostOrdersArgs(order=x, orderType=order_type), orders)
-        post: list[dict] = self.clob.post_orders(list(postable_orders))
+        _tick('place_built_orders', 'after_postable_orders_map')
+        postable_orders_list = list(postable_orders)
+        _tick('place_built_orders', 'after_list_conversion')
+        post: list[dict] = self.clob.post_orders(postable_orders_list)
+        _tick('place_built_orders', 'after_post_orders_call')
         # Example Response:
         # [
         #    {
@@ -375,57 +393,83 @@ class PolyRestAPI:
         #    ....
         # ]
 
+        _tick('place_built_orders', 'before_success_failed_init')
         success = []
+        _tick('place_built_orders', 'after_success_init')
         failed = []
+        _tick('place_built_orders', 'after_failed_init')
         for msg in post:
+            _tick('place_built_orders', 'loop_start')
             if msg['errorMsg']:
+                _tick('place_built_orders', 'before_throw_fuss_error')
                 throw_fuss(
                     msg=colored("Failed to post built and signed order: {}".format(msg['errorMsg']), 'red', attrs=['bold']),
                     title="Failed to Post Built and Signed Order",
                     notify=True
                 )
+                _tick('place_built_orders', 'after_throw_fuss_error')
                 failed.append(msg)
+                _tick('place_built_orders', 'after_failed_append')
             else:
+                _tick('place_built_orders', 'else_branch')
                 order_id = msg.get('orderID', 'Unknown ID')
+                _tick('place_built_orders', 'after_get_order_id')
                 throw_fuss(
                     msg=colored("Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id), 'green', attrs=['bold']),
                     title="Successfully Posted Built and Signed Orders",
                     notify=True
                 )
+                _tick('place_built_orders', 'after_throw_fuss_success')
                 macos_notification_with_custom_sound(
                     title="Successfully Posted Built and Signed Order",
                     message="Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id),
                     sound_name="Glass"
                 )
+                _tick('place_built_orders', 'after_notification')
                 logging.info('Successfully posted built and signed order: %s', msg)
+                _tick('place_built_orders', 'after_logging')
                 success.append(msg)
+                _tick('place_built_orders', 'after_success_append')
+        _tick('place_built_orders', 'after_loop')
 
-        return {
+        result = {
             'success': success,
             'failed': failed
         }
+        _tick('place_built_orders', 'before_return')
+        return result
 
     @fatal_decorator('build_order')
     def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str,
                     tick_size: float = None) -> SignedOrder:
+        _tick('build_order', 'start')
         if tick_size is None:
+            _tick('build_order', 'before_get_tick_size')
             tick_size = self.get_tick_size(token_id)
+            _tick('build_order', 'after_get_tick_size')
+        _tick('build_order', 'after_tick_size_check')
 
         mapped = {
             'buy': BUY,
             'sell': SELL
         }
+        _tick('build_order', 'after_mapped_dict')
         type_side = mapped.get(side.lower())
+        _tick('build_order', 'after_get_type_side')
         if type_side is None:
             raise ValueError("side must be either 'buy' or 'sell'")
+        _tick('build_order', 'after_type_side_validation')
 
         if self._rapid_order_build:
+            _tick('build_order', 'rapid_build_path')
             logging.warning("Using rapid order builder for order creation. "
                             "This may lead to faster order placements but could cause issues if the underlying "
                             "assumptions about tick size and fee rate retrieval are violated. "
                             "Make sure you understand the implications of this setting.")
+            _tick('build_order', 'before_rapid_builder_return')
             return self._rapid_order_builder(token_id, market, price, size, type_side, tick_size)
 
+        _tick('build_order', 'before_create_order')
         order = self.clob.create_order(
             order_args=OrderArgs(
                 token_id=token_id,
@@ -438,6 +482,7 @@ class PolyRestAPI:
                 neg_risk=market.negRisk
             )
         )
+        _tick('build_order', 'after_create_order')
 
         return order
 
@@ -446,37 +491,54 @@ class PolyRestAPI:
         """
         A more rapid order builder
         """
+        _tick('_rapid_order_builder', 'start')
 
         fee_rate = self.get_fee_rate(token_id)
+        _tick('_rapid_order_builder', 'after_get_fee_rate')
         if tick_size is None:
+            _tick('_rapid_order_builder', 'tick_size_is_none')
             tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
+            _tick('_rapid_order_builder', 'after_submit_tick_size')
         else:
+            _tick('_rapid_order_builder', 'tick_size_provided')
             tick_size_future = _FakeFuture(tick_size)
+            _tick('_rapid_order_builder', 'after_fake_future')
 
-
+        _tick('_rapid_order_builder', 'before_get_builder')
         builder = self.clob.builder
+        _tick('_rapid_order_builder', 'after_get_builder')
         neg_risk = market.negRisk
+        _tick('_rapid_order_builder', 'after_get_neg_risk')
         side = side.upper()
+        _tick('_rapid_order_builder', 'after_upper_side')
         if side != 'BUY' and side != 'SELL':
             raise ValueError("side must be either 'buy' or 'sell'")
+        _tick('_rapid_order_builder', 'after_side_validation')
 
+        _tick('_rapid_order_builder', 'before_get_order_amounts')
         side, maker_amount, taker_amount = builder.get_order_amounts(
             side,
             size,
             price,
             ROUNDING_CONFIG[tick_size_future.result()],
         )
+        _tick('_rapid_order_builder', 'after_get_order_amounts')
 
+        _tick('_rapid_order_builder', 'before_get_contract_config')
         contract_config = get_contract_config(
             builder.signer.get_chain_id(), neg_risk
         )
+        _tick('_rapid_order_builder', 'after_get_contract_config')
 
+        _tick('_rapid_order_builder', 'before_order_builder_init')
         order_builder = UtilsOrderBuilder(
             contract_config.exchange,
             builder.signer.get_chain_id(),
             builder.signer,
         )
+        _tick('_rapid_order_builder', 'after_order_builder_init')
 
+        _tick('_rapid_order_builder', 'before_OrderData')
         data = OrderData(
             maker=builder.funder,
             taker=ZERO_ADDRESS,
@@ -490,8 +552,12 @@ class PolyRestAPI:
             expiration=str(OrderArgs.expiration),
             signatureType=builder.sig_type,
         )
+        _tick('_rapid_order_builder', 'after_OrderData')
 
-        return order_builder.build_signed_order(data)
+        _tick('_rapid_order_builder', 'before_build_signed_order')
+        result = order_builder.build_signed_order(data)
+        _tick('_rapid_order_builder', 'after_build_signed_order')
+        return result
 
     def prefetch_fee_rate(self, token_id: str):
         """

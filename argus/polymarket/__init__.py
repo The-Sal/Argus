@@ -1282,40 +1282,59 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     'side' (str): The side of the order ('buy' or 'sell').
         :return: Dict from the CLOB API containing the batch order placement results.
         """
+        from argus.polymarket_direct.rest import _tick
+        _tick('_handle_place_multiple_orders', 'start')
 
         if self._configs['Block Order Execution']:
             raise OrderExecutionDisabledError("Order execution is currently blocked by server configuration.")
+        _tick('_handle_place_multiple_orders', 'after_block_check')
 
         args = args_obj.args
+        _tick('_handle_place_multiple_orders', 'after_get_args')
         orders_list = args.get('orders', [])
+        _tick('_handle_place_multiple_orders', 'after_get_orders_list')
 
         if not orders_list:
             raise InvalidArgumentError("'orders' list is required and cannot be empty for place_multiple_orders.")
+        _tick('_handle_place_multiple_orders', 'after_check_orders_list_empty')
 
         if not isinstance(orders_list, list):
             raise InvalidArgumentError("'orders' must be a list of order dictionaries.")
+        _tick('_handle_place_multiple_orders', 'after_check_orders_list_type')
 
         # Validate each order and resolve markets first (sequential since it uses cache)
         order_specs = []
+        _tick('_handle_place_multiple_orders', 'before_order_specs_loop')
         for order in orders_list:
+            _tick('_handle_place_multiple_orders', 'loop_start')
             token_id = order.get('token_id', None)
+            _tick('_handle_place_multiple_orders', 'after_get_token_id')
             if token_id is None:
                 raise InvalidArgumentError("Each order must have a 'token_id' field.")
+            _tick('_handle_place_multiple_orders', 'after_check_token_id')
 
             price = order.get('price', None)
+            _tick('_handle_place_multiple_orders', 'after_get_price')
             if price is None:
                 raise InvalidArgumentError("Each order must have a 'price' field.")
+            _tick('_handle_place_multiple_orders', 'after_check_price')
 
             size = order.get('size', None)
+            _tick('_handle_place_multiple_orders', 'after_get_size')
             if size is None:
                 raise InvalidArgumentError("Each order must have a 'size' field.")
+            _tick('_handle_place_multiple_orders', 'after_check_size')
 
             side = order.get('side', None)
+            _tick('_handle_place_multiple_orders', 'after_get_side')
             if side is None:
                 raise InvalidArgumentError("Each order must have a 'side' field.")
+            _tick('_handle_place_multiple_orders', 'after_check_side')
 
             market = self._resolve_market_from_token_id(token_id)
+            _tick('_handle_place_multiple_orders', 'after_resolve_market')
             tick_size = self.market_data.get_tick_size(asset_id=token_id)
+            _tick('_handle_place_multiple_orders', 'after_get_tick_size')
             order_specs.append({
                 'token_id': token_id,
                 'market': market,
@@ -1324,13 +1343,19 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 'side': str(side),
                 'tick_size': tick_size
             })
+            _tick('_handle_place_multiple_orders', 'after_append_order_spec')
+        _tick('_handle_place_multiple_orders', 'after_order_specs_loop')
 
         # Build orders concurrently using thread pool since build_order involves HTTP requests
         built_orders = []
+        _tick('_handle_place_multiple_orders', 'after_built_orders_init')
         build_errors = []
+        _tick('_handle_place_multiple_orders', 'after_build_errors_init')
 
         start_time = time.time()
+        _tick('_handle_place_multiple_orders', 'after_start_time')
         with ThreadPoolExecutor(max_workers=min(len(order_specs), 10)) as executor:
+            _tick('_handle_place_multiple_orders', 'after_threadpool_init')
             future_to_order = {
                 executor.submit(
                     self.rest_api.build_order,
@@ -1342,32 +1367,47 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     tick_size=spec['tick_size']
                 ): spec for spec in order_specs
             }
+            _tick('_handle_place_multiple_orders', 'after_submit_futures')
 
             for future in as_completed(future_to_order):
+                _tick('_handle_place_multiple_orders', 'future_loop_start')
                 spec = future_to_order[future]
+                _tick('_handle_place_multiple_orders', 'after_get_spec')
                 try:
+                    _tick('_handle_place_multiple_orders', 'before_future_result')
                     signed_order = future.result()
+                    _tick('_handle_place_multiple_orders', 'after_future_result')
                     built_orders.append(signed_order)
+                    _tick('_handle_place_multiple_orders', 'after_append_built_order')
                 except Exception as e:
+                    _tick('_handle_place_multiple_orders', 'exception_caught')
                     build_errors.append({
                         'token_id': spec['token_id'],
                         'error': str(e)
                     })
+                    _tick('_handle_place_multiple_orders', 'after_append_build_error')
+        _tick('_handle_place_multiple_orders', 'after_threadpool_done')
 
         if build_errors:
             raise PolyMarketDispatcherError(
                 f"Failed to build {len(build_errors)} order(s): {build_errors}"
             )
+        _tick('_handle_place_multiple_orders', 'after_build_errors_check')
 
         if not built_orders:
             raise PolyMarketDispatcherError("No orders were built successfully.")
+        _tick('_handle_place_multiple_orders', 'after_built_orders_check')
 
         logging.info(colored(
             f"Successfully Built {len(built_orders)} orders in {time.time() - start_time:.4f} seconds. Placing batch order now.",
             'yellow'))
+        _tick('_handle_place_multiple_orders', 'after_build_log')
         time_two = time.time()
+        _tick('_handle_place_multiple_orders', 'before_place_built_orders')
         result = self.rest_api.place_built_orders(built_orders)
+        _tick('_handle_place_multiple_orders', 'after_place_built_orders')
         logging.info(colored(f"Batch order placement completed in {time.time() - time_two:.4f} seconds.", 'yellow'))
+        _tick('_handle_place_multiple_orders', 'after_place_log')
         self.async_write_log(json.dumps({
             'event': 'place_multiple_orders',
             'num_orders': len(built_orders),
@@ -1375,6 +1415,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'place_time_seconds': time.time() - time_two,
             'result': result
         }))
+        _tick('_handle_place_multiple_orders', 'after_async_write_log')
         return result
 
     def _handle_cancel_order(self, args_obj: ArgsObject):
