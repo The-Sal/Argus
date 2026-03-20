@@ -670,6 +670,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
 
         sock = args_obj.sock
+        self.add_socket(sock)
         ticker = args_obj.args[0]
         market = self._all_markets_cache.get(ticker, None)
         if market is None:
