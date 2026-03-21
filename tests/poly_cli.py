@@ -353,7 +353,41 @@ class ArgusClient:
         if resp.get('error'):
             raise Exception(f"Get price to beat failed: {resp['error']}")
         return float(resp.get('data') or 0), dt
-    
+
+    def place_order(self, token_id: str, price: float, size: float, side: str, order_type: str = "GTC") -> Tuple[dict, float]:
+        """Place an order on the CLOB."""
+        resp, dt = self.send_request('place_order', {
+            'token_id': token_id,
+            'price': price,
+            'size': size,
+            'side': side,
+            'order_type': order_type
+        })
+        if resp.get('error'):
+            raise Exception(f"Place order failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def get_orders(self) -> Tuple[List[dict], float]:
+        """Get all open orders."""
+        resp, dt = self.send_request('get_orders')
+        if resp.get('error'):
+            raise Exception(f"Get orders failed: {resp['error']}")
+        return list(resp.get('data') or []), dt
+
+    def cancel_order(self, order_id: str) -> Tuple[dict, float]:
+        """Cancel an order by ID."""
+        resp, dt = self.send_request('cancel_order', {'order_id': order_id})
+        if resp.get('error'):
+            raise Exception(f"Cancel order failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def get_trades(self) -> Tuple[List[dict], float]:
+        """Get all trades (positions)."""
+        resp, dt = self.send_request('get_trades')
+        if resp.get('error'):
+            raise Exception(f"Get trades failed: {resp['error']}")
+        return list(resp.get('data') or []), dt
+
     def subscribe(self, clob_ids: List[str]) -> Tuple[dict, float]:
         """Subscribe to one or more CLOB IDs."""
         resp, dt = self.send_request('subscribe', clob_ids)
@@ -932,6 +966,10 @@ def print_help():
     print("  clob <clob_id>            - Show info about a CLOB token ID")
     print("  sub <clob_id>             - Subscribe to CLOB and monitor latency (Ctrl+C to stop)")
     print("  price <ticker>            - Get price to beat for Up/Down markets")
+    print("  order                      - Place an order (interactive prompts)")
+    print("  orders                     - List all open orders")
+    print("  cancel <order_id>         - Cancel an order by ID")
+    print("  trades                     - List all trades/positions")
     print("  balance                    - Show account balance")
     print("  ping                       - Test connection")
     print("  stats                      - Show market statistics")
@@ -943,6 +981,10 @@ def print_help():
     print("  clob 661095475084821930790589425827399710453605787397495798070750303202782280580")
     print("  sub 661095475084821930790589425827399710453605787397495798070750303202782280580")
     print("  price bitcoin-up-or-down-february-10-4pm-et")
+    print("  order                      # Interactive order placement")
+    print("  orders                     # List open orders")
+    print("  cancel 0x1234...abcd       # Cancel specific order")
+    print("  trades                     # List your trades")
     print("  trump")
     print("  top 50")
     print()
@@ -1041,7 +1083,7 @@ def interactive_loop(client: ArgusClient):
                     print(f"Fetching top {limit} markets...")
                     tickers, fetch_time = client.fetch_all_tickers()
                     tickers = tickers[:limit]
-                    
+
                     markets = []
                     print(f"Fetching details for {len(tickers)} markets...")
                     for i, ticker in enumerate(tickers):
@@ -1050,33 +1092,160 @@ def interactive_loop(client: ArgusClient):
                             market_info = extract_market_info(event_data)
                             market_info['ticker'] = ticker
                             markets.append(market_info)
-                            
+
                             if (i + 1) % 20 == 0:
                                 print(f"  Progress: {i + 1}/{len(tickers)}")
                         except Exception as e:
                             continue
-                    
+
                     # Sort by active status and liquidity
                     markets.sort(key=lambda m: (
                         not m.get('active', False) or m.get('closed', True),
                         -sum(mkt.get('liquidity', 0) for mkt in m.get('markets', []))
                     ))
-                    
+
                     print(format_market_table(markets, limit))
-                    
+
                     # Show statistics
                     active_markets = sum(1 for m in markets if m.get('active', False) and not m.get('closed', True))
                     total_liquidity = sum(sum(mkt.get('liquidity', 0) for mkt in m.get('markets', [])) for m in markets)
                     total_volume = sum(sum(mkt.get('volume', 0) for mkt in m.get('markets', [])) for m in markets)
-                    
+
                     print(f"\nStatistics:")
                     print(f"  Total markets: {len(markets)}")
                     print(f"  Active markets: {active_markets}")
                     print(f"  Total liquidity: ${total_liquidity:,.2f}")
                     print(f"  Total 24h volume: ${total_volume:,.2f}")
-                    
+
                 except Exception as e:
                     print(f"✗ Failed to fetch top markets: {e}")
+            elif query.lower() == 'order':
+                # Interactive order placement
+                print("\n📋 PLACE ORDER")
+                print("-" * 50)
+                try:
+                    clob_id = input("> CLOB ID: ").strip()
+                    if not clob_id:
+                        print("✗ CLOB ID is required")
+                        continue
+
+                    side = input("> Side (buy/sell): ").strip().lower()
+                    if side not in ['buy', 'sell']:
+                        print("✗ Side must be 'buy' or 'sell'")
+                        continue
+
+                    price_str = input("> Price (e.g., 0.65): ").strip()
+                    try:
+                        price = float(price_str)
+                        if not 0 < price <= 1:
+                            print("✗ Price must be between 0 and 1")
+                            continue
+                    except ValueError:
+                        print("✗ Invalid price")
+                        continue
+
+                    size_str = input("> Size (number of contracts): ").strip()
+                    try:
+                        size = float(size_str)
+                        if size <= 0:
+                            print("✗ Size must be positive")
+                            continue
+                    except ValueError:
+                        print("✗ Invalid size")
+                        continue
+
+                    order_type = input("> Order type [GTC]: ").strip().upper() or "GTC"
+
+                    print(f"\n📝 Order Summary:")
+                    print(f"  CLOB ID: {clob_id}")
+                    print(f"  Side: {side.upper()}")
+                    print(f"  Price: {price}")
+                    print(f"  Size: {size}")
+                    print(f"  Order Type: {order_type}")
+
+                    confirm = input("\nConfirm order? [y/N]: ").strip().lower()
+                    if confirm == 'y':
+                        print("\n⏳ Placing order...")
+                        result, dt = client.place_order(clob_id, price, size, side, order_type)
+                        print(f"✓ Order placed successfully ({dt*1000:.1f}ms)")
+                        print(f"  Order ID: {result.get('orderID', 'N/A')}")
+                        print(f"  Status: {result.get('status', 'N/A')}")
+                        if result.get('errorMsg'):
+                            print(f"  Error: {result['errorMsg']}")
+                    else:
+                        print("✗ Order cancelled")
+
+                except Exception as e:
+                    print(f"✗ Failed to place order: {e}")
+            elif query.lower() == 'orders':
+                try:
+                    print("\n📋 Fetching open orders...")
+                    orders, dt = client.get_orders()
+                    print(f"✓ Found {len(orders)} open order(s) ({dt*1000:.1f}ms)\n")
+
+                    if orders:
+                        print(f"{'ID':<66} {'Side':<6} {'Price':<10} {'Size':<12} {'Status':<10}")
+                        print("-" * 110)
+                        for order in orders:
+                            order_id = order.get('id', 'N/A')[:64]
+                            side = order.get('side', 'N/A')
+                            price = order.get('price', 0)
+                            size = order.get('original_size', 0)
+                            status = order.get('status', 'N/A')
+                            print(f"{order_id:<66} {side:<6} {price:<10.4f} {size:<12.2f} {status:<10}")
+                        print(f"\n💡 Tip: Use 'cancel <order_id>' to cancel an order")
+                    else:
+                        print("No open orders found.")
+
+                except Exception as e:
+                    print(f"✗ Failed to fetch orders: {e}")
+            elif query.lower().startswith('cancel '):
+                order_id = query[7:].strip()
+                if not order_id:
+                    print("✗ Please provide an order ID. Usage: cancel <order_id>")
+                    continue
+                try:
+                    print(f"\n⏳ Cancelling order {order_id}...")
+                    result, dt = client.cancel_order(order_id)
+                    print(f"✓ Cancel request completed ({dt*1000:.1f}ms)")
+
+                    canceled = result.get('canceled', [])
+                    not_canceled = result.get('not_canceled', {})
+
+                    if canceled:
+                        print(f"  ✓ Successfully canceled: {len(canceled)} order(s)")
+                        for oid in canceled:
+                            print(f"    - {oid}")
+
+                    if not_canceled:
+                        print(f"  ✗ Failed to cancel: {len(not_canceled)} order(s)")
+                        for oid, reason in not_canceled.items():
+                            print(f"    - {oid}: {reason}")
+
+                except Exception as e:
+                    print(f"✗ Failed to cancel order: {e}")
+            elif query.lower() == 'trades':
+                try:
+                    print("\n📊 Fetching trades...")
+                    trades, dt = client.get_trades()
+                    print(f"✓ Found {len(trades)} trade(s) ({dt*1000:.1f}ms)\n")
+
+                    if trades:
+                        print(f"{'ID':<20} {'Market':<40} {'Side':<6} {'Size':<12} {'Price':<10} {'Status':<10}")
+                        print("-" * 110)
+                        for trade in trades:
+                            trade_id = trade.get('id', 'N/A')[:18]
+                            market = trade.get('market', 'N/A')[:38]
+                            side = trade.get('side', 'N/A')
+                            size = trade.get('size', 0)
+                            price = trade.get('price', 0)
+                            status = trade.get('status', 'N/A')
+                            print(f"{trade_id:<20} {market:<40} {side:<6} {size:<12.2f} {price:<10.4f} {status:<10}")
+                    else:
+                        print("No trades found.")
+
+                except Exception as e:
+                    print(f"✗ Failed to fetch trades: {e}")
             else:
                 # Treat as search query
                 try:

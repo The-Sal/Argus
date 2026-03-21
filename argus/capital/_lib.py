@@ -108,7 +108,7 @@ class CapitalComAPI:
         """Current status of the WebSocket connection."""
         return self._ws_status
 
-    def _update_auth_tokens(self, response_headers: requests.structures.CaseInsensitiveDict):
+    def _update_auth_tokens(self, response_headers):
         """Helper to update auth tokens if present in response headers."""
         new_cst = response_headers.get("CST")
         new_xst = response_headers.get("X-SECURITY-TOKEN")
