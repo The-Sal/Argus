@@ -1358,6 +1358,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         _tick('_handle_place_multiple_orders', 'after_start_time')
         with ThreadPoolExecutor(max_workers=min(len(order_specs), 10)) as executor:
             _tick('_handle_place_multiple_orders', 'after_threadpool_init')
+            print_with_name('Submitting orders at:', time.time_ns())
             future_to_order = {
                 executor.submit(
                     self.rest_api.build_order,
