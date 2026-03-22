@@ -1,12 +1,12 @@
-import requests
 import json
-import websocket 
-import threading
 import time
-import logging
 import math
+import logging
+import requests
+import threading
+import websocket 
 from enum import Enum
-from typing import List, Dict, Optional, Callable, Any, Union
+from typing import List, Dict, Optional, Callable, Any
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,7 +108,7 @@ class CapitalComAPI:
         """Current status of the WebSocket connection."""
         return self._ws_status
 
-    def _update_auth_tokens(self, response_headers: requests.structures.CaseInsensitiveDict):
+    def _update_auth_tokens(self, response_headers):
         """Helper to update auth tokens if present in response headers."""
         new_cst = response_headers.get("CST")
         new_xst = response_headers.get("X-SECURITY-TOKEN")

@@ -47,20 +47,18 @@ Notes:
     We created these classes because it's more intuitive and useful for clients
     to think of them this way and to build against it. Especially 'mini' contracts.
     IBKR also on each level of contract has a conid. So each micro has a conid which
-    makes it super confusing what to request which is why here it will attempt
+    makes it super confusing what to request, which is why here it will attempt
     to automatically enumerate the conids from the big -> micro contracts (if requested).
 
 
 """
-import json
 import numpy as np
 import pandas as pd
 from datetime import datetime
 from utils3 import assertTypes
-
-from argus import expand_exception_decorator
 from argus.ib.fields import IBKRFields
 from argus.ib._ib_utils import MarketData, IBError
+
 
 
 def enforce_type(value, expected_type):

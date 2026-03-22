@@ -1,6 +1,6 @@
 """Utilities for the Argus package."""
-import inspect
 import os
+import inspect
 import platform
 import traceback
 import subprocess
@@ -38,6 +38,7 @@ if platform.system() == "Darwin":
             f'display notification "{message}" with title "{title}" sound name "{sound_name}"'
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 else:
+    print('[_argus_utils] Note: You are currently on {}, this platform is probably supported but system notifications will not work.'.format(platform.system()))
 
     def system_notification(title: str, message: str) -> None:
         print('WARNING: SYSTEM NOTIFICATIONS ARE ONLY SUPPORTED ON macOS SYSTEMS.')
@@ -52,8 +53,6 @@ else:
     def macos_notification_with_custom_sound(title: str, message: str, sound_name: str = "default") -> None:
         """Placeholder for non-macOS systems."""
         print(f"macOS notification with sound not supported on this platform: {title} - {message}")
-
-
 
 class Notification:
     """Dispatcher for notifications."""
@@ -211,9 +210,13 @@ class Introspective:
             print(f"Error calling method: {e}")
 
 
-def throw_fuss(msg: str, boarder="*", notify=True, title="Argus IBKR Alert") -> None:
+def throw_fuss(msg: str, boarder="=", notify=True, title="Argus IBKR Alert") -> None:
     """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
-    environment_size = os.get_terminal_size().columns
+    try:
+        environment_size = os.get_terminal_size().columns
+    except OSError:
+        environment_size = 80
+
     if environment_size < 80:
         environment_size = 80
     opening_line = boarder * environment_size

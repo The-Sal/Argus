@@ -10,16 +10,16 @@ import traceback
 import websocket
 import threading
 from utils3 import runAsThread
+from argus._argus_utils import throw_fuss
 from argus.ib.fields import IBKRFields, SearchResult
-from argus.capital import transmit_mkt_data_with_protocol_2
+from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.ib._shortable_shares_data import ShortableSharesData
 from argus.ib._ib_utils import (LockedSession, IBKRModes, IBKR_CapitalComMKTDataLive,
                                 AuthenticationTimeout, MarketData, IBError, NOTIFICATION as _NOTIFICATION,
-                                IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, FakeSocket, enforce_currency, expand_exception_decorator, AccountBalances)
-from argus._argus_utils import throw_fuss
+                                IB_Cache as _IB_Cache, Account, MarketDataRefused, STK_Position, FakeSocket,
+                                enforce_currency, expand_exception_decorator, AccountBalances)
 
 # noinspection PyUnresolvedReferences
-from argus.capital import Protocol2Parser
 
 # enable logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -613,6 +613,7 @@ class AccountProvider:
         # Represents the current portfolio as a dictionary of conid to STK_Position
         # STK_Positions are lively updated via market data callbacks
         self._portfolio = {}
+        # noinspection all
         self._account_balances: AccountBalances = None
 
         self._symbols_to_conids = {}
@@ -725,6 +726,16 @@ class AccountProvider:
             pnl = (enforce_currency(data.last) - cost) * float(position.position)
             position.formatted_unrealized_pnl = f"{pnl:.2f}"
             position.unrealized_pnl = pnl
+
+            # Fix for bug #41 – Market Value is not updated only unrealised PnL is updated
+            # Distinction between market value and market price
+            # is based on a common consensus where
+            # market value = last price * position size
+            # market price = last price
+            position.mkt_value = float(data.last) * float(position.position)
+            position.mkt_price = float(data.last)
+
+
             self._transmit(position)
 
     def required_assets(self) -> list[int]:
