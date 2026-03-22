@@ -160,96 +160,93 @@ class StreamRecorder:
         Merge all hourly pickle files into one mega file with start-end time in filename.
         Returns the path to the merged file, or None if no files to merge.
         """
-        print("[Recorder] Merging hourly files no longer supported in this environment.")
-        sys.exit(0)
+        try:
+            import glob
 
-        # try:
-        #     import glob
-        #
-        #     # Find all hourly files for this prefix (excluding already-merged files)
-        #     pattern = f"{self.file_prefix}_????-??-??_??.pkl"
-        #     hourly_files = sorted(glob.glob(os.path.join(self.pickle_dir, pattern)))
-        #
-        #     if not hourly_files:
-        #         print("[Recorder] No hourly files to merge")
-        #         return None
-        #
-        #     print(f"[Recorder] Merging {len(hourly_files)} hourly files...")
-        #
-        #     # Load all records from all hourly files
-        #     all_records = []
-        #     for hourly_file in hourly_files:
-        #         try:
-        #             with open(hourly_file, 'rb') as f:
-        #                 data = pickle.load(f)
-        #                 if isinstance(data, list):
-        #                     all_records.extend(data)
-        #                     print(f"  Loaded {len(data)} records from {os.path.basename(hourly_file)}")
-        #         except Exception as e:
-        #             print(f"  Warning: Could not load {hourly_file}: {e}")
-        #
-        #     if not all_records:
-        #         print("[Recorder] No records found in hourly files")
-        #         return None
-        #
-        #     print(f"[Recorder] Total records loaded: {len(all_records)}")
-        #
-        #     # Sort by timestamp for consistency
-        #     try:
-        #         all_records.sort(key=lambda r: r.get('timestamp', 0))
-        #     except Exception as e:
-        #         print(f"Warning: Could not sort records: {e}")
-        #
-        #     # Determine start and end times from the data
-        #     start_time = None
-        #     end_time = None
-        #
-        #     for rec in all_records:
-        #         ts_utc = rec.get('ts_utc')
-        #         if ts_utc:
-        #             try:
-        #                 if isinstance(ts_utc, str):
-        #                     dt = datetime.datetime.fromisoformat(ts_utc.replace('Z', '+00:00'))
-        #                 else:
-        #                     dt = ts_utc
-        #
-        #                 if start_time is None or dt < start_time:
-        #                     start_time = dt
-        #                 if end_time is None or dt > end_time:
-        #                     end_time = dt
-        #             except Exception:
-        #                 pass
-        #
-        #     # Format timestamps for filename
-        #     if start_time and end_time:
-        #         start_str = start_time.strftime('%Y%m%d_%H%M%S')
-        #         end_str = end_time.strftime('%Y%m%d_%H%M%S')
-        #         merged_filename = f"{self.file_prefix}_MERGED_{start_str}_{end_str}.pkl"
-        #     else:
-        #         # Fallback if we couldn't parse timestamps
-        #         timestamp_str = datetime.datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')
-        #         merged_filename = f"{self.file_prefix}_MERGED_{timestamp_str}.pkl"
-        #
-        #     merged_path = os.path.join(self.pickle_dir, merged_filename)
-        #
-        #     # Save merged file
-        #     with open(merged_path, 'wb') as f:
-        #         pickle.dump(all_records, f, protocol=pickle.HIGHEST_PROTOCOL)
-        #
-        #     print(f"[Recorder] Merged file created: {merged_filename}")
-        #     print(f"[Recorder] Total records in merged file: {len(all_records)}")
-        #
-        #     if start_time and end_time:
-        #         duration = (end_time - start_time).total_seconds()
-        #         print(f"[Recorder] Time range: {start_time.isoformat()} to {end_time.isoformat()} ({duration/3600:.2f} hours)")
-        #
-        #     return merged_path
-        #
-        # except Exception as e:
-        #     print(f"[Recorder] Error during merge: {e}")
-        #     import traceback
-        #     traceback.print_exc()
-        #     return None
+            # Find all hourly files for this prefix (excluding already-merged files)
+            pattern = f"{self.file_prefix}_????-??-??_??.pkl"
+            hourly_files = sorted(glob.glob(os.path.join(self.pickle_dir, pattern)))
+
+            if not hourly_files:
+                print("[Recorder] No hourly files to merge")
+                return None
+
+            print(f"[Recorder] Merging {len(hourly_files)} hourly files...")
+
+            # Load all records from all hourly files
+            all_records = []
+            for hourly_file in hourly_files:
+                try:
+                    with open(hourly_file, 'rb') as f:
+                        data = pickle.load(f)
+                        if isinstance(data, list):
+                            all_records.extend(data)
+                            print(f"  Loaded {len(data)} records from {os.path.basename(hourly_file)}")
+                except Exception as e:
+                    print(f"  Warning: Could not load {hourly_file}: {e}")
+
+            if not all_records:
+                print("[Recorder] No records found in hourly files")
+                return None
+
+            print(f"[Recorder] Total records loaded: {len(all_records)}")
+
+            # Sort by timestamp for consistency
+            try:
+                all_records.sort(key=lambda r: r.get('timestamp', 0))
+            except Exception as e:
+                print(f"Warning: Could not sort records: {e}")
+
+            # Determine start and end times from the data
+            start_time = None
+            end_time = None
+
+            for rec in all_records:
+                ts_utc = rec.get('ts_utc')
+                if ts_utc:
+                    try:
+                        if isinstance(ts_utc, str):
+                            dt = datetime.datetime.fromisoformat(ts_utc.replace('Z', '+00:00'))
+                        else:
+                            dt = ts_utc
+
+                        if start_time is None or dt < start_time:
+                            start_time = dt
+                        if end_time is None or dt > end_time:
+                            end_time = dt
+                    except Exception:
+                        pass
+
+            # Format timestamps for filename
+            if start_time and end_time:
+                start_str = start_time.strftime('%Y%m%d_%H%M%S')
+                end_str = end_time.strftime('%Y%m%d_%H%M%S')
+                merged_filename = f"{self.file_prefix}_MERGED_{start_str}_{end_str}.pkl"
+            else:
+                # Fallback if we couldn't parse timestamps
+                timestamp_str = datetime.datetime.now(datetime.UTC).strftime('%Y%m%d_%H%M%S')
+                merged_filename = f"{self.file_prefix}_MERGED_{timestamp_str}.pkl"
+
+            merged_path = os.path.join(self.pickle_dir, merged_filename)
+
+            # Save merged file
+            with open(merged_path, 'wb') as f:
+                pickle.dump(all_records, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+            print(f"[Recorder] Merged file created: {merged_filename}")
+            print(f"[Recorder] Total records in merged file: {len(all_records)}")
+
+            if start_time and end_time:
+                duration = (end_time - start_time).total_seconds()
+                print(f"[Recorder] Time range: {start_time.isoformat()} to {end_time.isoformat()} ({duration/3600:.2f} hours)")
+
+            return merged_path
+
+        except Exception as e:
+            print(f"[Recorder] Error during merge: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
 
 def example_usage():
@@ -271,12 +268,10 @@ def example_usage():
 
     # Signal handler for graceful shutdown on Ctrl+C
     def signal_handler(sig, frame):
-
         print("\n[SIGNAL] Ctrl+C detected, shutting down gracefully...")
         try:
             recorder.stop()
             print("[SIGNAL] Merging hourly files...")
-
             merged_path = recorder.merge_hourly_files()
             if merged_path:
                 print(f"[SIGNAL] Successfully created merged file: {merged_path}")
