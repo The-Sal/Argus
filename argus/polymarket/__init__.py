@@ -1358,7 +1358,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         _tick('_handle_place_multiple_orders', 'after_start_time')
         with ThreadPoolExecutor(max_workers=min(len(order_specs), 10)) as executor:
             _tick('_handle_place_multiple_orders', 'after_threadpool_init')
-            print_with_name('Submitting orders at:', time.time_ns())
             future_to_order = {
                 executor.submit(
                     self.rest_api.build_order,
@@ -1407,6 +1406,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         _tick('_handle_place_multiple_orders', 'after_build_log')
         time_two = time.time()
         _tick('_handle_place_multiple_orders', 'before_place_built_orders')
+        print_with_name('Submitting orders at:', time.time_ns())
         result = self.rest_api.place_built_orders(built_orders)
         _tick('_handle_place_multiple_orders', 'after_place_built_orders')
         logging.info(colored(f"Batch order placement completed in {time.time() - time_two:.4f} seconds.", 'yellow'))
