@@ -40,12 +40,6 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket_direct/__init__.py`, `polymarket_direct/wss.py`
 - **Note**: Different components may use different defaults for this variable
 
-### `POLYMARKET_MAX_MESSAGE_COUNT`
-- **Purpose**: Maximum message count before rolling mechanism triggers
-- **Default**: `5000`
-- **Required**: No
-- **Used in**: `polymarket_direct/__init__.py`
-
 ### `POLYMARKET_ORDERBOOK_DEPTH`
 - **Purpose**: Controls the depth of orderbook data (number of bid/ask levels to fetch)
 - **Default**: `10`
@@ -53,23 +47,6 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket/__init__.py`, `tests/test_poly_dispatcher.py`
 - **Example**: Set to `20` for deeper orderbook data, `5` for shallower data
 
-### `POLYMARKET_ENABLE_ROLLING`
-- **Purpose**: Enable/disable rolling mechanism for message handling
-- **Default**: `true`
-- **Required**: No
-- **Used in**: `polymarket_direct/__init__.py`
-
-### `POLYMARKET_WRITE_INTERVAL`
-- **Purpose**: Write interval for data persistence (seconds)
-- **Default**: `30`
-- **Required**: No
-- **Used in**: `polymarket_direct/__init__.py`
-
-### `POLYMARKET_ENABLE_UNSUB_PATCH`
-- **Purpose**: Enable/disable unsubscription patch
-- **Default**: `false`
-- **Required**: No
-- **Used in**: `polymarket_direct/__init__.py`
 
 ### `POLYMARKET_NO_SAFETY_CHECK`
 - **Purpose**: Disable **Stage 1** pre-connection IP safety check (ipinfo.io)
@@ -189,6 +166,13 @@ This document lists all environment variables used throughout the Argus project 
 - **Required**: No
 - **Used in**: `polymarket/_mem_slim.py`
 - **Behavior**: Controls which fields are retained when creating memory-slimmed versions of market data events. Removing attributes from this list will cause them to be stripped from cached market data, reducing memory usage but potentially breaking dependent code
+
+### `POLYMARKET_DISPATCHER_LOG_FILE`
+- **Purpose**: File path for the Polymarket dispatcher log file
+- **Default**: `~/.argus/polymarket_dispatcher.log`
+- **Required**: No
+- **Used in**: `polymarket/__init__.py`
+- **Behavior**: Controls where the Polymarket dispatcher writes its log output
 
 
 ## Interactive Brokers Integration
@@ -350,6 +334,22 @@ resolve_symbol("BTCUSD")  # <1ms cached
 - Startup time reduction
 - Network latency reduction
 - Cost optimization (fewer API calls)
+
+### `ARGUS_PROD`
+- **Purpose**: Enable production mode to suppress certain warnings in the cache system
+- **Default**: `false`
+- **Required**: No
+- **Used in**: `cache_sys/__init__.py`
+- **Behavior**: When set to `true`, suppresses automatic disabling of cache when warnings are triggered. This is intended for production deployments where cache should remain enabled despite warnings.
+
+## Testing
+
+### `BENCHMARK_ITERATIONS`
+- **Purpose**: Number of iterations for benchmark tests
+- **Default**: `10000`
+- **Required**: No
+- **Used in**: `tests/benchmark_p2_encoding.py`
+- **Behavior**: Controls how many iterations to run when benchmarking the P2 encoding/decoding performance
 
 ## File Structure
 

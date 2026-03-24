@@ -87,9 +87,8 @@ class FastCache:
                     try:
                         attempts += 1
                         pickle.dump(self.cache, f)
-                        if warning_given:
-                            print(
-                                'CACHE WRITE COMPLETED, WOULD YOU LIKE TO DISABLE CACHES TO AVOID THIS IN THE FUTURE?')
+                        if warning_given and (os.environ.get('ARGUS_PROD', 'false') == 'false'):
+                            print('CACHE WRITE COMPLETED, WOULD YOU LIKE TO DISABLE CACHES TO AVOID THIS IN THE FUTURE?')
                             inp = input('Disable caches? (y/n): ')
                             if inp.lower() == 'y':
                                 os.environ['ARGUS_CACHES_DISABLED'] = '1'
