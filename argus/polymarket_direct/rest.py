@@ -620,6 +620,42 @@ class PolyRestAPI:
             print(qw, colored(f"Failed to cancel order {order_id}.", 'red', attrs=['bold']))
         return result
 
+    @fatal_decorator('cancel_multiple')
+    def cancel_multiple(self, order_ids: list[str]) -> dict:
+        """
+        Cancel multiple orders on the Polymarket CLOB in a single HTTP request.
+        
+        :param order_ids: List of order IDs to cancel.
+        :return: The result of the batch cancellation request.
+            E.g. {
+                'not_canceled': {'order_id_1': 'already canceled or matched'},
+                'canceled': ['order_id_2', 'order_id_3']
+            }
+        """
+        result = self.clob.cancel_orders(order_ids)
+        logging.info('Batch order cancellation result: %s', result)
+        
+        # Log successful cancellations
+        if result.get('canceled'):
+            canceled_count = len(result['canceled'])
+            print(qw, colored(f"Successfully canceled {canceled_count} orders.", 'green', attrs=['bold']))
+            # Remove from cache
+            for order_id in result['canceled']:
+                self._order_cache['orders'] = [
+                    o for o in self._order_cache['orders'] if o['orderID'] != order_id
+                ]
+                if order_id in self._order_cache:
+                    del self._order_cache[order_id]
+        
+        # Log failed cancellations
+        if result.get('not_canceled'):
+            not_canceled_count = len(result['not_canceled'])
+            print(qw, colored(f"Failed to cancel {not_canceled_count} orders.", 'red', attrs=['bold']))
+            for order_id, reason in result['not_canceled'].items():
+                logging.warning(f"Order {order_id} not canceled: {reason}")
+        
+        return result
+
     @fatal_decorator('get_orders')
     def get_orders(self) -> list[PolyMarketOrder]:
         """
