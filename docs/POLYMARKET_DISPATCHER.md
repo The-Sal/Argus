@@ -383,6 +383,36 @@ Cancel an existing order.
 
 ---
 
+#### `cancel_multiple_orders`
+Cancel multiple orders in a single batch request (one HTTP POST).
+
+**Input:**
+```json
+{
+  "action": "cancel_multiple_orders",
+  "data": {
+    "order_ids": ["<order_id_1>", "<order_id_2>", "<order_id_3>"]
+  }
+}
+```
+
+**Output:**
+```json
+{
+  "not_canceled": {
+    "<order_id_1>": "order can't be found - already canceled or matched"
+  },
+  "canceled": ["<order_id_2>", "<order_id_3>"]
+}
+```
+
+**Notes:**
+- All cancellations are sent in a single HTTP POST request to the Polymarket CLOB API
+- The `order_ids` field must be a non-empty list of strings
+- Each order ID in the response will appear either in `canceled` or `not_canceled`, but never both
+
+---
+
 #### `get_order_status`
 Get detailed status of a specific order.
 

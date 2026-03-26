@@ -549,6 +549,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 'place_order': self._handle_place_order,
                 'place_multiple_orders': self._handle_place_multiple_orders,
                 'cancel_order': self._handle_cancel_order,
+                'cancel_multiple_orders': self._handle_cancel_multiple_orders,
                 'get_order_status': self._handle_get_order_status,
                 'get_orders': self._handle_get_orders,
                 'get_balance': self._handle_get_balance,
@@ -1441,6 +1442,33 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             raise InvalidArgumentError("'order_id' is required for cancel_order.")
 
         result = self.rest_api.cancel_order(order_id=str(order_id))
+        return result
+
+    def _handle_cancel_multiple_orders(self, args_obj: ArgsObject):
+        """
+        Handle a batch order cancellation request from a client. Delegates to the
+        REST API's cancel_multiple to cancel multiple orders in a single HTTP POST request.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be a dict with:
+                'order_ids' (list[str]): List of order IDs to cancel.
+        :return: Dict from the CLOB API, e.g.:
+            {
+                'not_canceled': {'0x...': 'order can\'t be found - already canceled or matched'},
+                'canceled': ['0x...', '0x...']
+            }
+
+        """
+        args = args_obj.args
+        order_ids = args.get('order_ids', None)
+        if order_ids is None:
+            raise InvalidArgumentError("'order_ids' is required for cancel_multiple_orders.")
+        if not isinstance(order_ids, list):
+            raise InvalidArgumentError("'order_ids' must be a list of order IDs.")
+        if len(order_ids) == 0:
+            raise InvalidArgumentError("'order_ids' cannot be empty.")
+
+        result = self.rest_api.cancel_multiple(order_ids=order_ids)
         return result
 
     def _handle_get_order_status(self, args_obj: ArgsObject):
