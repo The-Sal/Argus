@@ -6,19 +6,6 @@ import threading
 import functools
 import traceback
 from utils3 import Timer
-
-# Line-by-line timing utility
-_timer_last = {}
-def _tick(label: str, location: str):
-    """Print elapsed time since last tick at this location."""
-    key = f"{label}:{location}"
-    now = time.perf_counter()
-    if key in _timer_last:
-        elapsed_ms = (now - _timer_last[key]) * 1000
-        print(f"[TIMER][{label}] {location}: +{elapsed_ms:.3f}ms")
-    else:
-        print(f"[TIMER][{label}] {location}: start")
-    _timer_last[key] = now
 from termcolor import colored
 from argus.cache_sys import DomainCache
 from py_clob_client.constants import ZERO_ADDRESS
@@ -36,6 +23,19 @@ from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_order_utils.builders.order_builder import OrderBuilder as UtilsOrderBuilder
 from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
+
+# Line-by-line timing utility
+_timer_last = {}
+def _tick(label: str, location: str):
+    """Print elapsed time since last tick at this location."""
+    key = f"{label}:{location}"
+    now = time.perf_counter()
+    if key in _timer_last:
+        elapsed_ms = (now - _timer_last[key]) * 1000
+        print(f"[TIMER][{label}] {location}: +{elapsed_ms:.3f}ms")
+    else:
+        print(f"[TIMER][{label}] {location}: start")
+    _timer_last[key] = now
 
 
 
