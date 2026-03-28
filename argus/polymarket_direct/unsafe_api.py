@@ -24,17 +24,16 @@ from argus.cache_sys import DomainCache, CACHE
 from argus.wireproxy.wrapper import update_request_session_proxy
 
 
-
-
-
 class UnsafeException(Exception):
     pass
+
 
 class UnableToReachPolymarket(UnsafeException):
     pass
 
 
 _unsafe_api_cache = DomainCache(domain='POLYMARKET_UNSAFE_API', cache=CACHE)
+
 
 class UnsafePolyMarket:
     """
@@ -51,14 +50,12 @@ class UnsafePolyMarket:
                 verbose=False
             )
         else:
-            print(colored(f"[{__name__}] POLYMARKET_UNSAFE_RAPID_CONNECTIONS is set to true. UnsafePolyMarket is not routing via WireProxy", "yellow", attrs=['blink']))
+            print(colored(
+                f"[{__name__}] POLYMARKET_UNSAFE_RAPID_CONNECTIONS is set to true. UnsafePolyMarket is not routing via WireProxy",
+                "yellow", attrs=['blink']))
 
-
-    @_unsafe_api_cache.cache_decorator(
-        func_uuid='get_price_to_beat',
-        should_cache_function=lambda price: isinstance(price, float)
-    )
-    def get_price_to_beat(self, slug: str,) -> float:
+    # After the events of the 27th of March on the bt1560 fund this value will no longer be cached
+    def get_price_to_beat(self, slug: str, ) -> float:
         """
         Scrapes from the polymarket frontend the price to beat for any Up/Down market.
         If the market is not an up/down market may result in undefined behavior; moreover, in the event
@@ -70,7 +67,8 @@ class UnsafePolyMarket:
         """
         response = self.session.get(f"https://polymarket.com/event/{slug}")
         if response.status_code != 200:
-            raise UnableToReachPolymarket(f"Unable to reach Polymarket for slug {slug}. Status code: {response.status_code}")
+            raise UnableToReachPolymarket(
+                f"Unable to reach Polymarket for slug {slug}. Status code: {response.status_code}")
 
         # As of Feb 2026 Polymarket embeds the price to beat within the HTML at the bottom of the page
         # it will start with '{"props":{"pageProps":' and then the end of the script will be ended with '</script></body></html>'
@@ -115,7 +113,6 @@ class UnsafePolyMarket:
         #     "queryHash": "[\"crypto-prices\",\"price\",\"BTC\",\"2026-02-10T21:00:00Z\",\"fifteen\",\"2026-02-10T21:15:00Z\"]"
         # }
 
-
         props = json_data.get('props', {})
         page_props = props.get('pageProps', {})
         dehydrated_state = page_props.get('dehydratedState', {})
@@ -132,7 +129,8 @@ class UnsafePolyMarket:
                 close_price = data.get('closePrice', None)
                 if close_price is not None:
                     logging.warning(
-                        f"Close price is not None for slug {slug}. This may indicate that the market has already expired and you are using the wrong data. ".format(slug=slug)
+                        f"Close price is not None for slug {slug}. This may indicate that the market has already expired and you are using the wrong data. ".format(
+                            slug=slug)
                     )
                 if open_price is not None:
                     return open_price
@@ -151,10 +149,7 @@ class UnsafePolyMarket:
         )
         return dt.isoformat() + 'Z'
 
-    @_unsafe_api_cache.cache_decorator(
-        func_uuid='build_crypto_price_url_and_get_price',
-        should_cache_function=lambda price: isinstance(price, float)
-    )
+    # After the events of the 27th of March on the bt1560 fund this value will no longer be cached
     def build_crypto_price_url_and_get_price(self, symbol, variant, start_date: datetime, end_date: datetime) -> float:
         """
         Build the crypto price URL and get the price to beat from the Polymarket API.
@@ -172,7 +167,8 @@ class UnsafePolyMarket:
         logging.info(f"Built crypto price URL: {url}")
         response = self.session.get(url)
         if response.status_code != 200:
-            raise UnableToReachPolymarket(f"Unable to reach Polymarket for URL {url}. Status code: {response.status_code}")
+            raise UnableToReachPolymarket(
+                f"Unable to reach Polymarket for URL {url}. Status code: {response.status_code}")
 
         try:
             data = response.json()
@@ -187,12 +183,10 @@ class UnsafePolyMarket:
                 )
                 return open_price
             else:
-                raise UnableToReachPolymarket(f"Price to beat not found in the response for URL {url}. Response: {data}")
+                raise UnableToReachPolymarket(
+                    f"Price to beat not found in the response for URL {url}. Response: {data}")
         except Exception as e:
             raise UnableToReachPolymarket(f"Unable to parse the response for URL {url}. Error: {str(e)}")
-
-
-
 
     @staticmethod
     def build_crypto_price_url(symbol, event_start_time, variant, end_date):
@@ -228,10 +222,11 @@ if __name__ == '__main__':
     # https://polymarket.com/event/bitcoin-up-or-down-february-10-4pm-et
     # print(updown.get_price_to_beat("bitcoin-up-or-down-february-10-4pm-et"))
     # https://polymarket.com/event/
-    print(updown.get_price_to_beat('btc-updown-5m-1771299600'))
-    print(updown.build_crypto_price_url(
-        symbol='btc',
-        event_start_time='2026-02-17T03:25:00Z',
-        end_date='2026-02-17T03:30:00Z',
-        variant='fiveminute'
-    ))
+    print(updown.get_price_to_beat('eth-updown-15m-1774633500'))
+    print(updown.get_price_to_beat('eth-updown-5m-1774634100'))
+    # print(updown.build_crypto_price_url(
+    #     symbol='btc',
+    #     event_start_time='2026-02-17T03:25:00Z',
+    #     end_date='2026-02-17T03:30:00Z',
+    #     variant='fiveminute'
+    # ))
