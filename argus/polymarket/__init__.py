@@ -310,7 +310,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 'error': f"Failed to decode incoming data: {str(e)}. YOU ARE NOT ENCODING PROPERLY OR YOU SENT MALFORMED DATA. Data must be encoded with the P1 protocol (JSON) and then P1 packet encoded. Original error: {str(e)}"
             }
             response_bytes = encode_packet(json.dumps(response).encode('utf-8'))
-            client_socket.sendall(response_bytes)
+            try:
+                client_socket.sendall(response_bytes)
+            except Exception as e:
+                print_with_name('ERROR: Unable to send message {} to {} error={}', response_bytes, address, e)
             return
 
         for packet in packets:
