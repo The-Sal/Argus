@@ -359,7 +359,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 else:
                     print(f"P1 Packet ({len(response_bytes)} bytes): {response_bytes!r}")
 
-            client_socket.sendall(response_bytes)
+
+            try:
+                client_socket.sendall(response_bytes)
+            except Exception as e:
+                print_with_name('ERROR: Unable to send message {} to {} error={}', response_bytes, address, e)
+
 
     def _on_fatal_error(self, error: dict):
         """
@@ -1513,19 +1518,22 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         get_trades and serializes each Trade dataclass to a dict.
 
         :param args_obj: ArgsObject containing the socket and arguments.
-            Args[0] can optionally be the limit of how many trades to return (default is to return all).
-            Return all may cause too many bytes error consider limiting!
+            Args[0] can optionally be the limit of how many trades to return (default is 50).
+            Args[1] can optionally be the offset for pagination (default is 0).
+            To avoid packet size errors, use pagination with limit/offset.
         :return: List of dicts, each representing a Trade.
         """
-        limit = args_obj.args[0] if len(args_obj.args) > 0 else None
+        limit = 50  # Default smaller limit to avoid packet size errors
+        offset = 0
+        if len(args_obj.args) > 1:
+            limit = int(args_obj.args[0])
+            offset = int(args_obj.args[1])
+        elif len(args_obj.args) > 0:
+            limit = int(args_obj.args[0])
+
         trades = self.rest_api.get_trades()
         raw = [dataclasses.asdict(trade) for trade in trades.trades]
-        if limit is not None:
-            return_val = raw[:limit]
-        else:
-            return_val = raw
-
-        return return_val
+        return raw[offset:offset + limit]
 
 
     def _handle_get_balance(self, args_obj: ArgsObject):

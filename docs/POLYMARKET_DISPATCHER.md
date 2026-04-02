@@ -28,7 +28,7 @@ The `PolymarketDispatcher` is a TCP server that exposes Polymarket's CLOB (Centr
 - `~`: Start marker (1 byte)
 - `<length:04d>`: 4-digit zero-padded length of JSON data (4 bytes)
 - `|`: Separator (1 byte)
-- `<json-data>`: UTF-8 encoded JSON payload (variable length)
+- `<json-data>`: UTF-8 encoded JSON payload (variable length, max 9999 bytes)
 
 ### Request Structure
 
@@ -57,6 +57,7 @@ The `PolymarketDispatcher` is a TCP server that exposes Polymarket's CLOB (Centr
 - Unknown actions return `InvalidArgumentError`
 - Missing required fields return `InvalidArgumentError`
 - Duplicate `correlation_id` values return `CorrelationIDAlreadySeenError`
+- **Packet size exceeded**: Responses exceeding 9999 bytes will raise `ValueError: Data length exceeds maximum allowed size`. Use pagination for large data (e.g., `fetch_all_tickers`, `get_trades`)
 
 ---
 
@@ -442,6 +443,42 @@ Get all open orders for the account.
 ```
 
 **Output:** Array of PolyMarketOrder dictionaries
+
+---
+
+#### `get_trades`
+Get all trades for the account with pagination support. Due to packet size limits (9999 bytes), use pagination for large trade histories.
+
+**Input:**
+```json
+{
+  "action": "get_trades",
+  "data": [<limit>, <offset>]
+}
+```
+- `limit`: Maximum number of trades to return (default: 50, recommended max: 100)
+- `offset`: Pagination offset (default: 0)
+
+**Output:** Array of Trade dictionaries
+
+**Example - Fetch all trades with pagination:**
+```python
+all_trades = []
+offset = 0
+limit = 50
+
+while True:
+    # Request: {"action": "get_trades", "data": [50, 0]}
+    trades = send_request('get_trades', [limit, offset])
+    if not trades:
+        break
+    all_trades.extend(trades)
+    if len(trades) < limit:
+        break  # Last page
+    offset += limit
+```
+
+**Note:** Trade objects are large (contain ~20 fields including nested `maker_orders`). Exceeding the packet size limit will cause a `ValueError: Data length exceeds maximum allowed size` error.
 
 ---
 
