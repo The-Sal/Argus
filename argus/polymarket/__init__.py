@@ -1513,12 +1513,20 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         get_trades and serializes each Trade dataclass to a dict.
 
         :param args_obj: ArgsObject containing the socket and arguments.
-            Args is expected to be empty (no arguments required).
+            Args[0] can optionally be the limit of how many trades to return (default is to return all).
+            Return all may cause too many bytes error consider limiting!
         :return: List of dicts, each representing a Trade.
         """
-        _ = args_obj
+        limit = args_obj.args[0] if len(args_obj.args) > 0 else None
         trades = self.rest_api.get_trades()
-        return [dataclasses.asdict(trade) for trade in trades.trades]
+        raw = [dataclasses.asdict(trade) for trade in trades.trades]
+        if limit is not None:
+            return_val = raw[:limit]
+        else:
+            return_val = raw
+
+        return return_val
+
 
     def _handle_get_balance(self, args_obj: ArgsObject):
         """
