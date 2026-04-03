@@ -19,17 +19,15 @@ Usage:
 Press Ctrl+C to exit gracefully.
 """
 
+import os
 import sys
 import json
 import time
-import socket
 import signal
+import socket
 import argparse
-import os
 from datetime import datetime
-from typing import List, Tuple, Optional, Dict, Any
-from collections import defaultdict
-
+from typing import List, Tuple, Optional, Dict
 
 COLORS = {
     'green': '\033[92m',
