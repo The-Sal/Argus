@@ -127,7 +127,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # All the below are already registered with WireProxy system
         self.rest_api = rest.PolyRestAPI(private_key=private_key, proxy_funder=proxy_funder,
                                          fatal_callback=self._on_fatal_error)
-        self.market_data = wss.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
+        self.market_data = wss.PolyMarketOrderBookPool(order_book_update_callback=self._order_book_update_callback)
         self.account_updates = wss.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
                                                              update_callback=self._account_update_callback)
 
@@ -408,7 +408,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         for sock in self.sockets:
             try:
-                sock.sendall(error_packet)
+                with self.send_lock_for(sock):
+                    sock.sendall(error_packet)
             except (ConnectionResetError, BrokenPipeError) as e:
                 self.remove_socket(sock)
                 print_with_name('Removed socket due to error while broadcasting fatal error:', e)
@@ -481,7 +482,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # so it is safe to call from this WSS callback thread.
         for sock in clients_to_send:
             try:
-                sock.sendall(p2_obj)
+                # Per-client sendall lock prevents byte interleaving when multiple
+                # WS shard threads broadcast to the same client concurrently.
+                with self.send_lock_for(sock):
+                    sock.sendall(p2_obj)
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 # OSError [Errno 9] Bad file descriptor occurs when the client
                 # has already closed the socket but the routing table still holds
@@ -598,7 +602,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         for sock in self.sockets:
             try:
-                sock.sendall(obj)
+                with self.send_lock_for(sock):
+                    sock.sendall(obj)
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 self.remove_socket(sock)
                 print_with_name('Removed socket due to error while sending account update:', e)
