@@ -130,10 +130,30 @@ class RoutingHelper:
         self._market_data_routing_table: dict[str, list[socket.socket]] = {}  # clob_id -> list[socket.socket]
         self._order_subscriptions: dict[socket.socket, list[str]] = {}  # socket.socket -> list[clob_id]
         self._lock = threading.Lock()
+        # Per-client sendall lock — prevents byte interleaving when multiple
+        # WS shard threads broadcast to the same client socket.  Per-socket
+        # granularity means a slow client A never blocks sends to client B.
+        # Lazily populated by add_socket and `send_lock_for`; cleaned up by remove_socket.
+        self._sendall_locks: dict[socket.socket, threading.Lock] = {}
+
+    def send_lock_for(self, sock: socket.socket) -> threading.Lock:
+        """
+        Return the per-socket sendall lock, creating it on first access.
+        Callers MUST hold this lock around every sock.sendall() into `sock`
+        from any thread that may run concurrently with another sender.
+        """
+        with self._lock:
+            lock = self._sendall_locks.get(sock)
+            if lock is None:
+                lock = threading.Lock()
+                self._sendall_locks[sock] = lock
+            return lock
 
     def add_socket(self, sock: socket.socket):
         with self._lock:
             self._sockets.add(sock)
+            if sock not in self._sendall_locks:
+                self._sendall_locks[sock] = threading.Lock()
 
     def remove_socket(self, sock: socket.socket):
         """
@@ -143,6 +163,7 @@ class RoutingHelper:
         """
         with self._lock:
             self._sockets.discard(sock)
+            self._sendall_locks.pop(sock, None)
             subscribed_clob_ids = self._order_subscriptions.pop(sock, [])
             for clob_id in subscribed_clob_ids:
                 if clob_id in self._market_data_routing_table:
