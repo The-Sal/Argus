@@ -261,7 +261,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         markets_cached = fetch_all_markets_cached()
 
         if os.environ.get('POLYMARKET_MEMORY_PRUNING', 'false').lower() == 'true':
-            for key, value in tqdm.tqdm(markets_cached.items(), desc="Pruning events data in cache", unit="events", dynamic_ncols=True):
+            for key, value in tqdm.tqdm(markets_cached.items(), desc="Pruning events data in cache", unit="events",
+                                        dynamic_ncols=True):
                 markets_cached[key] = traverse_and_slim(value)
 
         _poly_cache.unload_cache()
@@ -359,12 +360,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 else:
                     print(f"P1 Packet ({len(response_bytes)} bytes): {response_bytes!r}")
 
-
             try:
                 client_socket.sendall(response_bytes)
             except Exception as e:
                 print_with_name('ERROR: Unable to send message {} to {} error={}', response_bytes, address, e)
-
 
     def _on_fatal_error(self, error: dict):
         """
@@ -523,6 +522,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             self.print_latency_stats()
             time.sleep(interval)
 
+    # noinspection PyProtectedMember
     def visualise_shards(self):
         """
         Display a visualization of all WebSocket shards, their states, load, and assets.
@@ -1639,7 +1639,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         trades = self.rest_api.get_trades()
         raw = [dataclasses.asdict(trade) for trade in trades.trades]
         return raw[offset:offset + limit]
-
 
     def _handle_get_balance(self, args_obj: ArgsObject):
         """
