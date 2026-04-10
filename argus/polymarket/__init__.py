@@ -127,7 +127,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # All the below are already registered with WireProxy system
         self.rest_api = rest.PolyRestAPI(private_key=private_key, proxy_funder=proxy_funder,
                                          fatal_callback=self._on_fatal_error)
-        self.market_data = wss.PolyMarketOrderBookWss(order_book_update_callback=self._order_book_update_callback)
+        self.market_data = wss.PolyMarketOrderBookPool(order_book_update_callback=self._order_book_update_callback)
         self.account_updates = wss.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
                                                              update_callback=self._account_update_callback)
 
@@ -261,7 +261,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         markets_cached = fetch_all_markets_cached()
 
         if os.environ.get('POLYMARKET_MEMORY_PRUNING', 'false').lower() == 'true':
-            for key, value in tqdm.tqdm(markets_cached.items(), desc="Pruning events data in cache", unit="events", dynamic_ncols=True):
+            for key, value in tqdm.tqdm(markets_cached.items(), desc="Pruning events data in cache", unit="events",
+                                        dynamic_ncols=True):
                 markets_cached[key] = traverse_and_slim(value)
 
         _poly_cache.unload_cache()
@@ -359,12 +360,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 else:
                     print(f"P1 Packet ({len(response_bytes)} bytes): {response_bytes!r}")
 
-
             try:
                 client_socket.sendall(response_bytes)
             except Exception as e:
                 print_with_name('ERROR: Unable to send message {} to {} error={}', response_bytes, address, e)
-
 
     def _on_fatal_error(self, error: dict):
         """
@@ -408,7 +407,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         for sock in self.sockets:
             try:
-                sock.sendall(error_packet)
+                with self.send_lock_for(sock):
+                    sock.sendall(error_packet)
             except (ConnectionResetError, BrokenPipeError) as e:
                 self.remove_socket(sock)
                 print_with_name('Removed socket due to error while broadcasting fatal error:', e)
@@ -481,7 +481,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # so it is safe to call from this WSS callback thread.
         for sock in clients_to_send:
             try:
-                sock.sendall(p2_obj)
+                # Per-client sendall lock prevents byte interleaving when multiple
+                # WS shard threads broadcast to the same client concurrently.
+                with self.send_lock_for(sock):
+                    sock.sendall(p2_obj)
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 # OSError [Errno 9] Bad file descriptor occurs when the client
                 # has already closed the socket but the routing table still holds
@@ -518,6 +521,107 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         while True:
             self.print_latency_stats()
             time.sleep(interval)
+
+    # noinspection PyProtectedMember
+    def visualise_shards(self):
+        """
+        Display a visualization of all WebSocket shards, their states, load, and assets.
+        """
+        pool = self.market_data
+
+        # Check if market_data is actually a pool (has sharding internals)
+        if not hasattr(pool, '_shards'):
+            print("Shard visualization not available - market_data is not a PolyMarketOrderBookPool")
+            return
+
+        # Header
+        print("\n" + "=" * 65)
+        print("                    SHARD VISUALIZATION")
+        print("=" * 65)
+
+        # Configuration
+        print("\nPOOL CONFIGURATION")
+        print(f"  Min Shards: {pool._min_shards}")
+        print(f"  Max Shards: {pool._max_shards}")
+        print(f"  Max Assets Per Shard: {pool._max_assets_per_shard}")
+
+        # Gather shard info under lock for thread safety
+        with pool._lock:
+            shards = list(pool._shards)
+            draining = dict(pool._draining)
+            asset_to_shard = dict(pool._asset_to_shard)
+
+        now = time.monotonic()
+
+        # Per-shard details
+        print("\n" + "-" * 65)
+        for shard in shards:
+            shard_idx = shard._shard_index
+            roster_size = shard.roster_size
+            roster = shard.roster_snapshot
+            is_draining = shard in draining
+            drain_remaining = None
+
+            if is_draining:
+                drain_elapsed = now - draining[shard]
+                drain_remaining = max(0, pool._scale_down_idle_seconds - drain_elapsed)
+
+            # Determine state
+            if shard._internally_closed:
+                state = "CLOSED"
+            elif is_draining:
+                state = f"DRAINING ({int(drain_remaining)}s)"
+            else:
+                state = "ACTIVE"
+
+            # Full indicator
+            full_indicator = " [FULL]" if roster_size >= pool._max_assets_per_shard else ""
+
+            print(f"\nSHARD #{shard_idx} [{state}]{full_indicator}")
+            print(f"  Load: {roster_size}/{pool._max_assets_per_shard} assets")
+
+            # Assets
+            if roster:
+                print("  Assets:")
+                for asset_id in roster:
+                    # Truncate long asset IDs for readability
+                    display_id = asset_id[:35] + "..." if len(asset_id) > 35 else asset_id
+                    print(f"    • {display_id}")
+            else:
+                print("  Assets: (none)")
+
+            # Health metrics
+            ping_sent, ping_recv = shard._ping_pongs
+            ping_delta = ping_sent - ping_recv
+            last_msg_age = time.perf_counter() - shard._last_msg_recv_ts if shard._last_msg_recv_ts > 0 else None
+
+            print(f"  Health:")
+            print(f"    Ping/Pong delta: {ping_delta} (sent: {ping_sent}, recv: {ping_recv})")
+            if last_msg_age is not None:
+                print(f"    Last message: {last_msg_age:.2f}s ago")
+            else:
+                print(f"    Last message: (no messages yet)")
+
+            if is_draining:
+                print(f"  Note: Shard will close when drain timeout expires")
+
+        # Summary
+        print("\n" + "=" * 65)
+        print("POOL SUMMARY")
+
+        active_shards = [s for s in shards if not s._internally_closed and s not in draining]
+        draining_shards = list(draining.keys())
+        total_assets = len(asset_to_shard)
+        total_capacity = len(shards) * pool._max_assets_per_shard
+        avg_load = total_assets / len(shards) if shards else 0
+        utilization = (total_assets / total_capacity * 100) if total_capacity > 0 else 0
+
+        print(f"  Active Shards: {len(active_shards)}")
+        print(f"  Draining Shards: {len(draining_shards)}")
+        print(f"  Total Assets: {total_assets}")
+        print(f"  Average Load: {avg_load:.1f} assets per shard")
+        print(f"  Capacity Utilization: {utilization:.1f}%")
+        print("=" * 65 + "\n")
 
     #######################################
     # MAIN CLIENT MESSAGE HANDLER
@@ -598,7 +702,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         for sock in self.sockets:
             try:
-                sock.sendall(obj)
+                with self.send_lock_for(sock):
+                    sock.sendall(obj)
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 self.remove_socket(sock)
                 print_with_name('Removed socket due to error while sending account update:', e)
@@ -1535,7 +1640,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         raw = [dataclasses.asdict(trade) for trade in trades.trades]
         return raw[offset:offset + limit]
 
-
     def _handle_get_balance(self, args_obj: ArgsObject):
         """
         Handle a request to get the account's USDC balance. Delegates to the REST API's
@@ -1696,6 +1800,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                                     self.print_latency_stats),
             'Start latency stats loop': ('Print latency stats every 10s in background',
                                          lambda: self._latency_stats_loop(10)),
+            'Visualise Shards': ('Display all shards and their states', self.visualise_shards),
         })
 
 

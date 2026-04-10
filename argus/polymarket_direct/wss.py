@@ -115,7 +115,12 @@ class PolymarketWSSBase:
                 return
             time.sleep(1)
             self._start_ws()
-        self._allow_ping = True
+            # Only re-enable pings on a true reconnect.  When the WS was closed
+            # internally (e.g. pool sweeper draining a shard), leaving this False
+            # — combined with the _internally_closed check at the top of the ping
+            # loop — lets the ping thread exit cleanly instead of zombie-spamming
+            # "Connection is already closed" forever.
+            self._allow_ping = True
 
     def _on_reconnect_start(self):
         """Called when reconnection starts. Subclasses can override to restore state."""
@@ -143,6 +148,12 @@ class PolymarketWSSBase:
 
         with self._pinging_lock:
             while True:
+                # Exit cleanly when the WS has been closed for good (e.g. pool
+                # sweeper draining an idle shard).  Without this the thread loops
+                # forever, spamming "Connection is already closed" on a dead WS.
+                if self._internally_closed:
+                    logging.info('%s ping thread exiting (internally closed).', self._name)
+                    return
                 try:
                     if self._allow_ping:
                         self._ws.send("PING")
@@ -284,36 +295,38 @@ class PolyMarketAccountEventWss(PolymarketWSSBase):
             self._update_callback(update)
 
 
-class PolyMarketOrderBookWss(PolymarketWSSBase):
+class OrderBookStore:
     """
-    A level 2 order book WebSocket for Polymarket markets.
+    Pure book-state container shared across N PolyMarketOrderBookConn shards.
 
-    Notes:
-        This class takes, on average, 132mb of RAM and spawns ~5 threads.
-        Tested with if/main on commit c5f0be913721305e937626f0e16c64bc75a3d0d4 (HEAD -> perf/rest-wss-orderbook-tuning) at 2026-02-04 23:05 UTC
-        Unlike #59 this class does not have the same memory leak issues again tested on the above commit.
-        Commits after this maybe affected. However, considering this is written during the final implementation of
-        Polymarket order book WebSocket handling in Argus, it is likely stable and accurate.
+    No socket awareness — `apply_message` is called by each shard's WS callback thread
+    with the raw frame, and this class owns all dedup, dict-mutation, and user-callback
+    fanout.  Per-asset uniqueness is enforced by the owning Pool, so two shards never
+    write to the same asset_id concurrently; cross-asset writes are serialized only
+    while the (briefly held) `_dict_lock` mutates the top-level dicts.
     """
 
     def __init__(self, order_book_update_callback=None):
-        super().__init__(name="Polymarket Order Book", url='wss://ws-subscriptions-clob.polymarket.com/ws/market')
-
-        # Where a singular order book is stored as:
-        # {
-        #   'bids': [(price1, size1), (price2, size
-        #   'asks': [(price1, size1), (price2, size2), ...]
-        # }
-        # asset ID then indexes the above in the main dict below
-        self._asset_id_to_order_book = {}
-        self._asset_id_to_misc_info = {}  # can be used to store other info about the asset if needed (e.g. tickSize)
-
-        # Note: tickSize is stored as a string
+        # Book state, formerly on PolyMarketOrderBookWss.
+        self._asset_id_to_order_book: dict = {}
+        self._asset_id_to_misc_info: dict = {}  # tickSize + future_running per asset
+        self._asset_id_to_best_bid_ask: dict = {}
 
         self._order_book_update_callback = order_book_update_callback
         self._dict_lock = threading.Lock()
+
+        # Latency tracking — read by the dispatcher (via the pool) to compute
+        # WS-arrival → sendall propagation latency.  Updated inside `apply_message`
+        # so it's accurate regardless of which shard delivered the message.
+        self._last_msg_recv_ts: float = 0.0
+
+        # REST session for tick-size fetches.  Lives on the store (not per-shard)
+        # so that re-subscribe-after-reconnect doesn't double-fetch.
         self.session = requests.Session()
-        self._thread_pool = ThreadPoolExecutor(max_workers=5, thread_name_prefix="PolyMarketOrderBookWssThreadPool")
+        self._thread_pool = ThreadPoolExecutor(
+            max_workers=5,
+            thread_name_prefix="OrderBookStoreTickPool",
+        )
 
         if os.environ.get('POLYMARKET_UNSAFE_RAPID_CONNECTIONS', 'false').lower() == 'true':
             print(colored("[{}] WARNING: UNSAFE RAPID CONNECTIONS IS ENABLED. "
@@ -323,34 +336,47 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             wp_wrappers.update_request_session_proxy(
                 session=self.session,
                 idx='POLYMARKET',
-                verbose=False
+                verbose=False,
             )
 
         # Stats
-        self._updates: list[float] = []  # timestamps of updates received
+        self._updates: list[float] = []
 
-        # Cache of the most recently received best_bid_ask values per asset.
-        # Written only from best_bid_ask events; read by the price_change dedup check.
-        # Structure: {asset_id: {'best_bid': str, 'best_ask': str}}
-        self._asset_id_to_best_bid_ask: dict = {}
+    ##############################################
+    # Pool-facing entry points
+    ##############################################
 
-    def _create_ws_app(self):
-        """Create the WebSocketApp instance."""
-        self._ws = WebSocketApp(
-            url=self._url,
-            on_open=self._on_open_base,
-            on_close=self._on_close_base,
-            on_error=self._on_error_base,
-            on_message=self._on_message_base
-        )
+    def on_subscribe(self, asset_id: str) -> None:
+        """
+        Called by the pool the first time an asset is subscribed.  Idempotent —
+        if a misc_info entry already exists (e.g. survived a forget/re-subscribe race),
+        we leave it alone rather than firing a duplicate REST tick-size fetch.
+        """
+        with self._dict_lock:
+            existing = self._asset_id_to_misc_info.get(asset_id)
+            if existing and (existing.get('tick_size') or existing.get('future_running')):
+                return
+            self._asset_id_to_misc_info[asset_id] = {
+                'tick_size': None,
+                'future_running': self._future_get_tick_size(asset_id),
+            }
 
-    def _on_open_impl(self):
-        """Implementation-specific open logic."""
-        initial_msg = json.dumps({"assets_ids": [], "type": "market"})
-        self._ws.send(initial_msg)
+    def forget(self, asset_id: str) -> None:
+        """Drop all state for an asset (called by pool on full unsubscribe)."""
+        with self._dict_lock:
+            self._asset_id_to_order_book.pop(asset_id, None)
+            self._asset_id_to_misc_info.pop(asset_id, None)
+            self._asset_id_to_best_bid_ask.pop(asset_id, None)
 
-    def _on_message_impl(self, message: str):
-        """Implementation-specific message handling."""
+    def apply_message(self, message: str) -> None:
+        """
+        Parse a raw WS frame from a shard and dispatch to the per-event handler.
+
+        Called concurrently from N shard threads — but per-asset there is still
+        only ever one writer (Pool guarantees one shard per asset_id), so the
+        dedup/update logic remains race-free for any given asset.
+        """
+        self._last_msg_recv_ts = time.perf_counter()
         self._updates.append(time.time())
 
         try:
@@ -364,7 +390,6 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             return
 
         try:
-            # Handle both list and dict messages
             if isinstance(content, list):
                 for msg in content:
                     self._handle_order_book_message(msg)
@@ -373,26 +398,6 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
         except Exception as e:
             print('WARNING: Error handling Polymarket Order Book WebSocket message: "{}"'.format(message))
             raise e
-
-    def _on_reconnect_start(self):
-        """Called when reconnection starts - restore subscriptions."""
-        self._reset_threading_events()
-        self._defer_restore_state()
-
-    @runAsThread
-    def _defer_restore_state(self):
-        """
-        Waits for `wait_till_first_pong` to be cleared, then restores WebSocket subscriptions
-        to previously subscribed asset IDs. Should only be called internally after a disconnect.
-        """
-        self.wait_till_first_pong.wait()
-        asset_ids = self.asset_ids
-        if asset_ids:
-            logging.info('Restoring Polymarket Order Book WebSocket subscriptions for asset IDs: %s', asset_ids)
-            for asset_id in asset_ids:
-                self.subscribe_to_asset_id(asset_id)
-        else:
-            logging.info('No asset IDs to restore for Polymarket Order Book WebSocket.')
 
     ##############################################
     # Message Handlers & Logic
@@ -595,59 +600,6 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             current_best_ask = asks[0]['price'] if asks else None
             return current_best_bid == cached['best_bid'] and current_best_ask == cached['best_ask']
 
-    def subscribe_to_asset_id(self, asset_id: str):
-        self._ws.send(json.dumps({
-            "assets_ids": [asset_id],
-            "type": "market",
-            "operation": "subscribe",
-            "custom_feature_enabled": True
-        }))
-
-        with self._dict_lock:
-            self._asset_id_to_misc_info[asset_id] = {
-                'tick_size': None,
-                'future_running': self._future_get_tick_size(asset_id)
-            }
-
-    def unsubscribe_from_asset_id(self, asset_id: str):
-        """
-        Unsubscribe from order book updates for a specific asset ID.
-        This will remove the order book from the internal state. It will no
-        longer be tracked.
-
-        :param asset_id: The asset ID to unsubscribe from.
-        :return:
-        """
-        self._ws.send(json.dumps({
-            "assets_ids": [asset_id],
-            "type": "market",
-            "operation": "unsubscribe"
-        }))
-
-        with self._dict_lock:
-            if asset_id in self._asset_id_to_order_book:
-                del self._asset_id_to_order_book[asset_id]
-
-    def subscribe_to_market(self, market: pm_types.PolymarketEvent):
-        """
-        Subscribe to order book updates for all asset IDs in a market.
-        :param market: The PolymarketEvent market to subscribe to.
-        :return:
-        """
-        if not market.markets:
-            logging.warning('Market has no sub-markets; cannot subscribe.')
-            return
-
-        if len(market.markets) > 1:
-            logging.warning('Market has multiple sub-markets; This is unexpected behavior.')
-            for m in market.markets:
-                logging.warning('Sub-market: %s', m)
-
-        first_market = market.markets[0]
-        if first_market.clobTokenIds:
-            for asset in first_market.clobTokenIds:
-                self.subscribe_to_asset_id(asset.id)
-
     def order_book_for_asset_id(self, asset_id: str):
         """
         Get the order book for a specific asset ID.
@@ -663,17 +615,6 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
     @property
     def asset_ids(self):
         return list(self._asset_id_to_order_book.keys())
-
-    def run(self, main_thread=False):
-        """
-        Run the WebSocket connection.
-        :param main_thread: If True, run in the main thread. Otherwise, run in a separate thread.
-        :return:
-        """
-        if main_thread:
-            self._start_ws_sync()
-        else:
-            self._start_ws()
 
     def print_stats(self):
         """
@@ -767,14 +708,343 @@ class PolyMarketOrderBookWss(PolymarketWSSBase):
             return self._asset_id_to_misc_info[asset_id]['tick_size']
 
         # just throw if the key doesn't exit, it should be
-        # impossible since subscribe_to_asset_id initializes the dict entry for the asset ID
+        # impossible since on_subscribe initializes the dict entry for the asset ID
+
+
+class PolyMarketOrderBookConn(PolymarketWSSBase):
+    """
+    A single Polymarket order book WebSocket *shard*.
+
+    Owns only the WS lifecycle (open / close / ping / pong / reconnect — inherited
+    from `PolymarketWSSBase`) and a `_roster` of the asset_ids this shard is
+    currently subscribed to.  All book state lives on the shared `OrderBookStore`
+    that the owning `PolyMarketOrderBookPool` injects on construction.
+
+    Reconnect behavior: `_roster` is populated at subscribe-time (not derived from
+    the book dict the way the old single-conn class was), so even assets that
+    never received a snapshot before the disconnect are correctly re-subscribed.
+    """
+
+    def __init__(self, store: 'OrderBookStore', shard_index: int = 0):
+        super().__init__(
+            name=f"Polymarket Order Book Shard {shard_index}",
+            url='wss://ws-subscriptions-clob.polymarket.com/ws/market',
+        )
+        self._store = store
+        self._shard_index = shard_index
+        self._roster: set[str] = set()
+        self._roster_lock = threading.Lock()
+
+    def _create_ws_app(self):
+        self._ws = WebSocketApp(
+            url=self._url,
+            on_open=self._on_open_base,
+            on_close=self._on_close_base,
+            on_error=self._on_error_base,
+            on_message=self._on_message_base,
+        )
+
+    def _on_open_impl(self):
+        # Polymarket requires an initial subscribe frame (even an empty one) to
+        # complete the protocol handshake.  Real subscriptions are sent later by
+        # the pool via `subscribe()`.
+        self._ws.send(json.dumps({"assets_ids": [], "type": "market"}))
+
+    def _on_message_impl(self, message: str):
+        self._store.apply_message(message)
+
+    def _on_reconnect_start(self):
+        self._reset_threading_events()
+        self._defer_restore_state()
+
+    @runAsThread
+    def _defer_restore_state(self):
+        """After the new socket comes back up, replay every asset_id in our roster."""
+        self.wait_till_first_pong.wait()
+        with self._roster_lock:
+            assets = list(self._roster)
+        if assets:
+            logging.info('Restoring %s subscriptions: %s', self._name, assets)
+            for asset_id in assets:
+                self._send_subscribe_op(asset_id)
+        else:
+            logging.info('No asset IDs to restore for %s.', self._name)
+
+    def _send_subscribe_op(self, asset_id: str) -> None:
+        self._ws.send(json.dumps({
+            "assets_ids": [asset_id],
+            "type": "market",
+            "operation": "subscribe",
+            "custom_feature_enabled": True,
+        }))
+
+    def _send_unsubscribe_op(self, asset_id: str) -> None:
+        self._ws.send(json.dumps({
+            "assets_ids": [asset_id],
+            "type": "market",
+            "operation": "unsubscribe",
+        }))
+
+    def subscribe(self, asset_id: str) -> None:
+        """Add to roster + send the subscribe op.  Caller must have waited on socket open."""
+        with self._roster_lock:
+            self._roster.add(asset_id)
+        self._send_subscribe_op(asset_id)
+
+    def unsubscribe(self, asset_id: str) -> None:
+        with self._roster_lock:
+            self._roster.discard(asset_id)
+        self._send_unsubscribe_op(asset_id)
+
+    @property
+    def roster_size(self) -> int:
+        with self._roster_lock:
+            return len(self._roster)
+
+    @property
+    def roster_snapshot(self) -> list[str]:
+        with self._roster_lock:
+            return list(self._roster)
+
+    def close(self) -> None:
+        """Permanently close this shard.  Suppresses the auto-reconnect path."""
+        self._internally_closed = True
+        self._allow_ping = False
+        try:
+            self._ws.close()
+        except Exception as e:
+            logging.warning('Error closing %s: %s', self._name, e)
+
+    def start(self) -> None:
+        """Start the WS in a background thread (non-blocking)."""
+        self._start_ws()
+
+
+class PolyMarketOrderBookPool:
+    """
+    Façade over N PolyMarketOrderBookConn shards backed by a single OrderBookStore.
+
+    Exposes the same surface the dispatcher used to call on `PolyMarketOrderBookWss`
+    (`subscribe_to_asset_id`, `unsubscribe_from_asset_id`, `order_book_for_asset_id`,
+    `get_tick_size`, `run`) so the swap is a one-liner at the call site.
+
+    Sharding strategy:
+        - Each shard caps at `max_assets_per_shard` (default 4).
+        - Subscriptions go to the smallest non-draining shard with room.
+        - At full capacity, a new shard is spawned up to `max_shards`.
+        - When a shard's roster empties (and we're above `min_shards`), it goes
+          into a `_draining` grace window of `scale_down_idle_seconds`; if no new
+          subscribe lands within that window, the sweeper closes it.
+        - A pending re-subscribe arriving during the grace window un-drains the
+          shard rather than spawning a fresh connection (avoids churn).
+
+    All env-tunable from day one — see the table in plan.md.
+    """
+
+    def __init__(self, order_book_update_callback=None):
+        self._max_assets_per_shard = int(os.environ.get('POLYMARKET_MAX_ASSETS_PER_WS', '4'))
+        self._min_shards = int(os.environ.get('POLYMARKET_MIN_SHARDS', '1'))
+        self._max_shards = int(os.environ.get('POLYMARKET_MAX_SHARDS', '10'))
+        self._scale_down_idle_seconds = float(os.environ.get('POLYMARKET_SCALE_DOWN_IDLE_S', '30'))
+
+        if self._min_shards < 1:
+            self._min_shards = 1
+        if self._max_shards < self._min_shards:
+            self._max_shards = self._min_shards
+
+        self._store = OrderBookStore(order_book_update_callback=order_book_update_callback)
+        self._shards: list[PolyMarketOrderBookConn] = []
+        self._asset_to_shard: dict[str, PolyMarketOrderBookConn] = {}
+        # shard -> drain_start_time (monotonic).  Membership = "this shard is in
+        # the grace window awaiting close."
+        self._draining: dict[PolyMarketOrderBookConn, float] = {}
+        self._lock = threading.RLock()
+        self._next_shard_index = 0
+        self._sweeper_started = False
+
+    # ---- dispatcher-facing latency probe ---------------------------------
+    @property
+    def _last_msg_recv_ts(self) -> float:
+        # The dispatcher reads this via `getattr(self.market_data, '_last_msg_recv_ts', 0.0)`
+        # at __init__.py:497.  Forward to the store so latency is measured per-message
+        # regardless of which shard delivered it.
+        return self._store._last_msg_recv_ts
+
+    # ---- internal helpers -------------------------------------------------
+    def _spawn_shard_locked(self) -> PolyMarketOrderBookConn:
+        """Caller must hold self._lock."""
+        idx = self._next_shard_index
+        self._next_shard_index += 1
+        shard = PolyMarketOrderBookConn(store=self._store, shard_index=idx)
+        self._shards.append(shard)
+        shard.start()
+        logging.info('PolyMarketOrderBookPool: spawned shard %d (total=%d)', idx, len(self._shards))
+        return shard
+
+    def _pick_or_spawn_shard_locked(self, asset_id: str) -> PolyMarketOrderBookConn:
+        """
+        Pick an existing shard with room, un-drain a draining one if needed,
+        or spawn a new shard.  Raises if all shards are full.
+        Caller must hold self._lock.
+        """
+        # 1. Smallest non-draining shard with room.
+        candidates = [
+            s for s in self._shards
+            if s not in self._draining and s.roster_size < self._max_assets_per_shard
+        ]
+        if candidates:
+            return min(candidates, key=lambda s: s.roster_size)
+
+        # 2. Resurrect a draining shard with room (avoids churn during the grace window).
+        for s in list(self._draining.keys()):
+            if s.roster_size < self._max_assets_per_shard:
+                del self._draining[s]
+                logging.info(
+                    'PolyMarketOrderBookPool: un-draining shard %d for %s',
+                    s._shard_index, asset_id,
+                )
+                return s
+
+        # 3. Spawn a new shard if we have headroom.
+        if len(self._shards) < self._max_shards:
+            return self._spawn_shard_locked()
+
+        # 4. Out of capacity — propagate so the dispatcher's _handle_subscribe surfaces it.
+        raise RuntimeError(
+            f"PolyMarketOrderBookPool: cannot subscribe {asset_id}; "
+            f"all {self._max_shards} shards are full at "
+            f"{self._max_assets_per_shard} assets each."
+        )
+
+    # ---- dispatcher-facing API -------------------------------------------
+    def run(self, main_thread=False):
+        """
+        Bring the pool online: spawn `min_shards` connections and start the sweeper.
+
+        `main_thread` is accepted for API compatibility with the old single-conn
+        class but ignored — the pool always runs all shards in background threads.
+        """
+        _ = main_thread
+        with self._lock:
+            while len(self._shards) < self._min_shards:
+                self._spawn_shard_locked()
+            if not self._sweeper_started:
+                self._sweeper_started = True
+                self._scale_down_sweeper()
+
+    def subscribe_to_asset_id(self, asset_id: str):
+        # Pool owns idempotency — _handle_subscribe in the dispatcher fires this
+        # unconditionally on every client subscribe; we no-op duplicates here.
+        with self._lock:
+            if asset_id in self._asset_to_shard:
+                return
+            shard = self._pick_or_spawn_shard_locked(asset_id)
+            self._asset_to_shard[asset_id] = shard
+
+        # Wait for the shard's WS to be open *outside* the pool lock so other
+        # subscribe/unsubscribe ops can proceed in parallel.
+        shard.wait_till_socket_open.wait()
+        shard.subscribe(asset_id)
+        self._store.on_subscribe(asset_id)
+
+    def unsubscribe_from_asset_id(self, asset_id: str):
+        with self._lock:
+            shard = self._asset_to_shard.pop(asset_id, None)
+        if shard is None:
+            return
+
+        try:
+            shard.unsubscribe(asset_id)
+        except Exception as e:
+            logging.warning(
+                'PolyMarketOrderBookPool: error sending unsubscribe for %s: %s',
+                asset_id, e,
+            )
+
+        self._store.forget(asset_id)
+
+        with self._lock:
+            if shard.roster_size == 0 and len(self._shards) > self._min_shards and shard not in self._draining:
+                self._draining[shard] = time.monotonic()
+                logging.info(
+                    'PolyMarketOrderBookPool: shard %d entered drain window',
+                    shard._shard_index,
+                )
+
+    def order_book_for_asset_id(self, asset_id: str):
+        return self._store.order_book_for_asset_id(asset_id)
+
+    def get_tick_size(self, asset_id: str, timeout=10):
+        return self._store.get_tick_size(asset_id, timeout=timeout)
+
+    def subscribe_to_market(self, market: pm_types.PolymarketEvent):
+        """Convenience helper retained from the old API — subscribe to every clob token in a market."""
+        if not market.markets:
+            logging.warning('Market has no sub-markets; cannot subscribe.')
+            return
+
+        if len(market.markets) > 1:
+            logging.warning('Market has multiple sub-markets; This is unexpected behavior.')
+            for m in market.markets:
+                logging.warning('Sub-market: %s', m)
+
+        first_market = market.markets[0]
+        if first_market.clobTokenIds:
+            for asset in first_market.clobTokenIds:
+                self.subscribe_to_asset_id(asset.id)
+
+    @property
+    def order_books(self):
+        return self._store.order_books
+
+    @property
+    def asset_ids(self):
+        return self._store.asset_ids
+
+    def print_stats(self):
+        self._store.print_stats()
+        with self._lock:
+            shard_summary = ', '.join(
+                f"shard{s._shard_index}={s.roster_size}" for s in self._shards
+            )
+            draining_count = len(self._draining)
+        logging.info(
+            'PolyMarketOrderBookPool: %d shards (%s), %d draining',
+            len(self._shards), shard_summary, draining_count,
+        )
+
+    @runAsThread
+    def _scale_down_sweeper(self):
+        """Background thread that closes idle drained shards after the grace window."""
+        sweep_interval = max(1.0, self._scale_down_idle_seconds / 5)
+        while True:
+            time.sleep(sweep_interval)
+            now = time.monotonic()
+            to_close: list[PolyMarketOrderBookConn] = []
+            with self._lock:
+                for shard, drain_start in list(self._draining.items()):
+                    if shard.roster_size > 0:
+                        # Defensive: subscribe path should have already un-drained.
+                        del self._draining[shard]
+                        continue
+                    if now - drain_start >= self._scale_down_idle_seconds and len(self._shards) > self._min_shards:
+                        to_close.append(shard)
+                        del self._draining[shard]
+                        self._shards.remove(shard)
+
+            for shard in to_close:
+                logging.info(
+                    'PolyMarketOrderBookPool: closing drained shard %d',
+                    shard._shard_index,
+                )
+                try:
+                    shard.close()
+                except Exception as e:
+                    logging.warning('Error closing drained shard: %s', e)
 
 
 if __name__ == '__main__':
-    __x = 0
-
     _HIDDEN_ASSET_ID = '661095475084821930790589425827399710453605787397495798070750303202782280580'
-
 
     def ev(x):
         print('---ORDER BOOK UPDATE---')
@@ -786,16 +1056,8 @@ if __name__ == '__main__':
         ))
         print('-' * 100)
 
-
-    wss = PolyMarketOrderBookWss(ev)
-
-    # noinspection PyProtectedMember
-    # wss._debug_print_stats_loop()
-    wss.run(main_thread=False)
-    # wait with threading event to ensure socket is open
-    wss.wait_till_socket_open.wait()
-    wss.subscribe_to_asset_id(
-        _HIDDEN_ASSET_ID
-    )
+    pool = PolyMarketOrderBookPool(order_book_update_callback=ev)
+    pool.run(main_thread=False)
+    pool.subscribe_to_asset_id(_HIDDEN_ASSET_ID)
     input('Press Enter to exit...\n')
-    wss.print_stats()
+    pool.print_stats()
