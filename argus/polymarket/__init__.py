@@ -18,6 +18,7 @@ IMPORTANT — Account Update Delivery Requirement:
     to market data.  If your workflow depends on receiving account lifecycle
     events, you MUST subscribe to at least one asset_id before placing orders.
 """
+
 import gc
 import os
 import json
@@ -45,14 +46,25 @@ from argus.polymarket_direct.order_types import OrderEvent
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
-from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
-from argus.polymarket._classes import (PolyMarketDispatcherError, InvalidArgumentError, RoutingHelper,
-                                       ArgsObject, P2ConvertClass, print_with_name, CorrelationIDChecker,
-                                       OrderExecutionDisabledError)
+from argus.protocol import (
+    decode_multiple_packets,
+    encode_packet,
+    transmit_mkt_data_with_protocol_2,
+)
+from argus.polymarket._classes import (
+    PolyMarketDispatcherError,
+    InvalidArgumentError,
+    RoutingHelper,
+    ArgsObject,
+    P2ConvertClass,
+    print_with_name,
+    CorrelationIDChecker,
+    OrderExecutionDisabledError,
+)
 
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
-_poly_cache = FastCache(cache_file='~/.argus/polymarket_cache.pkl')
-_CACHE = DomainCache('polymarket_dispatcher_v2', cache=_poly_cache)
+_poly_cache = FastCache(cache_file="~/.argus/polymarket_cache.pkl")
+_CACHE = DomainCache("polymarket_dispatcher_v2", cache=_poly_cache)
 
 
 class PolymarketDispatcher(Introspective, RoutingHelper):
@@ -69,8 +81,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     tracking — sockets are registered only on subscription.
     """
 
-    def __init__(self, private_key: str = None, proxy_funder: str = None,
-                 host="localhost", port=9972, profile_proxy=-1):
+    def __init__(
+        self,
+        private_key: str = None,
+        proxy_funder: str = None,
+        host="localhost",
+        port=9972,
+        profile_proxy=-1,
+    ):
         """
         Initializes the PolymarketDispatcher instance to handle incoming market data, account events,
         and routing tasks across relevant components. Configures the REST API and WebSocket
@@ -104,32 +122,41 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         # Configs dictionary for dispatcher settings
         self._configs = {
-            'Show P1 Packets': False,
-            'Print P2 packets': False,
-            'Show packet timestamps': True,
-            'Block Order Execution': False,
-            'show response times': False,
+            "Show P1 Packets": False,
+            "Print P2 packets": False,
+            "Show packet timestamps": True,
+            "Block Order Execution": False,
+            "show response times": False,
             # if this is true, when an order execution endpoint is called, an exception will be raised.
         }
         if private_key is None:
-            private_key = os.environ['POLYMARKET_PRIVATE_KEY']
+            private_key = os.environ["POLYMARKET_PRIVATE_KEY"]
 
         if proxy_funder is None:
-            proxy_funder = os.environ['POLYMARKET_PROXY_FUNDER']
+            proxy_funder = os.environ["POLYMARKET_PROXY_FUNDER"]
 
         self.dispatcher_svr = Server(
             on_recv=self._handle_incoming_packets,
-            on_disconnect=lambda *args: print("PolymarketDispatcher: Disconnected from client.", args),
+            on_disconnect=lambda *args: print(
+                "PolymarketDispatcher: Disconnected from client.", args
+            ),
             host=host,
             port=port,
         )
 
         # All the below are already registered with WireProxy system
-        self.rest_api = rest.PolyRestAPI(private_key=private_key, proxy_funder=proxy_funder,
-                                         fatal_callback=self._on_fatal_error)
-        self.market_data = wss.PolyMarketOrderBookPool(order_book_update_callback=self._order_book_update_callback)
-        self.account_updates = wss.PolyMarketAccountEventWss(auth=self.rest_api.credentials,
-                                                             update_callback=self._account_update_callback)
+        self.rest_api = rest.PolyRestAPI(
+            private_key=private_key,
+            proxy_funder=proxy_funder,
+            fatal_callback=self._on_fatal_error,
+        )
+        self.market_data = wss.PolyMarketOrderBookPool(
+            order_book_update_callback=self._order_book_update_callback
+        )
+        self.account_updates = wss.PolyMarketAccountEventWss(
+            auth=self.rest_api.credentials,
+            update_callback=self._account_update_callback,
+        )
 
         self.unsafe_api = UnsafePolyMarket()
 
@@ -153,26 +180,34 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         # ^^^ is locked with '_market_cache_lock' since it is only updated in the market cache refresh
         # function and read in the market data update callback, which are both protected by the same lock.
 
-        self._orderbook_depth = int(os.environ.get('POLYMARKET_ORDERBOOK_DEPTH', 10))
+        self._orderbook_depth = int(os.environ.get("POLYMARKET_ORDERBOOK_DEPTH", 10))
 
         # Configs
-        self._market_cache_refresh_interval = int(os.environ.get('POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL', 300))
+        self._market_cache_refresh_interval = int(
+            os.environ.get("POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL", 300)
+        )
         self._market_api_limit = 150  # Max markets per API call
         self._max_seen_markets = 6000  # Typical polymarket size
 
         # Make sure we have markets ready to serve
-        self._update_markets_cache(invalidate_cache=False)  # load from cache or fetch fresh
+        self._update_markets_cache(
+            invalidate_cache=False
+        )  # load from cache or fetch fresh
 
         # Start background tasks
         self.market_data.run(main_thread=False)
         self.start_update_markets_cache_thread()
 
         self._correlation_id_checker = CorrelationIDChecker()
-        self._log_file = os.environ.get('POLYMARKET_DISPATCHER_LOG_FILE',
-                                        os.path.expanduser('~/.argus/polymarket_dispatcher.log'))
+        self._log_file = os.environ.get(
+            "POLYMARKET_DISPATCHER_LOG_FILE",
+            os.path.expanduser("~/.argus/polymarket_dispatcher.log"),
+        )
 
-        with open(self._log_file, 'a') as f:
-            f.write(f"\n\n--- PolymarketDispatcher started at {datetime.now().isoformat()} ---\n")
+        with open(self._log_file, "a") as f:
+            f.write(
+                f"\n\n--- PolymarketDispatcher started at {datetime.now().isoformat()} ---\n"
+            )
 
         self._log_file_lock = threading.Lock()
 
@@ -180,14 +215,17 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._latency_samples: deque[float] = deque(maxlen=10_000)
 
         logging.info("PolymarketDispatcher initialized on %s:%d", host, port)
-        logging.info("Market cache refresh interval set to %d seconds", self._market_cache_refresh_interval)
+        logging.info(
+            "Market cache refresh interval set to %d seconds",
+            self._market_cache_refresh_interval,
+        )
         logging.info("Market API limit set to %d", self._market_api_limit)
         logging.info("Max seen markets initialized to %d", self._max_seen_markets)
 
     @runAsThread
     def async_write_log(self, message: str):
         with self._log_file_lock:
-            with open(self._log_file, 'a') as f:
+            with open(self._log_file, "a") as f:
                 f.write(f"{datetime.now().isoformat()} ==> {message}\n")
 
     #######################################
@@ -210,20 +248,24 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # will force a refresh from the API. The invalidation call would be coming from the background thread.
     def _update_markets_cache(self, invalidate_cache: bool = False):
         """Updates markets cache; logs errors"""
-        uuid_of_func = '_update_markets_cache.internal'
+        uuid_of_func = "_update_markets_cache.internal"
 
         if invalidate_cache:
-            print_with_name('Invalidating Polymarket markets cache.')
-            _CACHE.invalidate_key(_CACHE.generate_key(
-                func_uuid=uuid_of_func,
-            ))
+            print_with_name("Invalidating Polymarket markets cache.")
+            _CACHE.invalidate_key(
+                _CACHE.generate_key(
+                    func_uuid=uuid_of_func,
+                )
+            )
         else:
-            print_with_name('Loading Polymarket markets cache from disk or fetching fresh if not available.')
+            print_with_name(
+                "Loading Polymarket markets cache from disk or fetching fresh if not available."
+            )
 
         @_CACHE.cache_decorator(
             func_uuid=uuid_of_func,
             expiration=60 * 60 * 3,  # 3 hours
-            should_cache_function=lambda x: len(x.keys()) > 0
+            should_cache_function=lambda x: len(x.keys()) > 0,
         )
         def fetch_all_markets_cached():
             scoped_all_markets_cache = {}
@@ -237,13 +279,19 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 offset = 0
                 while True:
                     markets = self.rest_api.fetch_events(
-                        offset=offset,
-                        limit=self._market_api_limit
+                        offset=offset, limit=self._market_api_limit
                     )
-                    scoped_all_markets_cache.update({market.ticker: market for market in markets})
+                    scoped_all_markets_cache.update(
+                        {market.ticker: market for market in markets}
+                    )
                     offset += len(markets)
                     progress.update(len(markets))
-                    progress.set_postfix({'Total Markets': len(scoped_all_markets_cache), 'Offset': offset})
+                    progress.set_postfix(
+                        {
+                            "Total Markets": len(scoped_all_markets_cache),
+                            "Offset": offset,
+                        }
+                    )
                     progress.refresh()
                     if len(markets) == 0:
                         break
@@ -251,7 +299,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 progress.close()
                 progress.refresh()
                 time.sleep(1)  # tqdm refresh
-                logging.info("Refreshed all markets cache with %d markets.", len(scoped_all_markets_cache))
+                logging.info(
+                    "Refreshed all markets cache with %d markets.",
+                    len(scoped_all_markets_cache),
+                )
                 self._max_seen_markets = max(self._max_seen_markets, len(markets))
             except Exception as e:
                 logging.error("Error refreshing all markets cache: %s", e)
@@ -260,9 +311,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         markets_cached = fetch_all_markets_cached()
 
-        if os.environ.get('POLYMARKET_MEMORY_PRUNING', 'false').lower() == 'true':
-            for key, value in tqdm.tqdm(markets_cached.items(), desc="Pruning events data in cache", unit="events",
-                                        dynamic_ncols=True):
+        if os.environ.get("POLYMARKET_MEMORY_PRUNING", "false").lower() == "true":
+            for key, value in tqdm.tqdm(
+                markets_cached.items(),
+                desc="Pruning events data in cache",
+                unit="events",
+                dynamic_ncols=True,
+            ):
                 markets_cached[key] = traverse_and_slim(value)
 
         _poly_cache.unload_cache()
@@ -282,8 +337,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         dict_asset_id_to_ticker = {}
         with self._market_cache_lock:
-            for ticker, event in tqdm.tqdm(self._all_markets_cache.items(), desc="Building asset_id to ticker mapping",
-                                           unit="markets", dynamic_ncols=True):
+            for ticker, event in tqdm.tqdm(
+                self._all_markets_cache.items(),
+                desc="Building asset_id to ticker mapping",
+                unit="markets",
+                dynamic_ncols=True,
+            ):
                 markets = event.markets
                 for index in range(len(markets)):
                     clobs: list[str] = markets[index].clobTokenIds
@@ -300,70 +359,89 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     #######################################
     # Callbacks
     #######################################
-    def _handle_incoming_packets(self, client_socket: socket.socket, address, data: bytes):
+    def _handle_incoming_packets(
+        self, client_socket: socket.socket, address, data: bytes
+    ):
         try:
             packets = decode_multiple_packets(data)
         except Exception as e:
-            logging.error("Failed to decode incoming data from client %s: %s. Data: %s", address, e, data)
+            logging.error(
+                "Failed to decode incoming data from client %s: %s. Data: %s",
+                address,
+                e,
+                data,
+            )
             response = {
-                'action': None,
-                'data': None,
-                'error': f"Failed to decode incoming data: {str(e)}. YOU ARE NOT ENCODING PROPERLY OR YOU SENT MALFORMED DATA. Data must be encoded with the P1 protocol (JSON) and then P1 packet encoded. Original error: {str(e)}"
+                "action": None,
+                "data": None,
+                "error": f"Failed to decode incoming data: {str(e)}. YOU ARE NOT ENCODING PROPERLY OR YOU SENT MALFORMED DATA. Data must be encoded with the P1 protocol (JSON) and then P1 packet encoded. Original error: {str(e)}",
             }
-            response_bytes = encode_packet(json.dumps(response).encode('utf-8'))
+            response_bytes = encode_packet(json.dumps(response).encode("utf-8"))
             try:
                 client_socket.sendall(response_bytes)
             except Exception as e:
-                print_with_name('ERROR: Unable to send message {} to {} error={}', response_bytes, address, e)
+                print_with_name(
+                    "ERROR: Unable to send message {} to {} error={}",
+                    response_bytes,
+                    address,
+                    e,
+                )
             return
 
         for packet in packets:
-            content = json.loads(packet.decode('utf-8'))
+            content = json.loads(packet.decode("utf-8"))
             logging.debug("Received data from Polymarket client: %s", content)
-            correlation_id = content.get('correlation_id',
-                                         None)  # Optional field for client-side tracking of requests/responses
+            correlation_id = content.get(
+                "correlation_id", None
+            )  # Optional field for client-side tracking of requests/responses
             try:
                 if correlation_id is not None:
                     self._correlation_id_checker.check_correlation_id(
-                        correlation_id)  # throws if invalid, caught by the exception below
+                        correlation_id
+                    )  # throws if invalid, caught by the exception below
 
                 response = self._handle_client_message(client_socket, address, content)
                 msg = {
-                    'action': content.get('action', None),
-                    'data': response,
-                    'error': None
+                    "action": content.get("action", None),
+                    "data": response,
+                    "error": None,
                 }
                 # because encoding can fail!
                 if correlation_id is not None:
-                    msg['correlation_id'] = correlation_id
-                response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
+                    msg["correlation_id"] = correlation_id
+                response_bytes = encode_packet(json.dumps(msg).encode("utf-8"))
             except Exception as e:
-
-                throw_fuss(
-                    msg=traceback.format_exc(),
-                    notify=False
-                )
+                throw_fuss(msg=traceback.format_exc(), notify=False)
 
                 msg = {
-                    'action': content.get('action', None),
-                    'data': None,
-                    'error': str(e)
+                    "action": content.get("action", None),
+                    "data": None,
+                    "error": str(e),
                 }
                 if correlation_id is not None:
-                    msg['correlation_id'] = correlation_id
-                response_bytes = encode_packet(json.dumps(msg).encode('utf-8'))
+                    msg["correlation_id"] = correlation_id
+                response_bytes = encode_packet(json.dumps(msg).encode("utf-8"))
 
-            if self._configs['Show P1 Packets']:
-                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-                if self._configs.get('Show packet timestamps', True):
-                    print(f"[{timestamp}] → ({len(response_bytes)} bytes): {response_bytes!r}")
+            if self._configs["Show P1 Packets"]:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                if self._configs.get("Show packet timestamps", True):
+                    print(
+                        f"[{timestamp}] → ({len(response_bytes)} bytes): {response_bytes!r}"
+                    )
                 else:
-                    print(f"P1 Packet ({len(response_bytes)} bytes): {response_bytes!r}")
+                    print(
+                        f"P1 Packet ({len(response_bytes)} bytes): {response_bytes!r}"
+                    )
 
             try:
                 client_socket.sendall(response_bytes)
             except Exception as e:
-                print_with_name('ERROR: Unable to send message {} to {} error={}', response_bytes, address, e)
+                print_with_name(
+                    "ERROR: Unable to send message {} to {} error={}",
+                    response_bytes,
+                    address,
+                    e,
+                )
 
     def _on_fatal_error(self, error: dict):
         """
@@ -380,9 +458,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             'function' (str), 'exception' (Exception), 'traceback' (str), 'args', 'kwargs', 'self'.
         :return:
         """
-        func_name = error.get('function', 'unknown')
-        exception = error.get('exception', 'unknown')
-        tb = error.get('traceback', '')
+        func_name = error.get("function", "unknown")
+        exception = error.get("exception", "unknown")
+        tb = error.get("traceback", "")
 
         fuss_msg = (
             f"POLYMARKET DISPATCHER FATAL ERROR\n"
@@ -394,16 +472,18 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         # Build a serializable error payload for clients (Exception objects are not JSON serializable)
         client_error_payload = {
-            'function': func_name,
-            'exception': str(exception),
-            'traceback': tb,
+            "function": func_name,
+            "exception": str(exception),
+            "traceback": tb,
         }
 
-        error_packet = self.send_with_p1_encoding({
-            'action': 'fatal_error',
-            'data': client_error_payload,
-            'error': str(exception)
-        })
+        error_packet = self.send_with_p1_encoding(
+            {
+                "action": "fatal_error",
+                "data": client_error_payload,
+                "error": str(exception),
+            }
+        )
 
         for sock in self.sockets:
             try:
@@ -411,9 +491,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     sock.sendall(error_packet)
             except (ConnectionResetError, BrokenPipeError) as e:
                 self.remove_socket(sock)
-                print_with_name('Removed socket due to error while broadcasting fatal error:', e)
+                print_with_name(
+                    "Removed socket due to error while broadcasting fatal error:", e
+                )
             except Exception as e:
-                print_with_name('Unexpected error broadcasting fatal error to socket:', e)
+                print_with_name(
+                    "Unexpected error broadcasting fatal error to socket:", e
+                )
                 traceback.print_exc()
 
     def _order_book_update_callback(self, update: dict):
@@ -428,17 +512,23 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         #   {'<asset_id>': {'bids': [...], 'asks': [...]}, 'timestamp': '177...'}
         # We filter out 'timestamp' to reliably extract the actual asset_id regardless
         # of dict key ordering.
-        asset_keys = [k for k in update.keys() if k != 'timestamp']
+        asset_keys = [k for k in update.keys() if k != "timestamp"]
         if len(asset_keys) != 1:
-            logging.warning("Unexpected keys in market data update (expected 1 asset_id + timestamp): %s",
-                            list(update.keys()))
+            logging.warning(
+                "Unexpected keys in market data update (expected 1 asset_id + timestamp): %s",
+                list(update.keys()),
+            )
             return
 
         asset_id = asset_keys[0]
         with self._market_cache_lock:
             ticker_market_index = self._asset_id_to_ticker.get(asset_id, None)
             if ticker_market_index is None:
-                logging.warning("Received market data update for unknown asset_id: %s, dict: %s", asset_id, update)
+                logging.warning(
+                    "Received market data update for unknown asset_id: %s, dict: %s",
+                    asset_id,
+                    update,
+                )
                 return
         ticker, market_index = ticker_market_index
 
@@ -462,13 +552,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             market_data=update,
             ticker=ticker,
             market_slug=self._all_markets_cache[ticker].markets[market_index].slug,
-            asset_id=asset_id
+            asset_id=asset_id,
         )
 
         # Print P2 packets if config is enabled
-        if self._configs.get('Print P2 packets', False):
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
-            if self._configs.get('Show packet timestamps', True):
+        if self._configs.get("Print P2 packets", False):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            if self._configs.get("Show packet timestamps", True):
                 print(f"[{timestamp}] → ({len(p2_obj)} bytes): {p2_obj!r}")
             else:
                 print(f"P2 Packet ({len(p2_obj)} bytes): {p2_obj!r}")
@@ -490,14 +580,22 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 # has already closed the socket but the routing table still holds
                 # a reference to it (race between disconnect and this callback).
                 self.remove_socket(sock)
-                print_with_name('Removed dead socket while sending market data for asset_id %s: %s', asset_id, e)
+                print_with_name(
+                    "Removed dead socket while sending market data for asset_id %s: %s",
+                    asset_id,
+                    e,
+                )
             except Exception as e:
-                print_with_name('Unexpected error sending market data for asset_id %s to socket: %s', asset_id, e)
+                print_with_name(
+                    "Unexpected error sending market data for asset_id %s to socket: %s",
+                    asset_id,
+                    e,
+                )
                 self.remove_socket(sock)
                 traceback.print_exc()
 
         # Record WS-arrival → sendall latency (ms)
-        recv_ts = getattr(self.market_data, '_last_msg_recv_ts', 0.0)
+        recv_ts = getattr(self.market_data, "_last_msg_recv_ts", 0.0)
         if recv_ts:
             self._latency_samples.append((time.perf_counter() - recv_ts) * 1000)
 
@@ -530,8 +628,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         pool = self.market_data
 
         # Check if market_data is actually a pool (has sharding internals)
-        if not hasattr(pool, '_shards'):
-            print("Shard visualization not available - market_data is not a PolyMarketOrderBookPool")
+        if not hasattr(pool, "_shards"):
+            print(
+                "Shard visualization not available - market_data is not a PolyMarketOrderBookPool"
+            )
             return
 
         # Header
@@ -575,7 +675,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 state = "ACTIVE"
 
             # Full indicator
-            full_indicator = " [FULL]" if roster_size >= pool._max_assets_per_shard else ""
+            full_indicator = (
+                " [FULL]" if roster_size >= pool._max_assets_per_shard else ""
+            )
 
             print(f"\nSHARD #{shard_idx} [{state}]{full_indicator}")
             print(f"  Load: {roster_size}/{pool._max_assets_per_shard} assets")
@@ -585,7 +687,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 print("  Assets:")
                 for asset_id in roster:
                     # Truncate long asset IDs for readability
-                    display_id = asset_id[:35] + "..." if len(asset_id) > 35 else asset_id
+                    display_id = (
+                        asset_id[:35] + "..." if len(asset_id) > 35 else asset_id
+                    )
                     print(f"    • {display_id}")
             else:
                 print("  Assets: (none)")
@@ -593,10 +697,16 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             # Health metrics
             ping_sent, ping_recv = shard._ping_pongs
             ping_delta = ping_sent - ping_recv
-            last_msg_age = time.perf_counter() - shard._last_msg_recv_ts if shard._last_msg_recv_ts > 0 else None
+            last_msg_age = (
+                time.perf_counter() - shard._last_msg_recv_ts
+                if shard._last_msg_recv_ts > 0
+                else None
+            )
 
             print(f"  Health:")
-            print(f"    Ping/Pong delta: {ping_delta} (sent: {ping_sent}, recv: {ping_recv})")
+            print(
+                f"    Ping/Pong delta: {ping_delta} (sent: {ping_sent}, recv: {ping_recv})"
+            )
             if last_msg_age is not None:
                 print(f"    Last message: {last_msg_age:.2f}s ago")
             else:
@@ -609,7 +719,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         print("\n" + "=" * 65)
         print("POOL SUMMARY")
 
-        active_shards = [s for s in shards if not s._internally_closed and s not in draining]
+        active_shards = [
+            s for s in shards if not s._internally_closed and s not in draining
+        ]
         draining_shards = list(draining.keys())
         total_assets = len(asset_to_shard)
         total_capacity = len(shards) * pool._max_assets_per_shard
@@ -626,58 +738,58 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     #######################################
     # MAIN CLIENT MESSAGE HANDLER
     #######################################
-    def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
+    def _handle_client_message(
+        self, sock: socket.socket, address: tuple[str, int], content: dict
+    ):
 
         def _inline_timer(result):
-            if self._configs['show response times']:
-                print_with_name(f"Handled client message in {result:.4f} seconds: {content}")
+            if self._configs["show response times"]:
+                print_with_name(
+                    f"Handled client message in {result:.4f} seconds: {content}"
+                )
 
         with Timer(_inline_timer):
             _ = address
-            action = content.get('action', None)
-            data = content.get('data', None)
+            action = content.get("action", None)
+            data = content.get("data", None)
             if action is None:
                 raise InvalidArgumentError("Received message without action field.")
 
             functions_available = {
                 # Market Data Subscriptions
-                'subscribe': self._handle_subscribe,
-                'subscribe_to_market_by_ticker': self._handle_subscribe_to_market_by_ticker,
-
-                'unsubscribe': self._handle_unsubscribe,
-                'unsubscribe_from_market_by_ticker': self._handle_unsubscribe_from_market_by_ticker,
-
-                'orderbook_snapshot': self._handle_orderbook_snapshot,
-
+                "subscribe": self._handle_subscribe,
+                "subscribe_to_market_by_ticker": self._handle_subscribe_to_market_by_ticker,
+                "unsubscribe": self._handle_unsubscribe,
+                "unsubscribe_from_market_by_ticker": self._handle_unsubscribe_from_market_by_ticker,
+                "orderbook_snapshot": self._handle_orderbook_snapshot,
                 # Market Data Requests
-                'fetch_all_markets': self._handle_fetch_all_markets,
-                'fetch_all_tickers': self._handle_fetch_all_markets_ticker,
-                'fetch_market_by_ticker': self._handle_fetch_market_by_ticker,
-                'search_markets': self._handle_search_markets,
-
-                'fetch_clob_id_information': self._fetch_clob_id_information,
-
+                "fetch_all_markets": self._handle_fetch_all_markets,
+                "fetch_all_tickers": self._handle_fetch_all_markets_ticker,
+                "fetch_market_by_ticker": self._handle_fetch_market_by_ticker,
+                "search_markets": self._handle_search_markets,
+                "fetch_clob_id_information": self._fetch_clob_id_information,
                 # Order Management
-                'place_order': self._handle_place_order,
-                'place_multiple_orders': self._handle_place_multiple_orders,
-                'cancel_order': self._handle_cancel_order,
-                'cancel_multiple_orders': self._handle_cancel_multiple_orders,
-                'get_order_status': self._handle_get_order_status,
-                'get_orders': self._handle_get_orders,
-                'get_balance': self._handle_get_balance,
-                'get_trades': self._handle_get_trades,
-
+                "place_order": self._handle_place_order,
+                "place_multiple_orders": self._handle_place_multiple_orders,
+                "cancel_order": self._handle_cancel_order,
+                "cancel_multiple_orders": self._handle_cancel_multiple_orders,
+                "get_order_status": self._handle_get_order_status,
+                "get_orders": self._handle_get_orders,
+                "get_balance": self._handle_get_balance,
+                "get_token_balance": self._handle_get_token_balance,
+                "get_trades": self._handle_get_trades,
                 # Crypto Utilities
-                'get_price_to_beat': self._handle_get_price_to_beat,
-
+                "get_price_to_beat": self._handle_get_price_to_beat,
                 # Utilities
-                'ping': self._handle_ping,
-                'rtt_to_exchange': self._handle_rtt_to_exchange,
+                "ping": self._handle_ping,
+                "rtt_to_exchange": self._handle_rtt_to_exchange,
             }
 
             func = functions_available.get(action, None)
             if func is None:
-                raise InvalidArgumentError(f"Unknown action '{action}' received from client.")
+                raise InvalidArgumentError(
+                    f"Unknown action '{action}' received from client."
+                )
 
             args = data if data is not None else {}
             if func is not None:
@@ -693,11 +805,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :return:
         """
         obj = self.send_with_p1_encoding(
-            {
-                'action': 'account_update',
-                'data': update.to_dict(),
-                'error': None
-            }
+            {"action": "account_update", "data": update.to_dict(), "error": None}
         )
 
         for sock in self.sockets:
@@ -706,10 +814,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     sock.sendall(obj)
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 self.remove_socket(sock)
-                print_with_name('Removed socket due to error while sending account update:', e)
+                print_with_name(
+                    "Removed socket due to error while sending account update:", e
+                )
             except Exception as e:
-                print_with_name('Error while sending account update to socket:', e)
-                print_with_name('THIS SHOULD NOT HAPPEN, INVESTIGATE!')
+                print_with_name("Error while sending account update to socket:", e)
+                print_with_name("THIS SHOULD NOT HAPPEN, INVESTIGATE!")
                 traceback.print_exc()
 
     ########################################
@@ -742,13 +852,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 subscribed.append(clob_id)
             except Exception as e:
                 failed.append(clob_id)
-                print_with_name("Error subscribing to clob_id {}: {}".format(clob_id, e))
+                print_with_name(
+                    "Error subscribing to clob_id {}: {}".format(clob_id, e)
+                )
                 traceback.print_exc()
 
-        return {
-            'subscribed': subscribed,
-            'failed': failed
-        }
+        return {"subscribed": subscribed, "failed": failed}
 
     def _handle_unsubscribe(self, args_obj: ArgsObject):
         """
@@ -766,13 +875,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 unsubscribed.append(clob_id)
             except Exception as e:
                 failed.append(clob_id)
-                print_with_name("Error unsubscribing from clob_id {}: {}".format(clob_id, e))
+                print_with_name(
+                    "Error unsubscribing from clob_id {}: {}".format(clob_id, e)
+                )
                 traceback.print_exc()
 
-        return {
-            'unsubscribed': unsubscribed,
-            'failed': failed
-        }
+        return {"unsubscribed": unsubscribed, "failed": failed}
 
     def _handle_subscribe_to_market_by_ticker(self, args_obj: ArgsObject):
         """
@@ -788,15 +896,19 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         ticker = args_obj.args[0]
         market = self._all_markets_cache.get(ticker, None)
         if market is None:
-            raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found for subscription.")
+            raise PolyMarketDispatcherError(
+                f"Market with ticker '{ticker}' not found for subscription."
+            )
 
         subscribed = []
         failed = []
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
             if clobs is None:
-                logging.warning("Market %s has no clobTokenIds, skipping subscription for this submarket.",
-                                market.markets[market_index].slug)
+                logging.warning(
+                    "Market %s has no clobTokenIds, skipping subscription for this submarket.",
+                    market.markets[market_index].slug,
+                )
                 continue
             for clob_id in clobs:
                 try:
@@ -806,13 +918,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     subscribed.append(clob_id)
                 except Exception as e:
                     failed.append(clob_id)
-                    print_with_name("Error subscribing to clob_id {}: {}".format(clob_id, e))
+                    print_with_name(
+                        "Error subscribing to clob_id {}: {}".format(clob_id, e)
+                    )
                     traceback.print_exc()
 
-        return {
-            'subscribed': subscribed,
-            'failed': failed
-        }
+        return {"subscribed": subscribed, "failed": failed}
 
     def _handle_unsubscribe_from_market_by_ticker(self, args_obj: ArgsObject):
         """
@@ -827,15 +938,19 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         ticker = args_obj.args[0]
         market = self._all_markets_cache.get(ticker, None)
         if market is None:
-            raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found for unsubscription.")
+            raise PolyMarketDispatcherError(
+                f"Market with ticker '{ticker}' not found for unsubscription."
+            )
 
         unsubscribed = []
         failed = []
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
             if clobs is None:
-                logging.warning("Market %s has no clobTokenIds, skipping unsubscription for this submarket.",
-                                market.markets[market_index].slug)
+                logging.warning(
+                    "Market %s has no clobTokenIds, skipping unsubscription for this submarket.",
+                    market.markets[market_index].slug,
+                )
                 continue
             for clob_id in clobs:
                 try:
@@ -843,13 +958,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     unsubscribed.append(clob_id)
                 except Exception as e:
                     failed.append(clob_id)
-                    print_with_name("Error unsubscribing from clob_id {}: {}".format(clob_id, e))
+                    print_with_name(
+                        "Error unsubscribing from clob_id {}: {}".format(clob_id, e)
+                    )
                     traceback.print_exc()
 
-        return {
-            'unsubscribed': unsubscribed,
-            'failed': failed
-        }
+        return {"unsubscribed": unsubscribed, "failed": failed}
 
     ########################################
     # Market Data Requests
@@ -894,7 +1008,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if offset >= max_items:
             return []
 
-        return items[offset:offset + max_limit]
+        return items[offset : offset + max_limit]
 
     def _handle_fetch_market_by_ticker(self, args_obj: ArgsObject):
         """
@@ -906,7 +1020,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         try:
             ticker = args_obj.args[0]
         except IndexError:
-            raise InvalidArgumentError("Ticker argument is required for fetch_market_by_ticker.")
+            raise InvalidArgumentError(
+                "Ticker argument is required for fetch_market_by_ticker."
+            )
         market = self._all_markets_cache.get(ticker, None)
         if market is None:
             raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
@@ -925,7 +1041,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         sorted_markets = sorted(
             self._all_markets_cache.keys(),
             key=lambda x: difflib.SequenceMatcher(None, args_obj.args[0], x).ratio(),
-            reverse=True
+            reverse=True,
         )
         limit = 10
         if len(args_obj.args) > 1:
@@ -953,20 +1069,23 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             try:
                 self._order_book_update_callback(
                     {
-                        clob_id: self.market_data.order_book_for_asset_id(asset_id=clob_id),
-                        'timestamp': 0  # Clients can identify this as a snapshot by the timestamp of 0
+                        clob_id: self.market_data.order_book_for_asset_id(
+                            asset_id=clob_id
+                        ),
+                        "timestamp": 0,  # Clients can identify this as a snapshot by the timestamp of 0
                     }
                 )
                 successful.append(clob_id)
             except Exception as e:
                 failed.append(clob_id)
-                print_with_name("Error triggering orderbook snapshot for clob_id {}: {}".format(clob_id, e))
+                print_with_name(
+                    "Error triggering orderbook snapshot for clob_id {}: {}".format(
+                        clob_id, e
+                    )
+                )
                 traceback.print_exc()
 
-        return {
-            'successful': successful,
-            'failed': failed
-        }
+        return {"successful": successful, "failed": failed}
 
     def _fetch_clob_id_information(self, args_obj: ArgsObject):
         """
@@ -991,16 +1110,16 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     market_slug=market.slug,
                     asset_id=clob_id,
                     market_data={},
-                    order_book_depth=0
+                    order_book_depth=0,
                 )
 
                 return {
-                    'event_name': event.title,
-                    'market_name': market.question,
-                    'outcome': outcome,
-                    'ticker': event.ticker,
-                    'market_slug': market.slug,
-                    'aot_p2_symbol': aot_symbol_from_p2.symbol
+                    "event_name": event.title,
+                    "market_name": market.question,
+                    "outcome": outcome,
+                    "ticker": event.ticker,
+                    "market_slug": market.slug,
+                    "aot_p2_symbol": aot_symbol_from_p2.symbol,
                 }
 
         raise PolyMarketDispatcherError(
@@ -1065,7 +1184,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         try:
             ticker = args_obj.args[0]
         except IndexError:
-            raise InvalidArgumentError("Ticker argument is required for get_price_to_beat.")
+            raise InvalidArgumentError(
+                "Ticker argument is required for get_price_to_beat."
+            )
 
         # Look up the market in the cache to get metadata
         with self._market_cache_lock:
@@ -1094,10 +1215,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 return price
         except UnableToReachPolymarket as e:
             scraper_error = str(e)
-            logging.warning(f"Scraper method failed for ticker '{ticker}': {scraper_error}")
+            logging.warning(
+                f"Scraper method failed for ticker '{ticker}': {scraper_error}"
+            )
         except Exception as e:
             scraper_error = str(e)
-            logging.warning(f"Unexpected error in scraper method for ticker '{ticker}': {scraper_error}")
+            logging.warning(
+                f"Unexpected error in scraper method for ticker '{ticker}': {scraper_error}"
+            )
 
         # METHOD 2: Fall back to crypto price API if scraper failed
         # We need to extract metadata from the market to build the API call
@@ -1118,7 +1243,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     symbol=symbol,
                     variant=variant,
                     start_date=start_date,
-                    end_date=end_date
+                    end_date=end_date,
                 )
                 if price is not None:
                     return price
@@ -1158,7 +1283,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         max_tries = 5
         for attempt in range(1, max_tries + 1):
             time.sleep(attempt * 0.5)
-            logging.info(f"Attempt {attempt} to get price to beat for ticker '{args_obj.args[0]}'")
+            logging.info(
+                f"Attempt {attempt} to get price to beat for ticker '{args_obj.args[0]}'"
+            )
             try:
                 return self._handle_get_price_to_beat_inner(args_obj)
             except PolyMarketDispatcherError as e:
@@ -1167,7 +1294,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     raise e
 
         logging.warning(
-            'This code block should never be reached due to the retry logic, investigate if it is. pos=_handle_get_price_to_beat')
+            "This code block should never be reached due to the retry logic, investigate if it is. pos=_handle_get_price_to_beat"
+        )
         return None
 
     @staticmethod
@@ -1181,14 +1309,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         # Map of common crypto abbreviations in tickers to symbols
         crypto_map = {
-            'btc': 'BTC',
-            'bitcoin': 'BTC',
-            'eth': 'ETH',
-            'ethereum': 'ETH',
-            'sol': 'SOL',
-            'solana': 'SOL',
-            'xrp': 'XRP',
-            'ripple': 'XRP',
+            "btc": "BTC",
+            "bitcoin": "BTC",
+            "eth": "ETH",
+            "ethereum": "ETH",
+            "sol": "SOL",
+            "solana": "SOL",
+            "xrp": "XRP",
+            "ripple": "XRP",
         }
 
         # Try to extract from ticker first (e.g., "btc-updown-15m-1769111100")
@@ -1198,13 +1326,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 return symbol
 
         # Try to extract from resolution source (e.g., "https://data.chain.link/streams/btc-usd")
-        resolution_source = market_event.resolutionSource or ''
-        if 'btc' in resolution_source.lower():
-            return 'BTC'
-        elif 'eth' in resolution_source.lower():
-            return 'ETH'
-        elif 'sol' in resolution_source.lower():
-            return 'SOL'
+        resolution_source = market_event.resolutionSource or ""
+        if "btc" in resolution_source.lower():
+            return "BTC"
+        elif "eth" in resolution_source.lower():
+            return "ETH"
+        elif "sol" in resolution_source.lower():
+            return "SOL"
 
         return None
 
@@ -1232,22 +1360,24 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
             # 5-minute markets: ~5 minutes
             if 3 <= duration_minutes <= 7:
-                return 'fiveminute'
+                return "fiveminute"
 
             # 15-minute markets: ~15 minutes
             if 10 <= duration_minutes <= 20:
-                return 'fifteen'
+                return "fifteen"
 
             # Hourly markets: ~60 minutes (with some tolerance)
             if 50 <= duration_minutes <= 70:
-                return 'hourly'
+                return "hourly"
 
             # Daily markets: ~24 hours (1440 minutes)
             if 1380 <= duration_minutes <= 1500:
-                return 'daily'
+                return "daily"
 
             # Log warning for unclassified durations
-            logging.warning(f"Could not determine variant for duration of {duration_minutes:.1f} minutes")
+            logging.warning(
+                f"Could not determine variant for duration of {duration_minutes:.1f} minutes"
+            )
             return None
 
         except (TypeError, AttributeError) as e:
@@ -1268,7 +1398,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if date_str:
             try:
                 # Parse ISO format datetime string
-                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
             except (ValueError, AttributeError):
                 pass
 
@@ -1288,7 +1418,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if date_str:
             try:
                 # Parse ISO format datetime string
-                return datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
             except (ValueError, AttributeError):
                 pass
 
@@ -1350,23 +1480,25 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
              'status': 'live', 'success': True}
         """
 
-        if self._configs['Block Order Execution']:
-            raise OrderExecutionDisabledError("Order execution is currently blocked by server configuration.")
+        if self._configs["Block Order Execution"]:
+            raise OrderExecutionDisabledError(
+                "Order execution is currently blocked by server configuration."
+            )
 
         args = args_obj.args
-        token_id = args.get('token_id', None)
+        token_id = args.get("token_id", None)
         if token_id is None:
             raise InvalidArgumentError("'token_id' is required for place_order.")
 
-        price = args.get('price', None)
+        price = args.get("price", None)
         if price is None:
             raise InvalidArgumentError("'price' is required for place_order.")
 
-        size = args.get('size', None)
+        size = args.get("size", None)
         if size is None:
             raise InvalidArgumentError("'size' is required for place_order.")
 
-        side = args.get('side', None)
+        side = args.get("side", None)
         if side is None:
             raise InvalidArgumentError("'side' is required for place_order.")
 
@@ -1379,7 +1511,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             price=float(price),
             size=float(size),
             side=str(side),
-            tick_size=tick_size
+            tick_size=tick_size,
         )
         return result
 
@@ -1399,140 +1531,157 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :return: Dict from the CLOB API containing the batch order placement results.
         """
         from argus.polymarket_direct.rest import _tick
-        _tick('_handle_place_multiple_orders', 'start')
 
-        if self._configs['Block Order Execution']:
-            raise OrderExecutionDisabledError("Order execution is currently blocked by server configuration.")
-        _tick('_handle_place_multiple_orders', 'after_block_check')
+        _tick("_handle_place_multiple_orders", "start")
+
+        if self._configs["Block Order Execution"]:
+            raise OrderExecutionDisabledError(
+                "Order execution is currently blocked by server configuration."
+            )
+        _tick("_handle_place_multiple_orders", "after_block_check")
 
         args = args_obj.args
-        _tick('_handle_place_multiple_orders', 'after_get_args')
-        orders_list = args.get('orders', [])
-        _tick('_handle_place_multiple_orders', 'after_get_orders_list')
+        _tick("_handle_place_multiple_orders", "after_get_args")
+        orders_list = args.get("orders", [])
+        _tick("_handle_place_multiple_orders", "after_get_orders_list")
 
         if not orders_list:
-            raise InvalidArgumentError("'orders' list is required and cannot be empty for place_multiple_orders.")
-        _tick('_handle_place_multiple_orders', 'after_check_orders_list_empty')
+            raise InvalidArgumentError(
+                "'orders' list is required and cannot be empty for place_multiple_orders."
+            )
+        _tick("_handle_place_multiple_orders", "after_check_orders_list_empty")
 
         if not isinstance(orders_list, list):
             raise InvalidArgumentError("'orders' must be a list of order dictionaries.")
-        _tick('_handle_place_multiple_orders', 'after_check_orders_list_type')
+        _tick("_handle_place_multiple_orders", "after_check_orders_list_type")
 
         # Validate each order and resolve markets first (sequential since it uses cache)
         order_specs = []
-        _tick('_handle_place_multiple_orders', 'before_order_specs_loop')
+        _tick("_handle_place_multiple_orders", "before_order_specs_loop")
         for order in orders_list:
-            _tick('_handle_place_multiple_orders', 'loop_start')
-            token_id = order.get('token_id', None)
-            _tick('_handle_place_multiple_orders', 'after_get_token_id')
+            _tick("_handle_place_multiple_orders", "loop_start")
+            token_id = order.get("token_id", None)
+            _tick("_handle_place_multiple_orders", "after_get_token_id")
             if token_id is None:
                 raise InvalidArgumentError("Each order must have a 'token_id' field.")
-            _tick('_handle_place_multiple_orders', 'after_check_token_id')
+            _tick("_handle_place_multiple_orders", "after_check_token_id")
 
-            price = order.get('price', None)
-            _tick('_handle_place_multiple_orders', 'after_get_price')
+            price = order.get("price", None)
+            _tick("_handle_place_multiple_orders", "after_get_price")
             if price is None:
                 raise InvalidArgumentError("Each order must have a 'price' field.")
-            _tick('_handle_place_multiple_orders', 'after_check_price')
+            _tick("_handle_place_multiple_orders", "after_check_price")
 
-            size = order.get('size', None)
-            _tick('_handle_place_multiple_orders', 'after_get_size')
+            size = order.get("size", None)
+            _tick("_handle_place_multiple_orders", "after_get_size")
             if size is None:
                 raise InvalidArgumentError("Each order must have a 'size' field.")
-            _tick('_handle_place_multiple_orders', 'after_check_size')
+            _tick("_handle_place_multiple_orders", "after_check_size")
 
-            side = order.get('side', None)
-            _tick('_handle_place_multiple_orders', 'after_get_side')
+            side = order.get("side", None)
+            _tick("_handle_place_multiple_orders", "after_get_side")
             if side is None:
                 raise InvalidArgumentError("Each order must have a 'side' field.")
-            _tick('_handle_place_multiple_orders', 'after_check_side')
+            _tick("_handle_place_multiple_orders", "after_check_side")
 
             market = self._resolve_market_from_token_id(token_id)
-            _tick('_handle_place_multiple_orders', 'after_resolve_market')
+            _tick("_handle_place_multiple_orders", "after_resolve_market")
             tick_size = self.market_data.get_tick_size(asset_id=token_id)
-            _tick('_handle_place_multiple_orders', 'after_get_tick_size')
-            order_specs.append({
-                'token_id': token_id,
-                'market': market,
-                'price': float(price),
-                'size': float(size),
-                'side': str(side),
-                'tick_size': tick_size
-            })
-            _tick('_handle_place_multiple_orders', 'after_append_order_spec')
-        _tick('_handle_place_multiple_orders', 'after_order_specs_loop')
+            _tick("_handle_place_multiple_orders", "after_get_tick_size")
+            order_specs.append(
+                {
+                    "token_id": token_id,
+                    "market": market,
+                    "price": float(price),
+                    "size": float(size),
+                    "side": str(side),
+                    "tick_size": tick_size,
+                }
+            )
+            _tick("_handle_place_multiple_orders", "after_append_order_spec")
+        _tick("_handle_place_multiple_orders", "after_order_specs_loop")
 
         # Build orders concurrently using thread pool since build_order involves HTTP requests
         built_orders = []
-        _tick('_handle_place_multiple_orders', 'after_built_orders_init')
+        _tick("_handle_place_multiple_orders", "after_built_orders_init")
         build_errors = []
-        _tick('_handle_place_multiple_orders', 'after_build_errors_init')
+        _tick("_handle_place_multiple_orders", "after_build_errors_init")
 
         start_time = time.time()
-        _tick('_handle_place_multiple_orders', 'after_start_time')
+        _tick("_handle_place_multiple_orders", "after_start_time")
         with ThreadPoolExecutor(max_workers=min(len(order_specs), 10)) as executor:
-            _tick('_handle_place_multiple_orders', 'after_threadpool_init')
+            _tick("_handle_place_multiple_orders", "after_threadpool_init")
             future_to_order = {
                 executor.submit(
                     self.rest_api.build_order,
-                    spec['token_id'],
-                    spec['market'],
-                    spec['price'],
-                    spec['size'],
-                    spec['side'],
-                    tick_size=spec['tick_size']
-                ): spec for spec in order_specs
+                    spec["token_id"],
+                    spec["market"],
+                    spec["price"],
+                    spec["size"],
+                    spec["side"],
+                    tick_size=spec["tick_size"],
+                ): spec
+                for spec in order_specs
             }
-            _tick('_handle_place_multiple_orders', 'after_submit_futures')
+            _tick("_handle_place_multiple_orders", "after_submit_futures")
 
             for future in as_completed(future_to_order):
-                _tick('_handle_place_multiple_orders', 'future_loop_start')
+                _tick("_handle_place_multiple_orders", "future_loop_start")
                 spec = future_to_order[future]
-                _tick('_handle_place_multiple_orders', 'after_get_spec')
+                _tick("_handle_place_multiple_orders", "after_get_spec")
                 try:
-                    _tick('_handle_place_multiple_orders', 'before_future_result')
+                    _tick("_handle_place_multiple_orders", "before_future_result")
                     signed_order = future.result()
-                    _tick('_handle_place_multiple_orders', 'after_future_result')
+                    _tick("_handle_place_multiple_orders", "after_future_result")
                     built_orders.append(signed_order)
-                    _tick('_handle_place_multiple_orders', 'after_append_built_order')
+                    _tick("_handle_place_multiple_orders", "after_append_built_order")
                 except Exception as e:
-                    _tick('_handle_place_multiple_orders', 'exception_caught')
-                    build_errors.append({
-                        'token_id': spec['token_id'],
-                        'error': str(e)
-                    })
-                    _tick('_handle_place_multiple_orders', 'after_append_build_error')
-        _tick('_handle_place_multiple_orders', 'after_threadpool_done')
+                    _tick("_handle_place_multiple_orders", "exception_caught")
+                    build_errors.append({"token_id": spec["token_id"], "error": str(e)})
+                    _tick("_handle_place_multiple_orders", "after_append_build_error")
+        _tick("_handle_place_multiple_orders", "after_threadpool_done")
 
         if build_errors:
             raise PolyMarketDispatcherError(
                 f"Failed to build {len(build_errors)} order(s): {build_errors}"
             )
-        _tick('_handle_place_multiple_orders', 'after_build_errors_check')
+        _tick("_handle_place_multiple_orders", "after_build_errors_check")
 
         if not built_orders:
             raise PolyMarketDispatcherError("No orders were built successfully.")
-        _tick('_handle_place_multiple_orders', 'after_built_orders_check')
+        _tick("_handle_place_multiple_orders", "after_built_orders_check")
 
-        logging.info(colored(
-            f"Successfully Built {len(built_orders)} orders in {time.time() - start_time:.4f} seconds. Placing batch order now.",
-            'yellow'))
-        _tick('_handle_place_multiple_orders', 'after_build_log')
+        logging.info(
+            colored(
+                f"Successfully Built {len(built_orders)} orders in {time.time() - start_time:.4f} seconds. Placing batch order now.",
+                "yellow",
+            )
+        )
+        _tick("_handle_place_multiple_orders", "after_build_log")
         time_two = time.time()
-        _tick('_handle_place_multiple_orders', 'before_place_built_orders')
-        print_with_name('Submitting orders at:', time.time_ns())
+        _tick("_handle_place_multiple_orders", "before_place_built_orders")
+        print_with_name("Submitting orders at:", time.time_ns())
         result = self.rest_api.place_built_orders(built_orders)
-        _tick('_handle_place_multiple_orders', 'after_place_built_orders')
-        logging.info(colored(f"Batch order placement completed in {time.time() - time_two:.4f} seconds.", 'yellow'))
-        _tick('_handle_place_multiple_orders', 'after_place_log')
-        self.async_write_log(json.dumps({
-            'event': 'place_multiple_orders',
-            'num_orders': len(built_orders),
-            'build_time_seconds': time.time() - start_time,
-            'place_time_seconds': time.time() - time_two,
-            'result': result
-        }))
-        _tick('_handle_place_multiple_orders', 'after_async_write_log')
+        _tick("_handle_place_multiple_orders", "after_place_built_orders")
+        logging.info(
+            colored(
+                f"Batch order placement completed in {time.time() - time_two:.4f} seconds.",
+                "yellow",
+            )
+        )
+        _tick("_handle_place_multiple_orders", "after_place_log")
+        self.async_write_log(
+            json.dumps(
+                {
+                    "event": "place_multiple_orders",
+                    "num_orders": len(built_orders),
+                    "build_time_seconds": time.time() - start_time,
+                    "place_time_seconds": time.time() - time_two,
+                    "result": result,
+                }
+            )
+        )
+        _tick("_handle_place_multiple_orders", "after_async_write_log")
         return result
 
     def _handle_cancel_order(self, args_obj: ArgsObject):
@@ -1550,7 +1699,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         """
         args = args_obj.args
-        order_id = args.get('order_id', None)
+        order_id = args.get("order_id", None)
         if order_id is None:
             raise InvalidArgumentError("'order_id' is required for cancel_order.")
 
@@ -1573,9 +1722,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         """
         args = args_obj.args
-        order_ids = args.get('order_ids', None)
+        order_ids = args.get("order_ids", None)
         if order_ids is None:
-            raise InvalidArgumentError("'order_ids' is required for cancel_multiple_orders.")
+            raise InvalidArgumentError(
+                "'order_ids' is required for cancel_multiple_orders."
+            )
         if not isinstance(order_ids, list):
             raise InvalidArgumentError("'order_ids' must be a list of order IDs.")
         if len(order_ids) == 0:
@@ -1597,7 +1748,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             size_matched, price, outcome, expiration, order_type, associate_trades, created_at.
         """
         args = args_obj.args
-        order_id = args.get('order_id', None)
+        order_id = args.get("order_id", None)
         if order_id is None:
             raise InvalidArgumentError("'order_id' is required for get_order_status.")
 
@@ -1638,7 +1789,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         trades = self.rest_api.get_trades()
         raw = [dataclasses.asdict(trade) for trade in trades.trades]
-        return raw[offset:offset + limit]
+        return raw[offset : offset + limit]
 
     def _handle_get_balance(self, args_obj: ArgsObject):
         """
@@ -1651,6 +1802,26 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         _ = args_obj
         balance = self.rest_api.get_balance()
+        return balance
+
+    def _handle_get_token_balance(self, args_obj: ArgsObject):
+        """
+        Handle a request to get the balance of a specific conditional outcome token (YES or NO token).
+
+        Args:
+            args_obj: ArgsObject containing the socket and arguments.
+                Args is expected to be a dict with:
+                    'token_id' (str): The outcome token asset ID (YES or NO token).
+
+        Returns:
+            float: Number of shares (e.g. 150.0).
+        """
+        args = args_obj.args
+        token_id = args.get("token_id", None)
+        if token_id is None:
+            raise InvalidArgumentError("'token_id' is required for get_token_balance.")
+
+        balance = self.rest_api.get_token_balance(token_id=token_id)
         return balance
 
     def _handle_cancel_all_open_orders(self, args_obj: ArgsObject):
@@ -1673,7 +1844,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     @staticmethod
     def _handle_ping(args_obj: ArgsObject):
         _ = args_obj
-        response = 'pong'
+        response = "pong"
         return response
 
     def _handle_rtt_to_exchange(self, args_obj: ArgsObject) -> float:
@@ -1697,12 +1868,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param dict_data: The dictionary to encode.
         :return:
         """
-        json_data = json.dumps(dict_data).encode('utf-8')
+        json_data = json.dumps(dict_data).encode("utf-8")
         packet = encode_packet(json_data)
         return packet
 
-    def send_market_data_with_p2_encoding(self, market_data: dict, ticker: str, market_slug: str,
-                                          asset_id: str) -> bytes:
+    def send_market_data_with_p2_encoding(
+        self, market_data: dict, ticker: str, market_slug: str, asset_id: str
+    ) -> bytes:
         """
         Encodes market data into bytes using a custom P2 encoding format.
         The P2 encoding format's ticker field is formatted like <Event-Ticker><Market-Slug><Asset_id>.
@@ -1725,7 +1897,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 market_slug=market_slug,
                 asset_id=asset_id,
                 market_data=market_data,
-                order_book_depth=self._orderbook_depth
+                order_book_depth=self._orderbook_depth,
             )
         )
 
@@ -1735,11 +1907,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
     def _toggle_print_p2_packets(self):
         """Toggle the printing of raw P2 packets with timestamps."""
-        current = self._configs['Print P2 packets']
-        self._configs['Print P2 packets'] = not current
-        status = "ENABLED" if self._configs['Print P2 packets'] else "DISABLED"
+        current = self._configs["Print P2 packets"]
+        self._configs["Print P2 packets"] = not current
+        status = "ENABLED" if self._configs["Print P2 packets"] else "DISABLED"
         print(f"[CONFIG] Print P2 packets: {status}")
-        return self._configs['Print P2 packets']
+        return self._configs["Print P2 packets"]
 
     def _modify_configs_interactive(self):
         """Modify the dispatcher configurations interactively."""
@@ -1752,13 +1924,15 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
             choice = input("\nSelect configuration number to modify: ").strip()
 
-            if choice == '0':
+            if choice == "0":
                 break
 
             try:
                 choice_idx = int(choice) - 1
                 if choice_idx < 0 or choice_idx >= len(config_keys):
-                    print(f"Invalid choice. Please select a number between 0 and {len(config_keys)}")
+                    print(
+                        f"Invalid choice. Please select a number between 0 and {len(config_keys)}"
+                    )
                     continue
 
                 key = config_keys[choice_idx]
@@ -1768,10 +1942,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     self._configs[key] = not current_value
                     print(f"Updated {key} to {self._configs[key]}")
                 else:
-                    new_value = input(f"Enter new value for {key} (current: {current_value}): ")
-                    if new_value.lower() == 'true':
+                    new_value = input(
+                        f"Enter new value for {key} (current: {current_value}): "
+                    )
+                    if new_value.lower() == "true":
                         self._configs[key] = True
-                    elif new_value.lower() == 'false':
+                    elif new_value.lower() == "false":
                         self._configs[key] = False
                     else:
                         self._configs[key] = new_value
@@ -1781,30 +1957,68 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 print("Invalid input. Please enter a number.")
 
     def interactive_mode(self):
-        self._interactive_ui({
-            'Toggle print P2 packets': ('Toggle printing of raw P2 packets with timestamps',
-                                        self._toggle_print_p2_packets),
-            'Modify dispatcher configurations': ('Modify dispatcher configurations interactively',
-                                                 self._modify_configs_interactive),
-            'Clear console': ('Clear the console output', lambda: subprocess.check_call(['clear'])),
-            'Clear correlation ids': ('Clear all correlation IDs from the dispatcher cache',
-                                      self._correlation_id_checker.clear_seen_ids),
-            'Get all open orders': ('Fetch and display all open orders for the account', lambda: print(
-                json.dumps(self._handle_get_orders(ArgsObject(args=[], sock=None)), indent=4))),
-            'Get all orders': ('Fetch and display all orders for the account',
-                               lambda: print(json.dumps(self.rest_api.get_orders(), indent=4))),
-            'Cancel all open orders': ('Cancel all open orders for the account', lambda: print(
-                colored(json.dumps(self._handle_cancel_all_open_orders(ArgsObject(args=[], sock=None)), indent=4),
-                        color='yellow'))),
-            'Print latency stats': ('Print WS→client propagation latency percentiles (one-shot)',
-                                    self.print_latency_stats),
-            'Start latency stats loop': ('Print latency stats every 10s in background',
-                                         lambda: self._latency_stats_loop(10)),
-            'Visualise Shards': ('Display all shards and their states', self.visualise_shards),
-        })
+        self._interactive_ui(
+            {
+                "Toggle print P2 packets": (
+                    "Toggle printing of raw P2 packets with timestamps",
+                    self._toggle_print_p2_packets,
+                ),
+                "Modify dispatcher configurations": (
+                    "Modify dispatcher configurations interactively",
+                    self._modify_configs_interactive,
+                ),
+                "Clear console": (
+                    "Clear the console output",
+                    lambda: subprocess.check_call(["clear"]),
+                ),
+                "Clear correlation ids": (
+                    "Clear all correlation IDs from the dispatcher cache",
+                    self._correlation_id_checker.clear_seen_ids,
+                ),
+                "Get all open orders": (
+                    "Fetch and display all open orders for the account",
+                    lambda: print(
+                        json.dumps(
+                            self._handle_get_orders(ArgsObject(args=[], sock=None)),
+                            indent=4,
+                        )
+                    ),
+                ),
+                "Get all orders": (
+                    "Fetch and display all orders for the account",
+                    lambda: print(json.dumps(self.rest_api.get_orders(), indent=4)),
+                ),
+                "Cancel all open orders": (
+                    "Cancel all open orders for the account",
+                    lambda: print(
+                        colored(
+                            json.dumps(
+                                self._handle_cancel_all_open_orders(
+                                    ArgsObject(args=[], sock=None)
+                                ),
+                                indent=4,
+                            ),
+                            color="yellow",
+                        )
+                    ),
+                ),
+                "Print latency stats": (
+                    "Print WS→client propagation latency percentiles (one-shot)",
+                    self.print_latency_stats,
+                ),
+                "Start latency stats loop": (
+                    "Print latency stats every 10s in background",
+                    lambda: self._latency_stats_loop(10),
+                ),
+                "Visualise Shards": (
+                    "Display all shards and their states",
+                    self.visualise_shards,
+                ),
+            }
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     dispatcher = PolymarketDispatcher()
     dispatcher.run()
     dispatcher.interactive_mode()
