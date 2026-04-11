@@ -82,12 +82,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     """
 
     def __init__(
-        self,
-        private_key: str = None,
-        proxy_funder: str = None,
-        host="localhost",
-        port=9972,
-        profile_proxy=-1,
+            self,
+            private_key: str = None,
+            proxy_funder: str = None,
+            host="localhost",
+            port=9972,
+            profile_proxy=-1,
     ):
         """
         Initializes the PolymarketDispatcher instance to handle incoming market data, account events,
@@ -313,10 +313,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         if os.environ.get("POLYMARKET_MEMORY_PRUNING", "false").lower() == "true":
             for key, value in tqdm.tqdm(
-                markets_cached.items(),
-                desc="Pruning events data in cache",
-                unit="events",
-                dynamic_ncols=True,
+                    markets_cached.items(),
+                    desc="Pruning events data in cache",
+                    unit="events",
+                    dynamic_ncols=True,
             ):
                 markets_cached[key] = traverse_and_slim(value)
 
@@ -338,10 +338,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         dict_asset_id_to_ticker = {}
         with self._market_cache_lock:
             for ticker, event in tqdm.tqdm(
-                self._all_markets_cache.items(),
-                desc="Building asset_id to ticker mapping",
-                unit="markets",
-                dynamic_ncols=True,
+                    self._all_markets_cache.items(),
+                    desc="Building asset_id to ticker mapping",
+                    unit="markets",
+                    dynamic_ncols=True,
             ):
                 markets = event.markets
                 for index in range(len(markets)):
@@ -360,7 +360,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # Callbacks
     #######################################
     def _handle_incoming_packets(
-        self, client_socket: socket.socket, address, data: bytes
+            self, client_socket: socket.socket, address, data: bytes
     ):
         try:
             packets = decode_multiple_packets(data)
@@ -739,7 +739,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     # MAIN CLIENT MESSAGE HANDLER
     #######################################
     def _handle_client_message(
-        self, sock: socket.socket, address: tuple[str, int], content: dict
+            self, sock: socket.socket, address: tuple[str, int], content: dict
     ):
 
         def _inline_timer(result):
@@ -1008,7 +1008,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if offset >= max_items:
             return []
 
-        return items[offset : offset + max_limit]
+        return items[offset: offset + max_limit]
 
     def _handle_fetch_market_by_ticker(self, args_obj: ArgsObject):
         """
@@ -1789,7 +1789,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         trades = self.rest_api.get_trades()
         raw = [dataclasses.asdict(trade) for trade in trades.trades]
-        return raw[offset : offset + limit]
+        return raw[offset: offset + limit]
 
     def _handle_get_balance(self, args_obj: ArgsObject):
         """
@@ -1873,7 +1873,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         return packet
 
     def send_market_data_with_p2_encoding(
-        self, market_data: dict, ticker: str, market_slug: str, asset_id: str
+            self, market_data: dict, ticker: str, market_slug: str, asset_id: str
     ) -> bytes:
         """
         Encodes market data into bytes using a custom P2 encoding format.
