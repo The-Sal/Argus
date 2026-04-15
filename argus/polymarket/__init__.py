@@ -46,11 +46,7 @@ from argus.polymarket_direct.order_types import OrderEvent
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
-from argus.protocol import (
-    decode_multiple_packets,
-    encode_packet,
-    transmit_mkt_data_with_protocol_2,
-)
+from argus.protocol import decode_multiple_packets, encode_packet,transmit_mkt_data_with_protocol_2
 from argus.polymarket._classes import (
     PolyMarketDispatcherError,
     InvalidArgumentError,
