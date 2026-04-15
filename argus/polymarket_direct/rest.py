@@ -2,16 +2,17 @@ import os
 import time
 import logging
 import requests
-import threading
 import functools
+import threading
 import traceback
 from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
-from py_clob_client.constants import ZERO_ADDRESS
-from py_clob_client import BalanceAllowanceParams
-from argus.polymarket_direct.safe import IPSafety
+from py_clob_client.clob_types import AssetType
 from concurrent.futures import ThreadPoolExecutor
+from py_clob_client import BalanceAllowanceParams
+from py_clob_client.constants import ZERO_ADDRESS
+from argus.polymarket_direct.safe import IPSafety
 from argus.wireproxy import wrapper as wp_wrappers
 from py_clob_client.clob_types import PostOrdersArgs
 from py_clob_client.config import get_contract_config
@@ -26,6 +27,8 @@ from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreat
 
 # Line-by-line timing utility
 _timer_last = {}
+
+
 def _tick(label: str, location: str):
     """Print elapsed time since last tick at this location."""
     key = f"{label}:{location}"
@@ -38,15 +41,14 @@ def _tick(label: str, location: str):
     _timer_last[key] = now
 
 
-
-
-REST_CACHE = DomainCache('polymarket_direct.rest')
+REST_CACHE = DomainCache("polymarket_direct.rest")
 endpoints = {
-    'events': "https://gamma-api.polymarket.com/events?order=id&ascending=false&closed=false&limit={}&offset={}",
-    'geo_block_test': 'https://polymarket.com/api/geoblock',
-    'page_data': 'https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json'
+    "events": "https://gamma-api.polymarket.com/events?order=id&ascending=false&closed=false&limit={}&offset={}",
+    "geo_block_test": "https://polymarket.com/api/geoblock",
+    "page_data": "https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json",
 }
-qw = '[{}]'.format(__name__)
+qw = "[{}]".format(__name__)
+
 
 class _FakeFuture:
     def __init__(self, result):
@@ -59,6 +61,7 @@ class _FakeFuture:
 def retry(max_attempts=3, delay=0.35):
     """Retry decorator for methods that may fail due to eventual consistency.
     Retries on TypeError (e.g. None response unpacked as **kwargs) with a delay between attempts."""
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -68,14 +71,21 @@ def retry(max_attempts=3, delay=0.35):
                 except TypeError as e:
                     if attempt < max_attempts:
                         logging.warning(
-                            '%s failed on attempt %d/%d: %s — retrying in %.2fs...',
-                            func.__qualname__, attempt, max_attempts, e, delay
+                            "%s failed on attempt %d/%d: %s — retrying in %.2fs...",
+                            func.__qualname__,
+                            attempt,
+                            max_attempts,
+                            e,
+                            delay,
                         )
                         time.sleep(delay)
                     else:
                         logging.warning(
-                            '%s failed on attempt %d/%d: %s — no more retries.',
-                            func.__qualname__, attempt, max_attempts, e
+                            "%s failed on attempt %d/%d: %s — no more retries.",
+                            func.__qualname__,
+                            attempt,
+                            max_attempts,
+                            e,
                         )
                         raise
             return None
@@ -94,14 +104,16 @@ def fatal_decorator(func_idx):
             except Exception as e:
                 traceback.print_exc()
                 if self.fatal_callback:
-                    self.fatal_callback({
-                        'self': self,
-                        'function': func_idx,
-                        'args': args,
-                        'kwargs': kwargs,
-                        'exception': e,
-                        'traceback': traceback.format_exc()
-                    })
+                    self.fatal_callback(
+                        {
+                            "self": self,
+                            "function": func_idx,
+                            "args": args,
+                            "kwargs": kwargs,
+                            "exception": e,
+                            "traceback": traceback.format_exc(),
+                        }
+                    )
                 raise
 
         return wrapper
@@ -114,8 +126,15 @@ class PolyRestAPI:
     A REST API client for interacting with Polymarket's CLOB via py_clob_client and other endpoints.
     """
 
-    def __init__(self, private_key, proxy_funder, host='https://clob.polymarket.com',
-                 chain_id=137, divisor=1_000_000, fatal_callback=None):
+    def __init__(
+        self,
+        private_key,
+        proxy_funder,
+        host="https://clob.polymarket.com",
+        chain_id=137,
+        divisor=1_000_000,
+        fatal_callback=None,
+    ):
         """
         Initialize the Polymarket REST API client.
         :param private_key: This is the private key of the Polymarket account to use for signing requests.
@@ -142,9 +161,12 @@ class PolyRestAPI:
         self.session = requests.Session()
         self.raw_session: requests.Session = self.session
 
-        wp_wrappers.update_request_session_proxy(idx='POLYMARKET', session=self.session)
+        wp_wrappers.update_request_session_proxy(idx="POLYMARKET", session=self.session)
 
-        if not os.environ.get('POLYMARKET_UNSAFE_RAPID_CONNECTIONS', 'false') == 'false':
+        if (
+            not os.environ.get("POLYMARKET_UNSAFE_RAPID_CONNECTIONS", "false")
+            == "false"
+        ):
             # Escape wrapping
             self.raw_session = requests.Session()
 
@@ -152,17 +174,24 @@ class PolyRestAPI:
         self.safety = IPSafety()
         self._thread_pool = ThreadPoolExecutor(max_workers=5)
 
-        if os.environ.get('POLYMARKET_NO_SAFETY_CHECK', 'false') != 'true': self.ip_safety_check()
+        if os.environ.get("POLYMARKET_NO_SAFETY_CHECK", "false") != "true":
+            self.ip_safety_check()
 
-        self._rapid_order_build = os.environ.get('POLYMARKET_RAPID_ORDER_BUILD', 'false') == 'true'
+        self._rapid_order_build = (
+            os.environ.get("POLYMARKET_RAPID_ORDER_BUILD", "false") == "true"
+        )
 
-        self.clob = ClobClient(host, key=private_key, chain_id=chain_id, signature_type=1, funder=proxy_funder)
+        self.clob = ClobClient(
+            host,
+            key=private_key,
+            chain_id=chain_id,
+            signature_type=1,
+            funder=proxy_funder,
+        )
         self.clob.set_api_creds(self._create_or_derive_api_creds())
         self._div = divisor
 
-        self._order_cache = {
-            'orders': []
-        }
+        self._order_cache = {"orders": []}
 
         self._fee_rate_lock = threading.Lock()
         self._fee_rate_cache: dict[str, str] = {}
@@ -170,9 +199,15 @@ class PolyRestAPI:
 
         self.fatal_callback = fatal_callback
         if self.fatal_callback is None:
+
             def default_fatal_callback(info: dict):
-                print(colored(f"[{__name__}] FATAL ERROR in Polymarket REST API client: {info}", 'red',
-                              attrs=['bold', 'blink']))
+                print(
+                    colored(
+                        f"[{__name__}] FATAL ERROR in Polymarket REST API client: {info}",
+                        "red",
+                        attrs=["bold", "blink"],
+                    )
+                )
 
             self.fatal_callback = default_fatal_callback
 
@@ -181,52 +216,76 @@ class PolyRestAPI:
     ###########################################
 
     def ip_safety_check(self):
-        print(qw, 'Starting Polymarket REST API client initialization...')
-        print(qw, 'Checking IP information against hardcoded geo-blocked regions via ipinfo.io...')
+        print(qw, "Starting Polymarket REST API client initialization...")
+        print(
+            qw,
+            "Checking IP information against hardcoded geo-blocked regions via ipinfo.io...",
+        )
         ip_info = self.safety.get_ip_info()
-        ip_info['ip'] = 'REDACTED'  # Redact IP for privacy in logs
+        ip_info["ip"] = "REDACTED"  # Redact IP for privacy in logs
         if self.safety.is_ip_in_bad_region(ip_info):
-            msg = ("The IP returned from ipinfo.io compared against built-in geo-blocked regions indicates this"
-                   " IP address may face issues accessing Polymarket. This maybe wrong, the next check will"
-                   " attempt to connect directly to polymarket.com to verify (in the next 5s) to double check. If"
-                   "this address should not leak polymarket.com to the ISP TERMINATE NOW. To automatically terminate"
-                   " when here set the env `POLYMARKET_PARANOID` to `true` before running.")
-            if os.environ.get('POLYMARKET_PARANOID', 'false') == 'true':
+            msg = (
+                "The IP returned from ipinfo.io compared against built-in geo-blocked regions indicates this"
+                " IP address may face issues accessing Polymarket. This maybe wrong, the next check will"
+                " attempt to connect directly to polymarket.com to verify (in the next 5s) to double check. If"
+                "this address should not leak polymarket.com to the ISP TERMINATE NOW. To automatically terminate"
+                " when here set the env `POLYMARKET_PARANOID` to `true` before running."
+            )
+            if os.environ.get("POLYMARKET_PARANOID", "false") == "true":
                 raise RuntimeError(
                     "THIS IP IS GEO-BLOCKED ACCORDING TO HARDCODED REGIONS AND `POLYMARKET_PARANOID` IS SET TO TRUE. "
-                    "TERMINATING FOR SAFETY. IP INFO: " + str(ip_info))
+                    "TERMINATING FOR SAFETY. IP INFO: " + str(ip_info)
+                )
             else:
-                print(qw, colored(msg, 'yellow', attrs=['bold', 'blink']))
+                print(qw, colored(msg, "yellow", attrs=["bold", "blink"]))
 
         else:
-            ip_info['ip'] = 'REDACTED'
+            ip_info["ip"] = "REDACTED"
             print(qw, f"IP info: {ip_info}")
             print(qw, "Proceeding to Polymarket geo-block check...")
 
-        if os.environ.get('POLYMARKET_PROTECTION', 'true') == 'true':
+        if os.environ.get("POLYMARKET_PROTECTION", "true") == "true":
             if self.check_geo_blocked():
-                raise RuntimeError("The current IP is geo-blocked from accessing Polymarket.")
+                raise RuntimeError(
+                    "The current IP is geo-blocked from accessing Polymarket."
+                )
             else:
-                print(qw, colored("The current IP is NOT geo-blocked from accessing Polymarket. Happy trading!", 'green', attrs=['bold']))
+                print(
+                    qw,
+                    colored(
+                        "The current IP is NOT geo-blocked from accessing Polymarket. Happy trading!",
+                        "green",
+                        attrs=["bold"],
+                    ),
+                )
         else:
-            warning_msg = ("WARNING: YOU HAVE DISABLED POLYMARKET GEO-BLOCK PROTECTION CHECKS VIA THE "
-                           "`POLYMARKET_PROTECTION` ENVIRONMENT VARIABLE (default: true). THIS WILL LEAD TO ORDERS NOT BEING REJECTED "
-                           "AND POSSIBLE ISSUES WITH A ACTIVELY TRADED ACCOUNT IS LOGGED IN FROM A GEO-BLOCKED IP. "
-                           "THE NEXT STEP INVOLVES DERIVING CREDENTIALS WHICH WILL EXPOSE YOUR ACCOUNT TO POLYMARKET"
-                           "FROM THIS IP ADDRESS. THE PROGRAM WILL NOW SLEEP FOR 30s DO NOTHING TO PROCEED, TERMINATE OTHERWISE")
+            warning_msg = (
+                "WARNING: YOU HAVE DISABLED POLYMARKET GEO-BLOCK PROTECTION CHECKS VIA THE "
+                "`POLYMARKET_PROTECTION` ENVIRONMENT VARIABLE (default: true). THIS WILL LEAD TO ORDERS NOT BEING REJECTED "
+                "AND POSSIBLE ISSUES WITH A ACTIVELY TRADED ACCOUNT IS LOGGED IN FROM A GEO-BLOCKED IP. "
+                "THE NEXT STEP INVOLVES DERIVING CREDENTIALS WHICH WILL EXPOSE YOUR ACCOUNT TO POLYMARKET"
+                "FROM THIS IP ADDRESS. THE PROGRAM WILL NOW SLEEP FOR 30s DO NOTHING TO PROCEED, TERMINATE OTHERWISE"
+            )
             throw_fuss(
-                msg=colored(warning_msg, 'red', attrs=['bold', 'blink']),
+                msg=colored(warning_msg, "red", attrs=["bold", "blink"]),
                 notify=False,
-                title="WARNING: POLYMARKET GEO-BLOCK PROTECTION DISABLED"
+                title="WARNING: POLYMARKET GEO-BLOCK PROTECTION DISABLED",
             )
             macos_notification_with_custom_sound(
                 title="WARNING: POLYMARKET GEO-BLOCK PROTECTION DISABLED",
                 message=warning_msg,
-                sound_name="Basso"
+                sound_name="Basso",
             )
             for i in range(30, 0, -1):
-                print(qw, colored(f"Continuing in {i} seconds... terminate now to abort.", 'red', attrs=['bold']),
-                      end='\r')
+                print(
+                    qw,
+                    colored(
+                        f"Continuing in {i} seconds... terminate now to abort.",
+                        "red",
+                        attrs=["bold"],
+                    ),
+                    end="\r",
+                )
                 time.sleep(1)
             print()
 
@@ -235,16 +294,16 @@ class PolyRestAPI:
         Check if the current IP is geo-blocked from accessing Polymarket.
         :return: True if geo-blocked, False otherwise.
         """
-        response = self.session.get(endpoints['geo_block_test'])
+        response = self.session.get(endpoints["geo_block_test"])
         response.raise_for_status()
         data = response.json()
-        logging.info('Geo-block check response: %s', data)
-        return data.get('blocked', False)
+        logging.info("Geo-block check response: %s", data)
+        return data.get("blocked", False)
 
     @REST_CACHE.cache_decorator(
-        func_uuid='_create_or_derive_api_creds',
+        func_uuid="_create_or_derive_api_creds",
         expiration=60 * 60 * 24,
-        should_cache_function=lambda x: x is not None
+        should_cache_function=lambda x: x is not None,
     )
     def _create_or_derive_api_creds(self):
         response = self.clob.create_or_derive_api_creds()
@@ -260,18 +319,20 @@ class PolyRestAPI:
         from httpx import Client
         from py_clob_client.http_helpers import helpers
 
-        proxy = wp_wrappers.start_proxy_and_return_bind('POLYMARKET')
+        proxy = wp_wrappers.start_proxy_and_return_bind("POLYMARKET")
         if proxy is not None:
-            proxy = f'socks5://{proxy}'
+            proxy = f"socks5://{proxy}"
         _client = Client(http2=True, proxy=proxy)
-        setattr(helpers, '_http_client', _client)
+        setattr(helpers, "_http_client", _client)
 
     ###########################################
     # Public API Methods
     ###########################################
 
-    def fetch_events(self, offset=0, limit=20, debug_raw_callback=None) -> list[pm_types.PolymarketEvent]:
-        url = endpoints['events'].format(limit, offset)
+    def fetch_events(
+        self, offset=0, limit=20, debug_raw_callback=None
+    ) -> list[pm_types.PolymarketEvent]:
+        url = endpoints["events"].format(limit, offset)
         response = self.raw_session.get(url)
         response.raise_for_status()
         returns = []
@@ -305,9 +366,17 @@ class PolyRestAPI:
         tick_size = self.clob.get_tick_size(token_id)
         return tick_size
 
-    @fatal_decorator('place_order')
-    def place_order(self, token_id: str, market: pm_types.PolymarketEvent,
-                    price: float, size: float, side: str, order_type: OrderType = OrderType.GTC, tick_size: float = None) -> dict:
+    @fatal_decorator("place_order")
+    def place_order(
+        self,
+        token_id: str,
+        market: pm_types.PolymarketEvent,
+        price: float,
+        size: float,
+        side: str,
+        order_type: OrderType = OrderType.GTC,
+        tick_size: float = None,
+    ) -> dict:
         """
         Place an order on the Polymarket CLOB.
         :param order_type: The type of the order (default: GTC).
@@ -330,56 +399,66 @@ class PolyRestAPI:
                 price=price,
                 size=size,
                 side=side,
-                tick_size=tick_size
+                tick_size=tick_size,
             )
 
         with Timer(lambda x: time_taken_break_down.append(x)):
-            result = self.clob.post_order(
-                order=order,
-                orderType=order_type
-            )
+            result = self.clob.post_order(order=order, orderType=order_type)
 
-        logging.info('Order placed: %s', result)
-        if result['errorMsg'] == '' and result['success']:
+        logging.info("Order placed: %s", result)
+        if result["errorMsg"] == "" and result["success"]:
             # the success is always true even when there is a failure
             # to submit the order
-            order_id = result['orderID']
-            self._order_cache['orders'].append(result)
+            order_id = result["orderID"]
+            self._order_cache["orders"].append(result)
             self._order_cache[order_id] = {
-                'token_id': token_id,
-                'market': market,
-                'price': price,
-                'size': size,
-                'side': side,
-                'order_type': order_type,
-                'result': result
+                "token_id": token_id,
+                "market": market,
+                "price": price,
+                "size": size,
+                "side": side,
+                "order_type": order_type,
+                "result": result,
             }
             total_time_taken = sum(time_taken_break_down)
-            print(qw, colored(f"Order placed successfully. Order ID: {order_id}", 'green', attrs=['bold']))
+            print(
+                qw,
+                colored(
+                    f"Order placed successfully. Order ID: {order_id}",
+                    "green",
+                    attrs=["bold"],
+                ),
+            )
             msg = f"{qw} Latency breakdown for placing order:\n"
-            msg += f"{qw}  ({(time_taken_break_down[0]/total_time_taken)*100}%) Building order: {time_taken_break_down[0]:.2f} seconds\n"
-            msg += f"{qw}  ({(time_taken_break_down[1]/total_time_taken)*100}%) Posting order: {time_taken_break_down[1]:.2f} seconds\n"
-            print(colored(msg, 'yellow'))
+            msg += f"{qw}  ({(time_taken_break_down[0] / total_time_taken) * 100}%) Building order: {time_taken_break_down[0]:.2f} seconds\n"
+            msg += f"{qw}  ({(time_taken_break_down[1] / total_time_taken) * 100}%) Posting order: {time_taken_break_down[1]:.2f} seconds\n"
+            print(colored(msg, "yellow"))
         else:
-            raise OrderException(f"Failed to place order: {result.get('errorMsg', 'Unknown error')}, response={result}")
+            raise OrderException(
+                f"Failed to place order: {result.get('errorMsg', 'Unknown error')}, response={result}"
+            )
 
         return result
 
-    @fatal_decorator('place_built_orders')
-    def place_built_orders(self, orders: list[SignedOrder], order_type: OrderType = OrderType.GTC) -> dict:
+    @fatal_decorator("place_built_orders")
+    def place_built_orders(
+        self, orders: list[SignedOrder], order_type: OrderType = OrderType.GTC
+    ) -> dict:
         """
         Place already built and signed orders on the Polymarket CLOB.
         :param order_type: The type of the orders (default: GTC).
         :param orders: A list of already built and signed orders to place.
         :return: The result from the CLOB API, containing order placement results.
         """
-        _tick('place_built_orders', 'start')
-        postable_orders = map(lambda x: PostOrdersArgs(order=x, orderType=order_type), orders)
-        _tick('place_built_orders', 'after_postable_orders_map')
+        _tick("place_built_orders", "start")
+        postable_orders = map(
+            lambda x: PostOrdersArgs(order=x, orderType=order_type), orders
+        )
+        _tick("place_built_orders", "after_postable_orders_map")
         postable_orders_list = list(postable_orders)
-        _tick('place_built_orders', 'after_list_conversion')
+        _tick("place_built_orders", "after_list_conversion")
         post: list[dict] = self.clob.post_orders(postable_orders_list)
-        _tick('place_built_orders', 'after_post_orders_call')
+        _tick("place_built_orders", "after_post_orders_call")
         # Example Response:
         # [
         #    {
@@ -393,83 +472,102 @@ class PolyRestAPI:
         #    ....
         # ]
 
-        _tick('place_built_orders', 'before_success_failed_init')
+        _tick("place_built_orders", "before_success_failed_init")
         success = []
-        _tick('place_built_orders', 'after_success_init')
+        _tick("place_built_orders", "after_success_init")
         failed = []
-        _tick('place_built_orders', 'after_failed_init')
+        _tick("place_built_orders", "after_failed_init")
         for msg in post:
-            _tick('place_built_orders', 'loop_start')
-            if msg['errorMsg']:
-                _tick('place_built_orders', 'before_throw_fuss_error')
+            _tick("place_built_orders", "loop_start")
+            if msg["errorMsg"]:
+                _tick("place_built_orders", "before_throw_fuss_error")
                 throw_fuss(
-                    msg=colored("Failed to post built and signed order: {}".format(msg['errorMsg']), 'red', attrs=['bold']),
+                    msg=colored(
+                        "Failed to post built and signed order: {}".format(
+                            msg["errorMsg"]
+                        ),
+                        "red",
+                        attrs=["bold"],
+                    ),
                     title="Failed to Post Built and Signed Order",
-                    notify=True
+                    notify=True,
                 )
-                _tick('place_built_orders', 'after_throw_fuss_error')
+                _tick("place_built_orders", "after_throw_fuss_error")
                 failed.append(msg)
-                _tick('place_built_orders', 'after_failed_append')
+                _tick("place_built_orders", "after_failed_append")
             else:
-                _tick('place_built_orders', 'else_branch')
-                order_id = msg.get('orderID', 'Unknown ID')
-                _tick('place_built_orders', 'after_get_order_id')
+                _tick("place_built_orders", "else_branch")
+                order_id = msg.get("orderID", "Unknown ID")
+                _tick("place_built_orders", "after_get_order_id")
                 throw_fuss(
-                    msg=colored("Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id), 'green', attrs=['bold']),
+                    msg=colored(
+                        "Successfully Posted Built and Signed Orders. Order ID: {}".format(
+                            order_id
+                        ),
+                        "green",
+                        attrs=["bold"],
+                    ),
                     title="Successfully Posted Built and Signed Orders",
-                    notify=True
+                    notify=True,
                 )
-                _tick('place_built_orders', 'after_throw_fuss_success')
+                _tick("place_built_orders", "after_throw_fuss_success")
                 macos_notification_with_custom_sound(
                     title="Successfully Posted Built and Signed Order",
-                    message="Successfully Posted Built and Signed Orders. Order ID: {}".format(order_id),
-                    sound_name="Glass"
+                    message="Successfully Posted Built and Signed Orders. Order ID: {}".format(
+                        order_id
+                    ),
+                    sound_name="Glass",
                 )
-                _tick('place_built_orders', 'after_notification')
-                logging.info('Successfully posted built and signed order: %s', msg)
-                _tick('place_built_orders', 'after_logging')
+                _tick("place_built_orders", "after_notification")
+                logging.info("Successfully posted built and signed order: %s", msg)
+                _tick("place_built_orders", "after_logging")
                 success.append(msg)
-                _tick('place_built_orders', 'after_success_append')
-        _tick('place_built_orders', 'after_loop')
+                _tick("place_built_orders", "after_success_append")
+        _tick("place_built_orders", "after_loop")
 
-        result = {
-            'success': success,
-            'failed': failed
-        }
-        _tick('place_built_orders', 'before_return')
+        result = {"success": success, "failed": failed}
+        _tick("place_built_orders", "before_return")
         return result
 
-    @fatal_decorator('build_order')
-    def build_order(self, token_id: str, market: pm_types.PolymarketEvent, price: float, size: float, side: str,
-                    tick_size: float = None) -> SignedOrder:
-        _tick('build_order', 'start')
+    @fatal_decorator("build_order")
+    def build_order(
+        self,
+        token_id: str,
+        market: pm_types.PolymarketEvent,
+        price: float,
+        size: float,
+        side: str,
+        tick_size: float = None,
+    ) -> SignedOrder:
+        _tick("build_order", "start")
         if tick_size is None:
-            _tick('build_order', 'before_get_tick_size')
+            _tick("build_order", "before_get_tick_size")
             tick_size = self.get_tick_size(token_id)
-            _tick('build_order', 'after_get_tick_size')
-        _tick('build_order', 'after_tick_size_check')
+            _tick("build_order", "after_get_tick_size")
+        _tick("build_order", "after_tick_size_check")
 
-        mapped = {
-            'buy': BUY,
-            'sell': SELL
-        }
-        _tick('build_order', 'after_mapped_dict')
+        mapped = {"buy": BUY, "sell": SELL}
+        _tick("build_order", "after_mapped_dict")
         type_side = mapped.get(side.lower())
-        _tick('build_order', 'after_get_type_side')
+        _tick("build_order", "after_get_type_side")
         if type_side is None:
             raise ValueError("side must be either 'buy' or 'sell'")
-        _tick('build_order', 'after_type_side_validation')
+        _tick("build_order", "after_type_side_validation")
 
         if self._rapid_order_build:
-            _tick('build_order', 'rapid_build_path')
-            logging.warning("Using rapid order builder for order creation. "
-                            "This may lead to faster order placements but could cause issues if the underlying "
-                            "assumptions about tick size and fee rate retrieval are violated. "
-                            "Make sure you understand the implications of this setting.")
-            _tick('build_order', 'before_rapid_builder_return')
-            return self._rapid_order_builder(token_id, market, price, size, type_side, tick_size)
+            _tick("build_order", "rapid_build_path")
+            logging.warning(
+                "Using rapid order builder for order creation. "
+                "This may lead to faster order placements but could cause issues if the underlying "
+                "assumptions about tick size and fee rate retrieval are violated. "
+                "Make sure you understand the implications of this setting."
+            )
+            _tick("build_order", "before_rapid_builder_return")
+            return self._rapid_order_builder(
+                token_id, market, price, size, type_side, tick_size
+            )
 
-        _tick('build_order', 'before_create_order')
+        _tick("build_order", "before_create_order")
         order = self.clob.create_order(
             order_args=OrderArgs(
                 token_id=token_id,
@@ -478,67 +576,71 @@ class PolyRestAPI:
                 side=type_side,
             ),
             options=PartialCreateOrderOptions(
-                tick_size=tick_size,
-                neg_risk=market.negRisk
-            )
+                tick_size=tick_size, neg_risk=market.negRisk
+            ),
         )
-        _tick('build_order', 'after_create_order')
+        _tick("build_order", "after_create_order")
 
         return order
 
-    def _rapid_order_builder(self, token_id: str, market: pm_types.PolymarketEvent,
-                             price: float, size: float, side: str, tick_size: float = None):
+    def _rapid_order_builder(
+        self,
+        token_id: str,
+        market: pm_types.PolymarketEvent,
+        price: float,
+        size: float,
+        side: str,
+        tick_size: float = None,
+    ):
         """
         A more rapid order builder
         """
-        _tick('_rapid_order_builder', 'start')
+        _tick("_rapid_order_builder", "start")
 
         fee_rate = self.get_fee_rate(token_id)
-        _tick('_rapid_order_builder', 'after_get_fee_rate')
+        _tick("_rapid_order_builder", "after_get_fee_rate")
         if tick_size is None:
-            _tick('_rapid_order_builder', 'tick_size_is_none')
+            _tick("_rapid_order_builder", "tick_size_is_none")
             tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
-            _tick('_rapid_order_builder', 'after_submit_tick_size')
+            _tick("_rapid_order_builder", "after_submit_tick_size")
         else:
-            _tick('_rapid_order_builder', 'tick_size_provided')
+            _tick("_rapid_order_builder", "tick_size_provided")
             tick_size_future = _FakeFuture(tick_size)
-            _tick('_rapid_order_builder', 'after_fake_future')
+            _tick("_rapid_order_builder", "after_fake_future")
 
-        _tick('_rapid_order_builder', 'before_get_builder')
+        _tick("_rapid_order_builder", "before_get_builder")
         builder = self.clob.builder
-        _tick('_rapid_order_builder', 'after_get_builder')
+        _tick("_rapid_order_builder", "after_get_builder")
         neg_risk = market.negRisk
-        _tick('_rapid_order_builder', 'after_get_neg_risk')
+        _tick("_rapid_order_builder", "after_get_neg_risk")
         side = side.upper()
-        _tick('_rapid_order_builder', 'after_upper_side')
-        if side != 'BUY' and side != 'SELL':
+        _tick("_rapid_order_builder", "after_upper_side")
+        if side != "BUY" and side != "SELL":
             raise ValueError("side must be either 'buy' or 'sell'")
-        _tick('_rapid_order_builder', 'after_side_validation')
+        _tick("_rapid_order_builder", "after_side_validation")
 
-        _tick('_rapid_order_builder', 'before_get_order_amounts')
+        _tick("_rapid_order_builder", "before_get_order_amounts")
         side, maker_amount, taker_amount = builder.get_order_amounts(
             side,
             size,
             price,
             ROUNDING_CONFIG[tick_size_future.result()],
         )
-        _tick('_rapid_order_builder', 'after_get_order_amounts')
+        _tick("_rapid_order_builder", "after_get_order_amounts")
 
-        _tick('_rapid_order_builder', 'before_get_contract_config')
-        contract_config = get_contract_config(
-            builder.signer.get_chain_id(), neg_risk
-        )
-        _tick('_rapid_order_builder', 'after_get_contract_config')
+        _tick("_rapid_order_builder", "before_get_contract_config")
+        contract_config = get_contract_config(builder.signer.get_chain_id(), neg_risk)
+        _tick("_rapid_order_builder", "after_get_contract_config")
 
-        _tick('_rapid_order_builder', 'before_order_builder_init')
+        _tick("_rapid_order_builder", "before_order_builder_init")
         order_builder = UtilsOrderBuilder(
             contract_config.exchange,
             builder.signer.get_chain_id(),
             builder.signer,
         )
-        _tick('_rapid_order_builder', 'after_order_builder_init')
+        _tick("_rapid_order_builder", "after_order_builder_init")
 
-        _tick('_rapid_order_builder', 'before_OrderData')
+        _tick("_rapid_order_builder", "before_OrderData")
         data = OrderData(
             maker=builder.funder,
             taker=ZERO_ADDRESS,
@@ -552,11 +654,11 @@ class PolyRestAPI:
             expiration=str(OrderArgs.expiration),
             signatureType=builder.sig_type,
         )
-        _tick('_rapid_order_builder', 'after_OrderData')
+        _tick("_rapid_order_builder", "after_OrderData")
 
-        _tick('_rapid_order_builder', 'before_build_signed_order')
+        _tick("_rapid_order_builder", "before_build_signed_order")
         result = order_builder.build_signed_order(data)
-        _tick('_rapid_order_builder', 'after_build_signed_order')
+        _tick("_rapid_order_builder", "after_build_signed_order")
         return result
 
     def prefetch_fee_rate(self, token_id: str):
@@ -565,7 +667,10 @@ class PolyRestAPI:
         Call this on market subscribe so the rate is cached before the first order.
         """
         with self._fee_rate_lock:
-            if token_id not in self._fee_rate_cache and token_id not in self._fee_rate_futures:
+            if (
+                token_id not in self._fee_rate_cache
+                and token_id not in self._fee_rate_futures
+            ):
                 self._fee_rate_futures[token_id] = self._thread_pool.submit(
                     self.clob.get_fee_rate_bps, token_id
                 )
@@ -580,9 +685,16 @@ class PolyRestAPI:
                 return self._fee_rate_cache[token_id]
             future = self._fee_rate_futures.pop(token_id, None)
             if future is None:
-                print(qw, colored(f"Cache miss for fee rate of token_id {token_id}, fetching...", 'yellow', attrs=['bold']))
+                print(
+                    qw,
+                    colored(
+                        f"Cache miss for fee rate of token_id {token_id}, fetching...",
+                        "yellow",
+                        attrs=["bold"],
+                    ),
+                )
 
-            print(qw, 'Future:', future)
+            print(qw, "Future:", future)
 
         # Block outside the lock so concurrent callers aren't serialized
         # noinspection all
@@ -598,7 +710,7 @@ class PolyRestAPI:
 
         return result
 
-    @fatal_decorator('cancel_order')
+    @fatal_decorator("cancel_order")
     def cancel_order(self, order_id: str) -> dict:
         """
         Cancel an existing order on the Polymarket CLOB.
@@ -607,24 +719,32 @@ class PolyRestAPI:
             E.g. {'not_canceled': {}, 'canceled': ['0000000x00000']}
         """
         result = self.clob.cancel(order_id)
-        logging.info('Order cancellation result: %s', result)
-        if len(result['canceled']) > 0:
-            print(qw, colored(f"Order {order_id} canceled successfully.", 'green', attrs=['bold']))
+        logging.info("Order cancellation result: %s", result)
+        if len(result["canceled"]) > 0:
+            print(
+                qw,
+                colored(
+                    f"Order {order_id} canceled successfully.", "green", attrs=["bold"]
+                ),
+            )
             # Remove from cache
-            self._order_cache['orders'] = [
-                o for o in self._order_cache['orders'] if o['orderID'] != order_id
+            self._order_cache["orders"] = [
+                o for o in self._order_cache["orders"] if o["orderID"] != order_id
             ]
             if order_id in self._order_cache:
                 del self._order_cache[order_id]
         else:
-            print(qw, colored(f"Failed to cancel order {order_id}.", 'red', attrs=['bold']))
+            print(
+                qw,
+                colored(f"Failed to cancel order {order_id}.", "red", attrs=["bold"]),
+            )
         return result
 
-    @fatal_decorator('cancel_multiple')
+    @fatal_decorator("cancel_multiple")
     def cancel_multiple(self, order_ids: list[str]) -> dict:
         """
         Cancel multiple orders on the Polymarket CLOB in a single HTTP request.
-        
+
         :param order_ids: List of order IDs to cancel.
         :return: The result of the batch cancellation request.
             E.g. {
@@ -633,30 +753,44 @@ class PolyRestAPI:
             }
         """
         result = self.clob.cancel_orders(order_ids)
-        logging.info('Batch order cancellation result: %s', result)
-        
+        logging.info("Batch order cancellation result: %s", result)
+
         # Log successful cancellations
-        if result.get('canceled'):
-            canceled_count = len(result['canceled'])
-            print(qw, colored(f"Successfully canceled {canceled_count} orders.", 'green', attrs=['bold']))
+        if result.get("canceled"):
+            canceled_count = len(result["canceled"])
+            print(
+                qw,
+                colored(
+                    f"Successfully canceled {canceled_count} orders.",
+                    "green",
+                    attrs=["bold"],
+                ),
+            )
             # Remove from cache
-            for order_id in result['canceled']:
-                self._order_cache['orders'] = [
-                    o for o in self._order_cache['orders'] if o['orderID'] != order_id
+            for order_id in result["canceled"]:
+                self._order_cache["orders"] = [
+                    o for o in self._order_cache["orders"] if o["orderID"] != order_id
                 ]
                 if order_id in self._order_cache:
                     del self._order_cache[order_id]
-        
+
         # Log failed cancellations
-        if result.get('not_canceled'):
-            not_canceled_count = len(result['not_canceled'])
-            print(qw, colored(f"Failed to cancel {not_canceled_count} orders.", 'red', attrs=['bold']))
-            for order_id, reason in result['not_canceled'].items():
+        if result.get("not_canceled"):
+            not_canceled_count = len(result["not_canceled"])
+            print(
+                qw,
+                colored(
+                    f"Failed to cancel {not_canceled_count} orders.",
+                    "red",
+                    attrs=["bold"],
+                ),
+            )
+            for order_id, reason in result["not_canceled"].items():
                 logging.warning(f"Order {order_id} not canceled: {reason}")
-        
+
         return result
 
-    @fatal_decorator('get_orders')
+    @fatal_decorator("get_orders")
     def get_orders(self) -> list[PolyMarketOrder]:
         """
         Get the list of orders.
@@ -665,7 +799,7 @@ class PolyRestAPI:
         orders = map(lambda x: PolyMarketOrder(**x), self.clob.get_orders())
         return list(orders)
 
-    @fatal_decorator('get_trades')
+    @fatal_decorator("get_trades")
     def get_trades(self) -> TradeData:
         """
         Get the list of trades.
@@ -674,7 +808,7 @@ class PolyRestAPI:
         trades = self.clob.get_trades()
         return TradeData.from_list(trades)
 
-    @fatal_decorator('get_order_status')
+    @fatal_decorator("get_order_status")
     @retry(max_attempts=3, delay=0.35)
     def get_order_status(self, order_id: str) -> PolyMarketOrder:
         """
@@ -682,35 +816,35 @@ class PolyRestAPI:
         :param order_id: The ID of the order.
         :return: A PolyMarketOrder object containing the order status.
         """
-        logging.info('Getting order status: %s', order_id)
+        logging.info("Getting order status: %s", order_id)
         order_status = self.clob.get_order(order_id)
         return PolyMarketOrder(**order_status)
 
-    @fatal_decorator('get_balance')
+    @fatal_decorator("get_balance")
     def get_balance(self) -> float:
         """
         Get the tradeable balance of the account.
-        
+
         This calculates the available balance by:
         1. Getting the gross on-chain wallet balance
         2. Subtracting reserved collateral from all open BUY orders
-        
+
         Only BUY orders reserve USDC collateral. The reserved amount is calculated
         as (original_size - size_matched) * price for each open buy order.
-        
+
         :return: The tradeable balance as a float in USDC.
         """
 
         # Step 1: Refresh the on-chain balance cache
         self.clob.update_balance_allowance(
-            BalanceAllowanceParams(asset_type='COLLATERAL')
+            BalanceAllowanceParams(asset_type="COLLATERAL")
         )
-        
+
         # Step 2: Get gross wallet balance
         raw = self.clob.get_balance_allowance(
-            BalanceAllowanceParams(asset_type='COLLATERAL')
+            BalanceAllowanceParams(asset_type="COLLATERAL")
         )
-        gross_balance = float(raw['balance']) / self._div
+        gross_balance = float(raw["balance"]) / self._div
 
         # Step 3: Subtract all open-order reservations across ALL markets
         open_orders = self.get_orders()  # Returns list of PolyMarketOrder objects
@@ -720,14 +854,38 @@ class PolyRestAPI:
             size_matched = float(order.size_matched)
             price = float(order.price)
             # Only buy orders reserve USDC collateral
-            if order.side.upper() == 'BUY':
+            if order.side.upper() == "BUY":
                 reserved += (original_size - size_matched) * price
 
         return gross_balance - reserved
 
-    @fatal_decorator('cancel_all')
+    @fatal_decorator("cancel_all")
     def cancel_all(self):
         return self.clob.cancel_all()
+
+    @fatal_decorator("get_token_balance")
+    def get_token_balance(self, token_id: str) -> float:
+        """
+        Get the balance of a specific conditional outcome token (YES or NO token).
+
+        Args:
+            token_id: The outcome token asset ID (YES or NO token)
+
+        Returns:
+            Number of shares as a float (e.g. 150.0)
+        """
+
+        params = BalanceAllowanceParams(
+            asset_type=AssetType.CONDITIONAL, token_id=token_id
+        )
+
+        # Force refresh the cached balance on Polymarket's side first
+        self.clob.update_balance_allowance(params)
+
+        # Now fetch the refreshed value
+        result = self.clob.get_balance_allowance(params)
+
+        return float(result["balance"]) / self._div
 
     @property
     def order_cache(self):
@@ -749,4 +907,3 @@ class PolyRestAPI:
             "secret": creds.api_secret,
             "passphrase": creds.api_passphrase,
         }
-
