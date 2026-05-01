@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from argus.protocol import encode_packet
+from argus.protocol import encode_packet, decompress_p1_response
 
 
 HOST = 'localhost'
@@ -96,6 +96,7 @@ def _extract_p1_p2_frames(raw: bytes):
 
             try:
                 msg = json.loads(frame_payload.decode('utf-8'))
+                msg = decompress_p1_response(msg)
                 frames.append(('p1', msg))
             except json.JSONDecodeError:
                 pass  # skip unparseable

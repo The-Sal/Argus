@@ -23,6 +23,8 @@ import os
 import json
 import time
 import tqdm
+import zlib
+import base64
 import socket
 import difflib
 import logging
@@ -36,6 +38,7 @@ from termcolor import colored
 from utils3 import runAsThread, Timer
 from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
+from argus import __version__ as ARGUS_VERSION
 from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus.cache_sys import DomainCache, FastCache
 from argus._argus_utils import Introspective, throw_fuss
@@ -60,6 +63,12 @@ from argus.polymarket._classes import (
 # Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
 _poly_cache = FastCache(cache_file="~/.argus/polymarket_cache.pkl")
 _CACHE = DomainCache("polymarket_dispatcher_v2", cache=_poly_cache)
+
+
+
+def compress(data: dict) -> str:
+    minified = json.dumps(data, separators=(',', ':')).encode()
+    return base64.b64encode(zlib.compress(minified, level=9)).decode()
 
 
 class PolymarketDispatcher(Introspective, RoutingHelper):
@@ -370,6 +379,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 "action": None,
                 "data": None,
                 "error": f"Failed to decode incoming data: {str(e)}. YOU ARE NOT ENCODING PROPERLY OR YOU SENT MALFORMED DATA. Data must be encoded with the P1 protocol (JSON) and then P1 packet encoded. Original error: {str(e)}",
+                "compressed": False,
             }
             response_bytes = encode_packet(json.dumps(response).encode("utf-8"))
             try:
@@ -384,6 +394,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             return
 
         for packet in packets:
+            compressed = False
             content = json.loads(packet.decode("utf-8"))
             logging.debug("Received data from Polymarket client: %s", content)
             correlation_id = content.get(
@@ -396,10 +407,22 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     )  # throws if invalid, caught by the exception below
 
                 response = self._handle_client_message(client_socket, address, content)
+
+                if isinstance(response, (dict, list)):
+                    response_size = len(json.dumps(response).encode("utf-8"))
+                    if response_size >= 9500:
+                        response = compress(response)
+                        compressed = True
+
+                    if len(response) >= 9500:
+                        raise Exception("Response size exceeds maximum allowed size even after compression.")
+
+
                 msg = {
                     "action": content.get("action", None),
                     "data": response,
                     "error": None,
+                    "compressed": compressed,
                 }
                 # because encoding can fail!
                 if correlation_id is not None:
@@ -407,11 +430,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 response_bytes = encode_packet(json.dumps(msg).encode("utf-8"))
             except Exception as e:
                 throw_fuss(msg=traceback.format_exc(), notify=False)
-
                 msg = {
                     "action": content.get("action", None),
                     "data": None,
                     "error": str(e),
+                    "compressed": False,
                 }
                 if correlation_id is not None:
                     msg["correlation_id"] = correlation_id
@@ -477,6 +500,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 "action": "fatal_error",
                 "data": client_error_payload,
                 "error": str(exception),
+                "compressed": False,
             }
         )
 
@@ -800,7 +824,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :return:
         """
         obj = self.send_with_p1_encoding(
-            {"action": "account_update", "data": update.to_dict(), "error": None}
+            {"action": "account_update", "data": update.to_dict(), "error": None, "compressed": False}
         )
 
         for sock in self.sockets:

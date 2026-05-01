@@ -21,6 +21,7 @@ import socket
 import statistics
 from typing import List, Tuple, Optional, Dict
 from datetime import datetime
+from argus.protocol import decompress_p1_response
 
 
 # =============================================================================
@@ -288,6 +289,7 @@ class ArgusClient:
             elapsed = time.perf_counter() - t0
             payload = raw[header_len:needed]
             response = json.loads(payload.decode('utf-8'))
+            response = decompress_p1_response(response)
             return response, elapsed
         finally:
             self.socket.settimeout(old_timeout)

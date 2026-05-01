@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 print(sys.path)
 
 
-from argus.protocol import encode_packet, Protocol2Parser
+from argus.protocol import encode_packet, Protocol2Parser, decompress_p1_response
 HOST = 'localhost'
 PORT = 9972
 
@@ -91,7 +91,9 @@ def send_and_recv(sock: socket.socket, action: str, data=None, timeout=10) -> tu
 
         elapsed = time.perf_counter() - t0
         payload = raw[header_len:needed]
-        return json.loads(payload.decode('utf-8')), elapsed
+        response = json.loads(payload.decode('utf-8'))
+        response = decompress_p1_response(response)
+        return response, elapsed
     finally:
         sock.settimeout(old_timeout)
 

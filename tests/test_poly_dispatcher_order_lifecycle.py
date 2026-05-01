@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 print(sys.path)  # Debug: print sys.path to verify the parent directory is included
 
-from argus.protocol import encode_packet
+from argus.protocol import encode_packet, decompress_p1_response
 
 
 HOST = 'localhost'
@@ -175,6 +175,7 @@ def _extract_frames(raw: bytes) -> tuple[list, bytes]:
 
             try:
                 msg = json.loads(frame_payload.decode('utf-8'))
+                msg = decompress_p1_response(msg)
                 frames.append(('p1', msg))
             except json.JSONDecodeError:
                 pass  # skip unparseable
