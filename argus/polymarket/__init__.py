@@ -802,6 +802,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 # Utilities
                 "ping": self._handle_ping,
                 "rtt_to_exchange": self._handle_rtt_to_exchange,
+                'version': lambda *arg, **kwargs: ARGUS_VERSION,
             }
 
             func = functions_available.get(action, None)

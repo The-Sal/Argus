@@ -300,7 +300,14 @@ class ArgusClient:
         if resp.get('error'):
             raise Exception(f"Ping failed: {resp['error']}")
         return str(resp.get('data', '')), dt
-    
+
+    def get_version(self) -> Tuple[str, float]:
+        """Get the Argus dispatcher version."""
+        resp, dt = self.send_request('version')
+        if resp.get('error'):
+            raise Exception(f"Get version failed: {resp['error']}")
+        return str(resp.get('data', '')), dt
+
     def get_balance(self) -> Tuple[float, float]:
         """Get account balance."""
         resp, dt = self.send_request('get_balance')
@@ -951,10 +958,12 @@ def subscribe_clob_latency_mode(client: ArgusClient, clob_id: str):
 # Interactive CLI Interface
 # =============================================================================
 
-def print_banner():
+def print_banner(version: str = ""):
     """Print welcome banner."""
     print("\n" + "="*50)
     print("  Argus Polymarket Interactive CLI")
+    if version:
+        print(f"  Server Argus Version: {version}")
     print("  Type 'help' for commands, 'quit' to exit")
     print("="*50 + "\n")
 
@@ -994,7 +1003,11 @@ def print_help():
 
 def interactive_loop(client: ArgusClient):
     """Main interactive loop."""
-    print_banner()
+    try:
+        version, _ = client.get_version()
+    except Exception as e:
+        version = f"unavailable ({e})"
+    print_banner(version=version)
     
     while True:
         try:
