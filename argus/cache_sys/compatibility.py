@@ -99,6 +99,7 @@ class PickleFixer:
 
 
 if __name__ == '__main__':
-    pf = PickleFixer()
-    pf(pf.cache_version)
+    # pf = PickleFixer()
+    # pf(pf.cache_version)
     # pf.run_diagnostics()
+    pass

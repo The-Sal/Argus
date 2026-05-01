@@ -19,7 +19,7 @@ import json
 import time
 import socket
 import statistics
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime
 from argus.protocol import decompress_p1_response
 
@@ -164,7 +164,7 @@ class P2PacketParser:
             raise ValueError(f"Field count mismatch: expected {len(self.decoding_order)} values, got {len(values)}")
         
         # Build result dictionary
-        result: Dict[str, any] = {'symbol': symbol}
+        result: Dict[str, Any] = {'symbol': symbol}
         for i, field_name in enumerate(self.decoding_order):
             result[field_name] = values[i]
         
