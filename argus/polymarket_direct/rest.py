@@ -169,7 +169,7 @@ class PolyRestAPI:
             signature_type=1,
             funder=proxy_funder,
         )
-        self.clob.set_api_creds(self._create_or_derive_api_creds())
+        self.clob.set_api_creds(self._create_or_derive_api_key())
         self.clob.get_version()  # pre-warm version cache for v2
         self._div = divisor
 
@@ -279,11 +279,11 @@ class PolyRestAPI:
         return data.get("blocked", False)
 
     @REST_CACHE.cache_decorator(
-        func_uuid="_create_or_derive_api_creds",
+        func_uuid="create_or_derive_api_key",
         expiration=60 * 60 * 24,
         should_cache_function=lambda x: x is not None,
     )
-    def _create_or_derive_api_creds(self):
+    def _create_or_derive_api_key(self):
         response = self.clob.create_or_derive_api_key()
         return response
 
@@ -302,8 +302,6 @@ class PolyRestAPI:
             proxy = f"socks5://{proxy}"
         _client = Client(http2=True, proxy=proxy)
         setattr(helpers, "_http_client", _client)
-        assert hasattr(helpers._http_client, '_transport'), "proxy patch failed"
-        logging.info("SOCKS5 patch active: %s", type(helpers._http_client._transport))
 
     ###########################################
     # Public API Methods
@@ -741,7 +739,7 @@ class PolyRestAPI:
         Get the API credentials.
         :return: The API credentials dictionary.
         """
-        creds = self._create_or_derive_api_creds()
+        creds = self._create_or_derive_api_key()
         return {
             "apiKey": creds.api_key,
             "secret": creds.api_secret,
