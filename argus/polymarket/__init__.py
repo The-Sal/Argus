@@ -844,7 +844,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             try:
                 self.add_socket_to_subscription(sock, clob_id)
                 self.market_data.subscribe_to_asset_id(clob_id)
-                self.rest_api.prefetch_fee_rate(clob_id)
                 subscribed.append(clob_id)
             except Exception as e:
                 failed.append(clob_id)
@@ -910,7 +909,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 try:
                     self.add_socket_to_subscription(sock, clob_id)
                     self.market_data.subscribe_to_asset_id(clob_id)
-                    self.rest_api.prefetch_fee_rate(clob_id)
                     subscribed.append(clob_id)
                 except Exception as e:
                     failed.append(clob_id)
