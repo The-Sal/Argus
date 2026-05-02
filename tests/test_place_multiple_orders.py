@@ -368,7 +368,7 @@ def step_place_multiple_orders(sock: socket.socket, token_id: str) -> tuple[dict
     
     for i, order_result in enumerate(failed_orders):
         error_msg = order_result.get('errorMsg', 'Unknown error')
-        print(f"    Failed [{i+1}]: error={error_msg[:60]}...")
+        print(f"    Failed [{i+1}]: error={error_msg[:5000]}...")
     
     return result, dt
 
