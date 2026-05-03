@@ -4,6 +4,7 @@ import logging
 import requests
 import functools
 import traceback
+from typing import cast
 from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
@@ -546,7 +547,7 @@ class PolyRestAPI:
         )
         _tick("build_order", "after_create_order")
 
-        return order
+        return cast(SignedOrder, order)
 
     @fatal_decorator("cancel_order")
     def cancel_order(self, order_id: str) -> dict:
