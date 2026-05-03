@@ -9,8 +9,8 @@ import traceback
 from termcolor import colored
 from utils3 import runAsThread
 from websocket import WebSocketApp
-from py_clob_client.endpoints import GET_TICK_SIZE
 from argus.wireproxy import wrapper as wp_wrappers
+from py_clob_client_v2.endpoints import GET_TICK_SIZE
 from argus.polymarket_direct import _types as pm_types
 from concurrent.futures.thread import ThreadPoolExecutor
 from argus.polymarket_direct.order_types import OrderEvent, TradeEvent

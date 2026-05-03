@@ -116,7 +116,7 @@ class MakerOrder:
             maker_address=data['maker_address'],
             matched_amount=float(data['matched_amount']),
             price=float(data['price']),
-            fee_rate_bps=int(data['fee_rate_bps']),
+            fee_rate_bps=0,
             asset_id=data['asset_id'],
             outcome=data['outcome'],
             side=data['side']

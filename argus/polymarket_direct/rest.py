@@ -3,27 +3,22 @@ import time
 import logging
 import requests
 import functools
-import threading
 import traceback
+from typing import cast
 from utils3 import Timer
 from termcolor import colored
 from argus.cache_sys import DomainCache
-from py_clob_client.clob_types import AssetType
-from concurrent.futures import ThreadPoolExecutor
-from py_clob_client import BalanceAllowanceParams
-from py_clob_client.constants import ZERO_ADDRESS
 from argus.polymarket_direct.safe import IPSafety
+from py_clob_client_v2.clob_types import AssetType
 from argus.wireproxy import wrapper as wp_wrappers
-from py_clob_client.clob_types import PostOrdersArgs
-from py_clob_client.config import get_contract_config
+from py_clob_client_v2 import BalanceAllowanceParams
 from argus.polymarket_direct import _types as pm_types
-from py_order_utils.model import OrderData, SignedOrder
-from py_clob_client.order_builder.constants import BUY, SELL
-from py_clob_client.order_builder.builder import ROUNDING_CONFIG
+from py_clob_client_v2.order_builder.constants import BUY, SELL
+from py_clob_client_v2.order_utils import SignedOrderV2 as SignedOrder
+from py_clob_client_v2.clob_types import PostOrdersV2Args, OrderPayload
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
-from py_order_utils.builders.order_builder import OrderBuilder as UtilsOrderBuilder
 from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
-from py_clob_client.client import OrderArgs, OrderType, ClobClient, PartialCreateOrderOptions
+from py_clob_client_v2.client import OrderArgsV2, OrderType, ClobClient, PartialCreateOrderOptions
 
 # Line-by-line timing utility
 _timer_last = {}
@@ -48,14 +43,6 @@ endpoints = {
     "page_data": "https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json",
 }
 qw = "[{}]".format(__name__)
-
-
-class _FakeFuture:
-    def __init__(self, result):
-        self._result = result
-
-    def result(self):
-        return self._result
 
 
 def retry(max_attempts=3, delay=0.35):
@@ -123,7 +110,7 @@ def fatal_decorator(func_idx):
 
 class PolyRestAPI:
     """
-    A REST API client for interacting with Polymarket's CLOB via py_clob_client and other endpoints.
+    A REST API client for interacting with Polymarket's CLOB via py_clob_client_v2 and other endpoints.
     """
 
     def __init__(
@@ -172,14 +159,9 @@ class PolyRestAPI:
 
         self._make_httpx_clob_client()
         self.safety = IPSafety()
-        self._thread_pool = ThreadPoolExecutor(max_workers=5)
 
         if os.environ.get("POLYMARKET_NO_SAFETY_CHECK", "false") != "true":
             self.ip_safety_check()
-
-        self._rapid_order_build = (
-            os.environ.get("POLYMARKET_RAPID_ORDER_BUILD", "false") == "true"
-        )
 
         self.clob = ClobClient(
             host,
@@ -188,14 +170,11 @@ class PolyRestAPI:
             signature_type=1,
             funder=proxy_funder,
         )
-        self.clob.set_api_creds(self._create_or_derive_api_creds())
+        self.clob.set_api_creds(self._create_or_derive_api_key())
+        self.clob.get_version()  # pre-warm version cache for v2
         self._div = divisor
 
         self._order_cache = {"orders": []}
-
-        self._fee_rate_lock = threading.Lock()
-        self._fee_rate_cache: dict[str, str] = {}
-        self._fee_rate_futures: dict = {}
 
         self.fatal_callback = fatal_callback
         if self.fatal_callback is None:
@@ -301,23 +280,23 @@ class PolyRestAPI:
         return data.get("blocked", False)
 
     @REST_CACHE.cache_decorator(
-        func_uuid="_create_or_derive_api_creds",
+        func_uuid="create_or_derive_api_key",
         expiration=60 * 60 * 24,
         should_cache_function=lambda x: x is not None,
     )
-    def _create_or_derive_api_creds(self):
-        response = self.clob.create_or_derive_api_creds()
+    def _create_or_derive_api_key(self):
+        response = self.clob.create_or_derive_api_key()
         return response
 
     @staticmethod
     def _make_httpx_clob_client():
         """
         PyClobClient uses httpx for its HTTP requests; however, it does not expose a way to set up proxies.
-        This function patches the internal httpx Client used by py_clob_client to use a proxy if specified
+        This function patches the internal httpx Client used by py_clob_client_v2 to use a proxy if specified
         via WireProxy.
         """
         from httpx import Client
-        from py_clob_client.http_helpers import helpers
+        from py_clob_client_v2.http_helpers import helpers
 
         proxy = wp_wrappers.start_proxy_and_return_bind("POLYMARKET")
         if proxy is not None:
@@ -403,7 +382,7 @@ class PolyRestAPI:
             )
 
         with Timer(lambda x: time_taken_break_down.append(x)):
-            result = self.clob.post_order(order=order, orderType=order_type)
+            result = self.clob.post_order(order=order, order_type=order_type)
 
         logging.info("Order placed: %s", result)
         if result["errorMsg"] == "" and result["success"]:
@@ -452,7 +431,7 @@ class PolyRestAPI:
         """
         _tick("place_built_orders", "start")
         postable_orders = map(
-            lambda x: PostOrdersArgs(order=x, orderType=order_type), orders
+            lambda x: PostOrdersV2Args(order=x, orderType=order_type), orders
         )
         _tick("place_built_orders", "after_postable_orders_map")
         postable_orders_list = list(postable_orders)
@@ -554,22 +533,9 @@ class PolyRestAPI:
             raise ValueError("side must be either 'buy' or 'sell'")
         _tick("build_order", "after_type_side_validation")
 
-        if self._rapid_order_build:
-            _tick("build_order", "rapid_build_path")
-            logging.warning(
-                "Using rapid order builder for order creation. "
-                "This may lead to faster order placements but could cause issues if the underlying "
-                "assumptions about tick size and fee rate retrieval are violated. "
-                "Make sure you understand the implications of this setting."
-            )
-            _tick("build_order", "before_rapid_builder_return")
-            return self._rapid_order_builder(
-                token_id, market, price, size, type_side, tick_size
-            )
-
         _tick("build_order", "before_create_order")
         order = self.clob.create_order(
-            order_args=OrderArgs(
+            order_args=OrderArgsV2(
                 token_id=token_id,
                 price=price,
                 size=size,
@@ -581,134 +547,7 @@ class PolyRestAPI:
         )
         _tick("build_order", "after_create_order")
 
-        return order
-
-    def _rapid_order_builder(
-        self,
-        token_id: str,
-        market: pm_types.PolymarketEvent,
-        price: float,
-        size: float,
-        side: str,
-        tick_size: float = None,
-    ):
-        """
-        A more rapid order builder
-        """
-        _tick("_rapid_order_builder", "start")
-
-        fee_rate = self.get_fee_rate(token_id)
-        _tick("_rapid_order_builder", "after_get_fee_rate")
-        if tick_size is None:
-            _tick("_rapid_order_builder", "tick_size_is_none")
-            tick_size_future = self._thread_pool.submit(self.get_tick_size, token_id)
-            _tick("_rapid_order_builder", "after_submit_tick_size")
-        else:
-            _tick("_rapid_order_builder", "tick_size_provided")
-            tick_size_future = _FakeFuture(tick_size)
-            _tick("_rapid_order_builder", "after_fake_future")
-
-        _tick("_rapid_order_builder", "before_get_builder")
-        builder = self.clob.builder
-        _tick("_rapid_order_builder", "after_get_builder")
-        neg_risk = market.negRisk
-        _tick("_rapid_order_builder", "after_get_neg_risk")
-        side = side.upper()
-        _tick("_rapid_order_builder", "after_upper_side")
-        if side != "BUY" and side != "SELL":
-            raise ValueError("side must be either 'buy' or 'sell'")
-        _tick("_rapid_order_builder", "after_side_validation")
-
-        _tick("_rapid_order_builder", "before_get_order_amounts")
-        side, maker_amount, taker_amount = builder.get_order_amounts(
-            side,
-            size,
-            price,
-            ROUNDING_CONFIG[tick_size_future.result()],
-        )
-        _tick("_rapid_order_builder", "after_get_order_amounts")
-
-        _tick("_rapid_order_builder", "before_get_contract_config")
-        contract_config = get_contract_config(builder.signer.get_chain_id(), neg_risk)
-        _tick("_rapid_order_builder", "after_get_contract_config")
-
-        _tick("_rapid_order_builder", "before_order_builder_init")
-        order_builder = UtilsOrderBuilder(
-            contract_config.exchange,
-            builder.signer.get_chain_id(),
-            builder.signer,
-        )
-        _tick("_rapid_order_builder", "after_order_builder_init")
-
-        _tick("_rapid_order_builder", "before_OrderData")
-        data = OrderData(
-            maker=builder.funder,
-            taker=ZERO_ADDRESS,
-            tokenId=token_id,
-            makerAmount=str(maker_amount),
-            takerAmount=str(taker_amount),
-            side=side,
-            feeRateBps=fee_rate,
-            nonce=str(OrderArgs.nonce),
-            signer=builder.signer.address(),
-            expiration=str(OrderArgs.expiration),
-            signatureType=builder.sig_type,
-        )
-        _tick("_rapid_order_builder", "after_OrderData")
-
-        _tick("_rapid_order_builder", "before_build_signed_order")
-        result = order_builder.build_signed_order(data)
-        _tick("_rapid_order_builder", "after_build_signed_order")
-        return result
-
-    def prefetch_fee_rate(self, token_id: str):
-        """
-        Fire a background fetch for the fee rate for a given token_id.
-        Call this on market subscribe so the rate is cached before the first order.
-        """
-        with self._fee_rate_lock:
-            if (
-                token_id not in self._fee_rate_cache
-                and token_id not in self._fee_rate_futures
-            ):
-                self._fee_rate_futures[token_id] = self._thread_pool.submit(
-                    self.clob.get_fee_rate_bps, token_id
-                )
-
-    def get_fee_rate(self, token_id: str) -> str:
-        """
-        Return the cached fee rate for a token_id, or block to fetch and cache it.
-        On a cache hit this is a lock + dict lookup (~0ms).
-        """
-        with self._fee_rate_lock:
-            if token_id in self._fee_rate_cache:
-                return self._fee_rate_cache[token_id]
-            future = self._fee_rate_futures.pop(token_id, None)
-            if future is None:
-                print(
-                    qw,
-                    colored(
-                        f"Cache miss for fee rate of token_id {token_id}, fetching...",
-                        "yellow",
-                        attrs=["bold"],
-                    ),
-                )
-
-            print(qw, "Future:", future)
-
-        # Block outside the lock so concurrent callers aren't serialized
-        # noinspection all
-        raw = future.result() if future is not None else None
-        if not raw:
-            raw = self.clob.get_fee_rate_bps(token_id)
-        if not raw:
-            raise ValueError(f"Could not retrieve fee rate for token_id {token_id}")
-        result = str(raw)
-
-        with self._fee_rate_lock:
-            self._fee_rate_cache[token_id] = result
-
-        return result
+        return cast(SignedOrder, order)
 
     @fatal_decorator("cancel_order")
     def cancel_order(self, order_id: str) -> dict:
@@ -718,7 +557,7 @@ class PolyRestAPI:
         :return: The result of the cancellation request.
             E.g. {'not_canceled': {}, 'canceled': ['0000000x00000']}
         """
-        result = self.clob.cancel(order_id)
+        result = self.clob.cancel_order(OrderPayload(orderID=order_id))
         logging.info("Order cancellation result: %s", result)
         if len(result["canceled"]) > 0:
             print(
@@ -796,7 +635,7 @@ class PolyRestAPI:
         Get the list of orders.
         :return: A list of orders.
         """
-        orders = map(lambda x: PolyMarketOrder(**x), self.clob.get_orders())
+        orders = map(lambda x: PolyMarketOrder(**x), self.clob.get_open_orders())
         return list(orders)
 
     @fatal_decorator("get_trades")
@@ -901,7 +740,7 @@ class PolyRestAPI:
         Get the API credentials.
         :return: The API credentials dictionary.
         """
-        creds = self._create_or_derive_api_creds()
+        creds = self._create_or_derive_api_key()
         return {
             "apiKey": creds.api_key,
             "secret": creds.api_secret,

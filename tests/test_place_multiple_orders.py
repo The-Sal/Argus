@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from argus.protocol import encode_packet
+from argus.protocol import encode_packet, decompress_p1_response
 
 
 HOST = 'localhost'
@@ -96,6 +96,7 @@ def _extract_p1_p2_frames(raw: bytes):
 
             try:
                 msg = json.loads(frame_payload.decode('utf-8'))
+                msg = decompress_p1_response(msg)
                 frames.append(('p1', msg))
             except json.JSONDecodeError:
                 pass  # skip unparseable
@@ -367,7 +368,7 @@ def step_place_multiple_orders(sock: socket.socket, token_id: str) -> tuple[dict
     
     for i, order_result in enumerate(failed_orders):
         error_msg = order_result.get('errorMsg', 'Unknown error')
-        print(f"    Failed [{i+1}]: error={error_msg[:60]}...")
+        print(f"    Failed [{i+1}]: error={error_msg[:5000]}...")
     
     return result, dt
 

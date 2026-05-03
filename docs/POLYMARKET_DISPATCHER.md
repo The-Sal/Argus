@@ -47,6 +47,7 @@ The `PolymarketDispatcher` is a TCP server that exposes Polymarket's CLOB (Centr
   "action": "<command_name>",
   "data": { /* response data or null */ },
   "error": "<error message or null>",
+  "compressed": <bool>,       // true when data is auto-compressed (see below)
   "correlation_id": "<uuid>"  // Included if provided in request
 }
 ```
@@ -57,7 +58,7 @@ The `PolymarketDispatcher` is a TCP server that exposes Polymarket's CLOB (Centr
 - Unknown actions return `InvalidArgumentError`
 - Missing required fields return `InvalidArgumentError`
 - Duplicate `correlation_id` values return `CorrelationIDAlreadySeenError`
-- **Packet size exceeded**: Responses exceeding 9999 bytes will raise `ValueError: Data length exceeds maximum allowed size`. Use pagination for large data (e.g., `fetch_all_tickers`, `get_trades`)
+- **Packet size exceeded**: Responses ≥ **9500 bytes** are automatically compressed with `zlib` (level 9) and base64-encoded. In this case `data` will be a compressed string and `compressed` will be `true`. If the payload is still ≥ 9500 bytes after compression, an error is raised. Use pagination for large data (e.g., `fetch_all_tickers`, `get_trades`)
 
 ---
 
@@ -126,7 +127,8 @@ Subscribe to real-time market data for specific clob_token_ids.
     "subscribed": ["<clob_id_1>", ...],
     "failed": ["<clob_id_x>", ...]
   },
-  "error": null
+  "error": null,
+  "compressed": false
 }
 ```
 
@@ -166,7 +168,8 @@ Unsubscribe from specific clob_ids.
     "unsubscribed": ["<clob_id_1>", ...],
     "failed": ["<clob_id_x>", ...]
   },
-  "error": null
+  "error": null,
+  "compressed": false
 }
 ```
 
@@ -206,7 +209,8 @@ Trigger an on-demand orderbook snapshot for subscribed clob_ids. Data arrives vi
     "successful": ["<clob_id_1>", ...],
     "failed": ["<clob_id_x>", ...]
   },
-  "error": null
+  "error": null,
+  "compressed": false
 }
 ```
 
@@ -574,7 +578,8 @@ Real-time account lifecycle events are pushed to all connected clients that have
     "timestamp": "1770251679393",
     // ... additional order event fields
   },
-  "error": null
+  "error": null,
+  "compressed": false
 }
 ```
 
@@ -599,7 +604,8 @@ Critical errors from the REST API are broadcast to all connected clients.
     "exception": "<error_message>",
     "traceback": "<stack_trace>"
   },
-  "error": "<error_message>"
+  "error": "<error_message>",
+  "compressed": false
 }
 ```
 
@@ -700,7 +706,7 @@ order_req = {
 sock.sendall(encode_packet(json.dumps(order_req).encode()))
 
 # Receive account_update push when order is placed/filled
-# {"action": "account_update", "data": {...}, "error": null}
+# {"action": "account_update", "data": {...}, "error": null, "compressed": false}
 ```
 
 ---

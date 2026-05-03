@@ -4,6 +4,7 @@ import pickle
 import logging
 import threading
 import traceback
+from argus.cache_sys.compatibility import PickleFixer
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class FastCache:
             return {}
         os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
         if os.path.exists(self.cache_file):
+            PickleFixer(self.cache_file).run_diagnostics()
             with open(self.cache_file, 'rb') as f:
                 try:
                     self.cache = pickle.load(f)
@@ -68,7 +70,8 @@ class FastCache:
 
         with self._write_lock:
             self.ensure_loaded()  # Make sure we've loaded before saving
-            os.remove(self._backup_file) if os.path.exists(self._backup_file) else None
+            if os.path.exists(self._backup_file):
+                os.remove(self._backup_file)
             if os.path.exists(self.cache_file):
                 os.rename(self.cache_file, self._backup_file)
 

@@ -14,8 +14,35 @@ Protocol Formats:
 
 """
 
+import json
+import zlib
 import time
+import base64
 from typing import List, Dict, Union
+
+
+def decompress_p1_response(msg: dict) -> dict:
+    """
+    In-place decompression helper for P1 responses from the Polymarket dispatcher.
+
+    The dispatcher may compress large responses (>= 5000 bytes) by replacing
+    ``msg['data']`` with a base64-encoded zlib-compressed JSON string and setting
+    ``msg['compressed']`` to ``True``.  This helper detects that flag, decompresses
+    the payload, and restores the original Python object in ``msg['data']``.
+
+    :param msg: A decoded P1 JSON response dict.
+    :return: The same dict, with ``data`` decompressed when applicable.
+    """
+    if msg.get("compressed") and isinstance(msg.get("data"), str):
+        try:
+            raw = base64.b64decode(msg["data"])
+            decompressed = zlib.decompress(raw)
+            msg["data"] = json.loads(decompressed.decode("utf-8"))
+            msg["compressed"] = False
+        except Exception:
+            # Leave data untouched on failure so the caller fails explicitly.
+            pass
+    return msg
 
 
 # =============================================================================
@@ -46,7 +73,7 @@ def encode_packet(data: bytes) -> bytes:
     """
     data_length = len(data)
     if data_length > 9999:  # Limiting to 9999 for a 4-digit length header
-        raise ValueError("Data length exceeds maximum allowed size. Your data length: {}".format(data_length))
+        raise ValueError("Data length exceeds maximum allowed size. Your data length: {}\nPacket='{}'".format(data_length, data))
     return f"~{data_length:04d}|".encode('ascii') + data
 
 

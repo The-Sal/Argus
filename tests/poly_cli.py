@@ -19,8 +19,9 @@ import json
 import time
 import socket
 import statistics
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Any
 from datetime import datetime
+from argus.protocol import decompress_p1_response
 
 
 # =============================================================================
@@ -163,7 +164,7 @@ class P2PacketParser:
             raise ValueError(f"Field count mismatch: expected {len(self.decoding_order)} values, got {len(values)}")
         
         # Build result dictionary
-        result: Dict[str, any] = {'symbol': symbol}
+        result: Dict[str, Any] = {'symbol': symbol}
         for i, field_name in enumerate(self.decoding_order):
             result[field_name] = values[i]
         
@@ -288,6 +289,7 @@ class ArgusClient:
             elapsed = time.perf_counter() - t0
             payload = raw[header_len:needed]
             response = json.loads(payload.decode('utf-8'))
+            response = decompress_p1_response(response)
             return response, elapsed
         finally:
             self.socket.settimeout(old_timeout)
@@ -298,7 +300,14 @@ class ArgusClient:
         if resp.get('error'):
             raise Exception(f"Ping failed: {resp['error']}")
         return str(resp.get('data', '')), dt
-    
+
+    def get_version(self) -> Tuple[str, float]:
+        """Get the Argus dispatcher version."""
+        resp, dt = self.send_request('version')
+        if resp.get('error'):
+            raise Exception(f"Get version failed: {resp['error']}")
+        return str(resp.get('data', '')), dt
+
     def get_balance(self) -> Tuple[float, float]:
         """Get account balance."""
         resp, dt = self.send_request('get_balance')
@@ -949,10 +958,12 @@ def subscribe_clob_latency_mode(client: ArgusClient, clob_id: str):
 # Interactive CLI Interface
 # =============================================================================
 
-def print_banner():
+def print_banner(version: str = ""):
     """Print welcome banner."""
     print("\n" + "="*50)
     print("  Argus Polymarket Interactive CLI")
+    if version:
+        print(f"  Server Argus Version: {version}")
     print("  Type 'help' for commands, 'quit' to exit")
     print("="*50 + "\n")
 
@@ -992,7 +1003,11 @@ def print_help():
 
 def interactive_loop(client: ArgusClient):
     """Main interactive loop."""
-    print_banner()
+    try:
+        version, _ = client.get_version()
+    except Exception as e:
+        version = f"unavailable ({e})"
+    print_banner(version=version)
     
     while True:
         try:

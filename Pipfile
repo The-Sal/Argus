@@ -4,7 +4,6 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-py_order_utils = "*"
 tqdm = "~=4.66.6"
 websocket-client = "~=1.8.0"
 python-dotenv = "~=1.2.2"
@@ -15,8 +14,7 @@ websockets = "~=12.0"
 requests = "~=2.33.0"
 termcolor = "*"
 python-socks = "~=2.8.0"
-py-clob-client = "*"
-py-order-utils = "*"
+py-clob-client-v2 = "*"
 utils3 = {git = "https://github.com/the-sal/utils3"}
 httpx = {extras = ["socks"], version = "*"}
 
