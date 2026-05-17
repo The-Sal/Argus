@@ -163,11 +163,16 @@ class PolyRestAPI:
         if os.environ.get("POLYMARKET_NO_SAFETY_CHECK", "false") != "true":
             self.ip_safety_check()
 
+        sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "3"))
+
+        if sig_type not in [1, 3]:
+            raise ValueError("Invalid signature type specified in POLYMARKET_SIGNATURE_TYPE environment variable. Must be '1' or '3'.")
+
         self.clob = ClobClient(
             host,
             key=private_key,
             chain_id=chain_id,
-            signature_type=1,
+            signature_type=sig_type,
             funder=proxy_funder,
         )
         self.clob.set_api_creds(self._create_or_derive_api_key())

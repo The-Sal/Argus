@@ -191,7 +191,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             os.environ.get("POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL", 300)
         )
         self._market_api_limit = 150  # Max markets per API call
-        self._max_seen_markets = 6000  # Typical polymarket size
+        self._max_seen_markets = 10100  # Typical polymarket size
 
         # Make sure we have markets ready to serve
         self._update_markets_cache(

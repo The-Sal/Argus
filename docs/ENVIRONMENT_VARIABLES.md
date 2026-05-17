@@ -117,14 +117,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket_direct/rest.py`
 - **Behavior**: When `true`, triggers fuss notifications and macOS notifications for user account events received via WebSocket
 
-### `POLYMARKET_RAPID_ORDER_BUILD`
-- **Purpose**: Enable rapid order builder that reduces order placement latency by ~50%
-- **Default**: `false`
-- **Required**: No
-- **Used in**: `polymarket_direct/rest.py`
-- **Behavior**: When `true`, uses parallel API calls and bypasses SDK overhead for faster order building. Fetches tick_size and fee_rate concurrently via thread pool instead of sequentially
-- **Performance**: Reduces "building order" phase from ~0.23s to ~0.11s (~52% faster)
-- **Warning**: A warning is logged when enabled to alert users of potential risks if assumptions about tick size/fee rate are violated
+
 
 
 ### POLYMARKET_UNSAFE_RAPID_CONNECTIONS
@@ -135,6 +128,44 @@ This document lists all environment variables used throughout the Argus project 
 - **Behavior**: When `true`, all connections to Polymarket that do not require authenticationa are made directly without routing through WireProxy. These include changes across the rest and websocket layer of the dispatcher. This feature is not stable and its behavior maybe changed with future updates (i.e., supporting more 'usafe' connections. This works in tangent with WIREPROXY integration (and only makes sense if you are geo-blocked from placing orders). It selectively punches holes in the connections.
 - **Warning**: Enabling this in a geo-blocked region will result in connection failures. Use with caution and only if you are sure your IP is not blocked for market data access.
 
+
+### `POLYMARKET_SIGNATURE_TYPE`
+- **Purpose**: Signature type for CLOB client authentication
+- **Default**: `3`
+- **Required**: No
+- **Used in**: `polymarket_direct/rest.py`
+- **Behavior**: Sets the signature type when creating the CLOB client. Must be `1` or `3`. Value `3` is the newer signature format.
+- **Note**: If an invalid value is provided, the application will raise a `ValueError` at startup
+
+### WebSocket Sharding Configuration
+
+### `POLYMARKET_MAX_ASSETS_PER_WS`
+- **Purpose**: Maximum number of assets (markets) to assign per WebSocket shard
+- **Default**: `4`
+- **Required**: No
+- **Used in**: `polymarket_direct/wss.py`
+- **Behavior**: Controls how many markets are subscribed per WebSocket connection when using the sharded orderbook store
+
+### `POLYMARKET_MIN_SHARDS`
+- **Purpose**: Minimum number of WebSocket shards to maintain
+- **Default**: `1`
+- **Required**: No
+- **Used in**: `polymarket_direct/wss.py`
+- **Behavior**: Sets the floor for shard count. Will be corrected to `1` if set to `0` or lower
+
+### `POLYMARKET_MAX_SHARDS`
+- **Purpose**: Maximum number of WebSocket shards to create
+- **Default**: `10`
+- **Required**: No
+- **Used in**: `polymarket_direct/wss.py`
+- **Behavior**: Sets the ceiling for shard count. Automatically adjusted to be at least `_min_shards` if configured lower
+
+### `POLYMARKET_SCALE_DOWN_IDLE_S`
+- **Purpose**: Idle time in seconds before a shard is eligible for scale-down
+- **Default**: `30`
+- **Required**: No
+- **Used in**: `polymarket_direct/wss.py`
+- **Behavior**: Shards that have been idle (no activity) for this duration enter a grace window before being closed. Uses monotonic time to avoid clock skew issues
 
 ### `MAX_SEEN_CORRELATION_IDS`
 - **Purpose**: Maximum number of seen correlation IDs to track for duplicate detection
