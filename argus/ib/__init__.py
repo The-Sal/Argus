@@ -894,12 +894,20 @@ class MKTDispatcher:
             # print(f"Already streaming market data for contract ID {conid}. Adding client to existing stream.")
             self.con_id_to_client[conid].append(client)
             return
+        # Register client BEFORE subscribing: IBKR can reply to smd immediately
+        # on the WS thread, so callback must find the client already present or
+        # it will see an empty list and try to unsubscribe a protected asset.
+        try:
+            self.con_id_to_client[conid].append(client)
+        except KeyError:
+            self.con_id_to_client[conid] = [client]
+
         try:
             self.ws.stream_market_data(conid, self.callback)
         except ValueError:
-            # self._force_check_clients_live(one_alloc=True)
-            # self.ws.stream_market_data(conid, self.callback)
-            # self._quick_add(symbol, client, _retry=False)
+            self.con_id_to_client[conid].remove(client)
+            if not self.con_id_to_client[conid]:
+                del self.con_id_to_client[conid]
             raise
 
         if top_hit is None:
@@ -907,11 +915,6 @@ class MKTDispatcher:
             shortable_shares_num = self.shortable_shares_data.get_shortable_shares_by_conid(conid)
         else:
             shortable_shares_num = self.shortable_shares_data.get_shortable_shares(top_hit.symbol)
-
-        try:
-            self.con_id_to_client[conid].append(client)
-        except KeyError:
-            self.con_id_to_client[conid] = [client]
 
         # Force update the cache with the shortable shares by sending MarketData with the shortable shares
         # IBKR will never send the shortable shares in the market data stream, so we need to do it manually.

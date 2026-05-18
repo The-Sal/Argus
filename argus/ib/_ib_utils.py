@@ -46,6 +46,14 @@ def enforce_currency(value, raise_on_fail=True, fallback=0.0) -> float:
             value = value[1:]
         # remove any leading or trailing non-numeric characters
         value = value.strip().lstrip('$').rstrip('USD').strip()
+        if "K" in value:
+            value = value.replace("K", "")
+            try:
+                float_value = float(value)*1000
+                value = float_value
+            except ValueError:
+                pass
+
         try:
             return float(value)
         except ValueError:
