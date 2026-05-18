@@ -165,8 +165,8 @@ class PolyRestAPI:
 
         sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "3"))
 
-        if sig_type not in [1, 3]:
-            raise ValueError("Invalid signature type specified in POLYMARKET_SIGNATURE_TYPE environment variable. Must be '1' or '3'.")
+        if sig_type not in [1, 2, 3]:
+            raise ValueError("Invalid signature type specified in POLYMARKET_SIGNATURE_TYPE environment variable. Must 1,2,3.")
 
         self.clob = ClobClient(
             host,
@@ -284,11 +284,11 @@ class PolyRestAPI:
         logging.info("Geo-block check response: %s", data)
         return data.get("blocked", False)
 
-    @REST_CACHE.cache_decorator(
-        func_uuid="create_or_derive_api_key",
-        expiration=60 * 60 * 24,
-        should_cache_function=lambda x: x is not None,
-    )
+    # @REST_CACHE.cache_decorator(
+    #     func_uuid="create_or_derive_api_key",
+    #     expiration=60 * 60 * 24,
+    #     should_cache_function=lambda x: x is not None,
+    # )
     def _create_or_derive_api_key(self):
         response = self.clob.create_or_derive_api_key()
         return response
