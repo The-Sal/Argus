@@ -24,6 +24,7 @@ import json
 import time
 import tqdm
 import zlib
+import atexit
 import base64
 import socket
 import difflib
@@ -171,6 +172,18 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             profiler.display_table(BIND_ADDRESS, profile_proxy)
 
         self._market_cache_lock = threading.Lock()
+
+        # Persistent thread pool reused by _handle_place_multiple_orders.
+        # The previous implementation built a fresh ThreadPoolExecutor per call,
+        # paying ~5-10 ms of thread-spawn overhead each invocation (and more under
+        # python 3.14t). With this pool, build_order calls execute on long-lived
+        # workers — under 3.14t the work also runs truly in parallel since the
+        # sign path is CPU-bound.
+        self._build_pool = ThreadPoolExecutor(
+            max_workers=int(os.environ.get("POLYMARKET_BUILD_POOL_WORKERS", "10")),
+            thread_name_prefix="PolyOrderBuildPool",
+        )
+        atexit.register(self._build_pool.shutdown, wait=False)
 
         self._routing_helper = RoutingHelper()
         # str is 'ticker' for Polymarket
@@ -853,6 +866,53 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         self.market_data.unsubscribe_from_asset_id(clob_id)
 
+    def _warm_clob_caches_for_subscribed_asset(self, clob_id: str) -> None:
+        """
+        Pre-populate py-clob-client-v2's per-token caches (tick_size, neg_risk,
+        condition_id) from data already present in _all_markets_cache. This avoids
+        the GET /tick-size HTTP round-trip that would otherwise fire on the first
+        build_order for this token (see PolyRestAPI.warm_clob_caches_for_token).
+
+        Best-effort: if the market is not yet in cache, or the tick_size field is
+        missing, we silently skip — the order build path will fall back to its
+        normal (slower) HTTP fetch.
+        """
+        with self._market_cache_lock:
+            ticker_market_index = self._asset_id_to_ticker.get(clob_id)
+            if ticker_market_index is None:
+                return
+            ticker, market_index = ticker_market_index
+            event = self._all_markets_cache.get(ticker)
+
+        if event is None or not event.markets or market_index >= len(event.markets):
+            return
+
+        market = event.markets[market_index]
+        tick_size = market.orderPriceMinTickSize
+        if tick_size is None:
+            return
+
+        # py-clob's ROUNDING_CONFIG is keyed on the strings "0.1" / "0.01" / "0.001" /
+        # "0.0001"; format with :g to drop trailing zeros and avoid scientific notation
+        # for the supported range.
+        tick_size_str = format(float(tick_size), "g")
+
+        neg_risk = event.negRisk if event.negRisk is not None else market.negRisk
+        condition_id = market.conditionId
+
+        try:
+            self.rest_api.warm_clob_caches_for_token(
+                token_id=clob_id,
+                tick_size=tick_size_str,
+                neg_risk=bool(neg_risk),
+                condition_id=condition_id,
+            )
+        except Exception as e:
+            # Warming is purely an optimization — never let it fail the subscribe.
+            print_with_name(
+                "warm_clob_caches_for_token failed for {}: {}".format(clob_id, e)
+            )
+
     def _handle_subscribe(self, args_obj: ArgsObject):
         """
         Handle subscription request from a client.
@@ -868,6 +928,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             try:
                 self.add_socket_to_subscription(sock, clob_id)
                 self.market_data.subscribe_to_asset_id(clob_id)
+                # Pre-warm py-clob's internal caches so the next build_order for this
+                # token skips its tick_size HTTP fetch.
+                self._warm_clob_caches_for_subscribed_asset(clob_id)
                 subscribed.append(clob_id)
             except Exception as e:
                 failed.append(clob_id)
@@ -1627,36 +1690,37 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         start_time = time.time()
         _tick("_handle_place_multiple_orders", "after_start_time")
-        with ThreadPoolExecutor(max_workers=min(len(order_specs), 10)) as executor:
-            _tick("_handle_place_multiple_orders", "after_threadpool_init")
-            future_to_order = {
-                executor.submit(
-                    self.rest_api.build_order,
-                    spec["token_id"],
-                    spec["market"],
-                    spec["price"],
-                    spec["size"],
-                    spec["side"],
-                    tick_size=spec["tick_size"],
-                ): spec
-                for spec in order_specs
-            }
-            _tick("_handle_place_multiple_orders", "after_submit_futures")
+        # Reuse the dispatcher's persistent build pool — see __init__ for the
+        # rationale. We deliberately do NOT wrap this in a `with` block, since the
+        # pool is shared across calls and owned by the dispatcher.
+        future_to_order = {
+            self._build_pool.submit(
+                self.rest_api.build_order,
+                spec["token_id"],
+                spec["market"],
+                spec["price"],
+                spec["size"],
+                spec["side"],
+                tick_size=spec["tick_size"],
+            ): spec
+            for spec in order_specs
+        }
+        _tick("_handle_place_multiple_orders", "after_submit_futures")
 
-            for future in as_completed(future_to_order):
-                _tick("_handle_place_multiple_orders", "future_loop_start")
-                spec = future_to_order[future]
-                _tick("_handle_place_multiple_orders", "after_get_spec")
-                try:
-                    _tick("_handle_place_multiple_orders", "before_future_result")
-                    signed_order = future.result()
-                    _tick("_handle_place_multiple_orders", "after_future_result")
-                    built_orders.append(signed_order)
-                    _tick("_handle_place_multiple_orders", "after_append_built_order")
-                except Exception as e:
-                    _tick("_handle_place_multiple_orders", "exception_caught")
-                    build_errors.append({"token_id": spec["token_id"], "error": str(e)})
-                    _tick("_handle_place_multiple_orders", "after_append_build_error")
+        for future in as_completed(future_to_order):
+            _tick("_handle_place_multiple_orders", "future_loop_start")
+            spec = future_to_order[future]
+            _tick("_handle_place_multiple_orders", "after_get_spec")
+            try:
+                _tick("_handle_place_multiple_orders", "before_future_result")
+                signed_order = future.result()
+                _tick("_handle_place_multiple_orders", "after_future_result")
+                built_orders.append(signed_order)
+                _tick("_handle_place_multiple_orders", "after_append_built_order")
+            except Exception as e:
+                _tick("_handle_place_multiple_orders", "exception_caught")
+                build_errors.append({"token_id": spec["token_id"], "error": str(e)})
+                _tick("_handle_place_multiple_orders", "after_append_build_error")
         _tick("_handle_place_multiple_orders", "after_threadpool_done")
 
         if build_errors:

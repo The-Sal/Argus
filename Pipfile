@@ -17,6 +17,7 @@ python-socks = "~=2.8.0"
 py-clob-client-v2 = "*"
 utils3 = {git = "https://github.com/the-sal/utils3"}
 httpx = {extras = ["socks"], version = "*"}
+coincurve = "*"
 
 [dev-packages]
 

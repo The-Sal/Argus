@@ -350,6 +350,40 @@ class PolyRestAPI:
         tick_size = self.clob.get_tick_size(token_id)
         return tick_size
 
+    def warm_clob_caches_for_token(
+        self,
+        token_id: str,
+        tick_size: str,
+        neg_risk: bool,
+        condition_id: str | None = None,
+    ) -> None:
+        """
+        Pre-populate py-clob-client-v2's internal per-token caches so that the next
+        build_order for this token does NOT trigger an HTTP call inside
+        __resolve_tick_size / get_neg_risk / __ensure_market_info_cached.
+
+        py-clob keeps its own __tick_sizes / __neg_risk / __token_condition_map dicts that
+        are name-mangled and not shared with Argus's WSS-side cache. On a cold cache, the
+        very first build_order for a token issues a GET /tick-size (and potentially
+        /neg-risk and /markets-by-token) — adding ~100-300 ms of network latency per
+        token. By writing the values we already know directly into those dicts on
+        subscribe, the hot path becomes pure CPU.
+
+        :param token_id: The asset_id / CLOB id to warm.
+        :param tick_size: One of the ROUNDING_CONFIG keys ("0.1", "0.01", "0.001", "0.0001").
+        :param neg_risk: Whether the parent market is a neg-risk market.
+        :param condition_id: Optional condition id; populates __token_condition_map so
+            __ensure_market_info_cached can skip its GET /markets-by-token call too.
+        """
+        # Name-mangled attribute access — these are the private dicts inside ClobClient.
+        # noinspection all
+        self.clob._ClobClient__tick_sizes[token_id] = str(tick_size)
+        # noinspection all
+        self.clob._ClobClient__neg_risk[token_id] = bool(neg_risk)
+        if condition_id:
+            # noinspection all
+            self.clob._ClobClient__token_condition_map[token_id] = str(condition_id)
+
     @fatal_decorator("place_order")
     def place_order(
         self,
