@@ -223,7 +223,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         with open(self._log_file, "a") as f:
             f.write(
-                f"\n\n--- PolymarketDispatcher started at {datetime.now().isoformat()} ---\n"
+                f"\n\n--- PolymarketDispatcher(argus=v{ARGUS_VERSION}) started at {datetime.now().isoformat()} ---\n"
             )
 
         self._log_file_lock = threading.Lock()
