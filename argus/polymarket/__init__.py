@@ -770,9 +770,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     #######################################
     # MAIN CLIENT MESSAGE HANDLER
     #######################################
-    def _handle_client_message(
-            self, sock: socket.socket, address: tuple[str, int], content: dict
-    ):
+    def _handle_client_message(self, sock: socket.socket, address: tuple[str, int], content: dict):
 
         def _inline_timer(result):
             if self._configs["show response times"]:
@@ -794,6 +792,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 "unsubscribe": self._handle_unsubscribe,
                 "unsubscribe_from_market_by_ticker": self._handle_unsubscribe_from_market_by_ticker,
                 "orderbook_snapshot": self._handle_orderbook_snapshot,
+                # "chainlink_rtds_subscribe": self._handle_chainlink_rtds_subscribe,
+                # "chainlink_rtds_subscribe": self._handle_chainlink_rtds_unsubscribe,
                 # Market Data Requests
                 "fetch_all_markets": self._handle_fetch_all_markets,
                 "fetch_all_tickers": self._handle_fetch_all_markets_ticker,
@@ -1167,6 +1167,21 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 traceback.print_exc()
 
         return {"successful": successful, "failed": failed}
+
+
+    def _handle_chainlink_rtds_subscribe(self, args_obj: ArgsObject):
+        """
+        Subscribe to a chainlink data feed
+        """
+        pass
+
+    
+    def _handle_chainlink_rtds_unsubscribe(self, args_obj: ArgsObject):
+        """
+        unsubscribe to a chainlink data feed
+        """
+        pass
+ 
 
     def _fetch_clob_id_information(self, args_obj: ArgsObject):
         """

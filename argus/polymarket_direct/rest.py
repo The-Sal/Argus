@@ -284,11 +284,13 @@ class PolyRestAPI:
         logging.info("Geo-block check response: %s", data)
         return data.get("blocked", False)
 
-    # @REST_CACHE.cache_decorator(
-    #     func_uuid="create_or_derive_api_key",
-    #     expiration=60 * 60 * 24,
-    #     should_cache_function=lambda x: x is not None,
-    # )
+    # What even is the point of caching this value?
+    # historically it was but now not anymore this is because
+    # .env can change and the cache only update after like
+    # however long since the fn's args and kwargs are not
+    # exposed to the actual keys and stuff so there will
+    # never be a cache miss. Maybe future version changes
+    # this
     def _create_or_derive_api_key(self):
         response = self.clob.create_or_derive_api_key()
         return response
