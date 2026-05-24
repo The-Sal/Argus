@@ -44,7 +44,8 @@ ATTRS = [
     'active',
     'closed',
     'negRisk',
-    'orderPriceMinTickSize'
+    'orderPriceMinTickSize',
+    'conditionId',
 ]
 
 ALL_READ_ATTRIBUTES =  ATTRS
