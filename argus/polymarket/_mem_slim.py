@@ -43,7 +43,8 @@ ATTRS = [
     'resolutionSource',
     'active',
     'closed',
-    'negRisk'
+    'negRisk',
+    'orderPriceMinTickSize'
 ]
 
 ALL_READ_ATTRIBUTES =  ATTRS
