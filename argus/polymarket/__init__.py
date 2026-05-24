@@ -1761,6 +1761,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             raise OrderExecutionDisabledError(
                 "Order execution is currently blocked by server configuration."
             )
+        build_end_time = time.time()
         result = self.rest_api.place_built_orders(built_orders)
         _tick("_handle_place_multiple_orders", "after_place_built_orders")
         logging.info(
@@ -1775,7 +1776,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 {
                     "event": "place_multiple_orders",
                     "num_orders": len(built_orders),
-                    "build_time_seconds": time.time() - start_time,
+                    "build_time_seconds": build_end_time - start_time,
                     "place_time_seconds": time.time() - time_two,
                     "result": result,
                 }
