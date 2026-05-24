@@ -996,6 +996,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 try:
                     self.add_socket_to_subscription(sock, clob_id)
                     self.market_data.subscribe_to_asset_id(clob_id)
+                    # Pre-warm py-clob's internal caches so the next build_order for this
+                    # token skips its tick_size HTTP fetch.
+                    self._warm_clob_caches_for_subscribed_asset(clob_id)
                     subscribed.append(clob_id)
                 except Exception as e:
                     failed.append(clob_id)
@@ -1576,11 +1579,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
              'status': 'live', 'success': True}
         """
 
-        if self._configs["Block Order Execution"]:
-            raise OrderExecutionDisabledError(
-                "Order execution is currently blocked by server configuration."
-            )
-
         args = args_obj.args
         token_id = args.get("token_id", None)
         if token_id is None:
@@ -1600,6 +1598,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         market = self._resolve_market_from_token_id(token_id)
         tick_size = self.market_data.get_tick_size(asset_id=token_id)
+
+        if self._configs["Block Order Execution"]:
+            raise OrderExecutionDisabledError(
+                "Order execution is currently blocked by server configuration."
+            )
 
         result = self.rest_api.place_order(
             token_id=token_id,
@@ -1630,10 +1633,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         _tick("_handle_place_multiple_orders", "start")
 
-        if self._configs["Block Order Execution"]:
-            raise OrderExecutionDisabledError(
-                "Order execution is currently blocked by server configuration."
-            )
         _tick("_handle_place_multiple_orders", "after_block_check")
 
         args = args_obj.args
@@ -1758,6 +1757,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         time_two = time.time()
         _tick("_handle_place_multiple_orders", "before_place_built_orders")
         print_with_name("Submitting orders at:", time.time_ns())
+        if self._configs["Block Order Execution"]:
+            raise OrderExecutionDisabledError(
+                "Order execution is currently blocked by server configuration."
+            )
         result = self.rest_api.place_built_orders(built_orders)
         _tick("_handle_place_multiple_orders", "after_place_built_orders")
         logging.info(

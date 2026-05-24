@@ -114,13 +114,13 @@ class PolyRestAPI:
     """
 
     def __init__(
-        self,
-        private_key,
-        proxy_funder,
-        host="https://clob.polymarket.com",
-        chain_id=137,
-        divisor=1_000_000,
-        fatal_callback=None,
+            self,
+            private_key,
+            proxy_funder,
+            host="https://clob.polymarket.com",
+            chain_id=137,
+            divisor=1_000_000,
+            fatal_callback=None,
     ):
         """
         Initialize the Polymarket REST API client.
@@ -151,8 +151,8 @@ class PolyRestAPI:
         wp_wrappers.update_request_session_proxy(idx="POLYMARKET", session=self.session)
 
         if (
-            not os.environ.get("POLYMARKET_UNSAFE_RAPID_CONNECTIONS", "false")
-            == "false"
+                not os.environ.get("POLYMARKET_UNSAFE_RAPID_CONNECTIONS", "false")
+                    == "false"
         ):
             # Escape wrapping
             self.raw_session = requests.Session()
@@ -166,7 +166,8 @@ class PolyRestAPI:
         sig_type = int(os.environ.get("POLYMARKET_SIGNATURE_TYPE", "3"))
 
         if sig_type not in [1, 2, 3]:
-            raise ValueError("Invalid signature type specified in POLYMARKET_SIGNATURE_TYPE environment variable. Must 1,2,3.")
+            raise ValueError(
+                "Invalid signature type specified in POLYMARKET_SIGNATURE_TYPE environment variable. Must 1,2,3.")
 
         self.clob = ClobClient(
             host,
@@ -176,14 +177,15 @@ class PolyRestAPI:
             funder=proxy_funder,
         )
         self.clob.set_api_creds(self._create_or_derive_api_key())
-        self.clob.get_version()  # pre-warm version cache for v2
+
+        # noinspection all
+        self.clob._ClobClient__resolve_version()  # Force a version check
         self._div = divisor
 
         self._order_cache = {"orders": []}
 
         self.fatal_callback = fatal_callback
         if self.fatal_callback is None:
-
             def default_fatal_callback(info: dict):
                 print(
                     colored(
@@ -284,13 +286,11 @@ class PolyRestAPI:
         logging.info("Geo-block check response: %s", data)
         return data.get("blocked", False)
 
-    # What even is the point of caching this value?
-    # historically it was but now not anymore this is because
-    # .env can change and the cache only update after like
-    # however long since the fn's args and kwargs are not
-    # exposed to the actual keys and stuff so there will
-    # never be a cache miss. Maybe future version changes
-    # this
+    @REST_CACHE.cache_decorator(
+        func_uuid='_create_or_derive_api_key',
+        expiration=60 * 60 * 1,
+        should_cache_function=lambda x: x is not None
+    )
     def _create_or_derive_api_key(self):
         response = self.clob.create_or_derive_api_key()
         return response
@@ -316,7 +316,7 @@ class PolyRestAPI:
     ###########################################
 
     def fetch_events(
-        self, offset=0, limit=20, debug_raw_callback=None
+            self, offset=0, limit=20, debug_raw_callback=None
     ) -> list[pm_types.PolymarketEvent]:
         url = endpoints["events"].format(limit, offset)
         response = self.raw_session.get(url)
@@ -353,11 +353,11 @@ class PolyRestAPI:
         return tick_size
 
     def warm_clob_caches_for_token(
-        self,
-        token_id: str,
-        tick_size: str,
-        neg_risk: bool,
-        condition_id: str | None = None,
+            self,
+            token_id: str,
+            tick_size: str,
+            neg_risk: bool,
+            condition_id: str | None = None,
     ) -> None:
         """
         Pre-populate py-clob-client-v2's internal per-token caches so that the next
@@ -388,14 +388,14 @@ class PolyRestAPI:
 
     @fatal_decorator("place_order")
     def place_order(
-        self,
-        token_id: str,
-        market: pm_types.PolymarketEvent,
-        price: float,
-        size: float,
-        side: str,
-        order_type: OrderType = OrderType.GTC,
-        tick_size: float = None,
+            self,
+            token_id: str,
+            market: pm_types.PolymarketEvent,
+            price: float,
+            size: float,
+            side: str,
+            order_type: OrderType = OrderType.GTC,
+            tick_size: float = None,
     ) -> dict:
         """
         Place an order on the Polymarket CLOB.
@@ -462,7 +462,7 @@ class PolyRestAPI:
 
     @fatal_decorator("place_built_orders")
     def place_built_orders(
-        self, orders: list[SignedOrder], order_type: OrderType = OrderType.GTC
+            self, orders: list[SignedOrder], order_type: OrderType = OrderType.GTC
     ) -> dict:
         """
         Place already built and signed orders on the Polymarket CLOB.
@@ -551,13 +551,13 @@ class PolyRestAPI:
 
     @fatal_decorator("build_order")
     def build_order(
-        self,
-        token_id: str,
-        market: pm_types.PolymarketEvent,
-        price: float,
-        size: float,
-        side: str,
-        tick_size: float = None,
+            self,
+            token_id: str,
+            market: pm_types.PolymarketEvent,
+            price: float,
+            size: float,
+            side: str,
+            tick_size: float = None,
     ) -> SignedOrder:
         _tick("build_order", "start")
         if tick_size is None:
