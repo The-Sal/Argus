@@ -70,16 +70,20 @@ class P2ConvertClass:
     """
 
     def __init__(self, ticker: str, market_slug: str,
-                 asset_id: str, market_data: dict, order_book_depth: int):
+                 asset_id: str, market_data: dict, order_book_depth: int, forced_symbol: str = ""):
         self.ticker = ticker
         self.market_slug = market_slug
         self.asset_id = asset_id
         self.market_data = market_data
         self.order_book_depth = order_book_depth
+        self.forced_symbol = forced_symbol
 
     @property
     def symbol(self) -> str:
-        return f"{self.ticker}-{self.market_slug}-{self.asset_id}"
+        if self.forced_symbol != "":
+            return self.forced_symbol
+        else:
+            return f"{self.ticker}-{self.market_slug}-{self.asset_id}"
 
     def transferable_2(self) -> bool:
         data_obj = self.market_data.get(self.asset_id, {})

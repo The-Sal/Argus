@@ -221,6 +221,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             os.path.expanduser("~/.argus/polymarket_dispatcher.log"),
         )
 
+        self.rtds_magic_asset_id = "RTDS_MAGIC_ID"
+        self.real_time_data = wss.PolymarketRTDSWss(
+            on_msg_callback=self._rtd_callback,
+            book_depth=self._orderbook_depth
+        )
+
+        self.real_time_data.start()
+
         with open(self._log_file, "a") as f:
             f.write(
                 f"\n\n--- PolymarketDispatcher(argus=v{ARGUS_VERSION}) started at {datetime.now().isoformat()} ---\n"
@@ -567,7 +575,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         clients_to_send = []
         with self._lock:
             if asset_id in self._market_data_routing_table:
-                clients_to_send = self._market_data_routing_table[asset_id]
+                clients_to_send = list(self._market_data_routing_table[asset_id])
 
         # If no clients are subscribed (e.g. last client disconnected between the
         # routing table read and this point), bail out early.  Continuing would
@@ -631,6 +639,41 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if recv_ts:
             self._latency_samples.append((time.perf_counter() - recv_ts) * 1000)
 
+    def _rtd_callback(self, object: P2ConvertClass):
+        """
+        The callback should get P2 classes from the RTDS already populated now its just about
+        finding out who to cast to and blast
+        """
+        clients_to_send = []
+        with self._lock:
+            if self.rtds_magic_asset_id in self._market_data_routing_table:
+                clients_to_send = list(self._market_data_routing_table[self.rtds_magic_asset_id])
+
+        p2_packet = transmit_mkt_data_with_protocol_2(object)
+
+        # Print P2 packets if config is enabled
+        if self._configs.get("Print P2 packets", False):
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            if self._configs.get("Show packet timestamps", True):
+                print(f"[{timestamp}] → ({len(p2_packet)} bytes): {p2_packet!r}")
+            else:
+                print(f"P2 Packet ({len(p2_packet)} bytes): {p2_packet!r}")
+
+        for sock in clients_to_send:
+            try:
+                with self.send_lock_for(sock):
+                    sock.sendall(p2_packet)
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                self.remove_socket(sock)
+                print_with_name("Removed dead socket while sending market data for: ",
+                                 object, "socket:", sock)
+            except Exception as e:
+                self.remove_socket(sock)
+                print_with_name("Unexpected error sending market data for: ",
+                                 object, "socket:", sock, "error:", e)
+                traceback.print_exc()
+        # this is not considered a WS-arrival so it will not count towards latency samples        
+    
     def print_latency_stats(self):
         """Print WS-arrival → sock.sendall propagation latency percentiles (market data only)."""
         samples = sorted(self._latency_samples)
@@ -792,8 +835,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 "unsubscribe": self._handle_unsubscribe,
                 "unsubscribe_from_market_by_ticker": self._handle_unsubscribe_from_market_by_ticker,
                 "orderbook_snapshot": self._handle_orderbook_snapshot,
-                # "chainlink_rtds_subscribe": self._handle_chainlink_rtds_subscribe,
-                # "chainlink_rtds_subscribe": self._handle_chainlink_rtds_unsubscribe,
+                "rtds_subscribe": self._handle_rtds_subscribe,
+                "rtds_unsubscribe": self._handle_rtds_unsubscribe,
                 # Market Data Requests
                 "fetch_all_markets": self._handle_fetch_all_markets,
                 "fetch_all_tickers": self._handle_fetch_all_markets_ticker,
@@ -864,6 +907,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param clob_id:
         :return:
         """
+        if clob_id == self.rtds_magic_asset_id:
+            return
         self.market_data.unsubscribe_from_asset_id(clob_id)
 
     def _warm_clob_caches_for_subscribed_asset(self, clob_id: str) -> None:
@@ -1049,6 +1094,37 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         return {"unsubscribed": unsubscribed, "failed": failed}
 
+    def _handle_rtds_subscribe(self, args_obj: ArgsObject):
+        """
+        Subscribe a client socket to RTDS (Real-Time Data Streams).
+        :param args_obj: ArgsObject containing the socket.
+        :return:
+        """
+        sock = args_obj.sock
+        self.add_socket(sock)
+        try:
+            self.add_socket_to_subscription(sock, self.rtds_magic_asset_id)
+            return {"subscribed": [self.rtds_magic_asset_id], "failed": []}
+        except Exception as e:
+            print_with_name("Error in RTDS subscribe: {}".format(e))
+            traceback.print_exc()
+            return {"subscribed": [], "failed": [str(e)]}
+
+    def _handle_rtds_unsubscribe(self, args_obj: ArgsObject):
+        """
+        Unsubscribe a client socket from RTDS.
+        :param args_obj: ArgsObject containing the socket.
+        :return:
+        """
+        sock = args_obj.sock
+        try:
+            self.remove_socket_from_subscription(sock, self.rtds_magic_asset_id)
+            return {"unsubscribed": [self.rtds_magic_asset_id], "failed": []}
+        except Exception as e:
+            print_with_name("Error in RTDS unsubscribe: {}".format(e))
+            traceback.print_exc()
+            return {"unsubscribed": [], "failed": [str(e)]}
+
     ########################################
     # Market Data Requests
     #########################################
@@ -1171,20 +1247,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         return {"successful": successful, "failed": failed}
 
-
-    def _handle_chainlink_rtds_subscribe(self, args_obj: ArgsObject):
-        """
-        Subscribe to a chainlink data feed
-        """
-        pass
-
-    
-    def _handle_chainlink_rtds_unsubscribe(self, args_obj: ArgsObject):
-        """
-        unsubscribe to a chainlink data feed
-        """
-        pass
- 
 
     def _fetch_clob_id_information(self, args_obj: ArgsObject):
         """
