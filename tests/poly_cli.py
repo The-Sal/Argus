@@ -411,6 +411,20 @@ class ArgusClient:
             raise Exception(f"Unsubscribe failed: {resp['error']}")
         return resp.get('data', {}), dt
     
+    def subscribe_rtds(self) -> Tuple[dict, float]:
+        """Subscribe to real-time data streams (RTDS / crypto prices)."""
+        resp, dt = self.send_request('rtds_subscribe', {})
+        if resp.get('error'):
+            raise Exception(f"RTDS subscribe failed: {resp['error']}")
+        return resp.get('data', {}), dt
+    
+    def unsubscribe_rtds(self) -> Tuple[dict, float]:
+        """Unsubscribe from real-time data streams (RTDS)."""
+        resp, dt = self.send_request('rtds_unsubscribe', {})
+        if resp.get('error'):
+            raise Exception(f"RTDS unsubscribe failed: {resp['error']}")
+        return resp.get('data', {}), dt
+    
     def receive_p2_packets(self, timeout: float = 0.1) -> List[Dict]:
         """Receive and parse P2 packets from the socket."""
         if not self.socket:
@@ -955,6 +969,64 @@ def subscribe_clob_latency_mode(client: ArgusClient, clob_id: str):
 
 
 # =============================================================================
+# RTDS (Real-Time Data Streams) Subscription Mode
+# =============================================================================
+
+def subscribe_rtds_mode(client: ArgusClient):
+    """
+    Subscribe to RTDS (crypto price streams) and display real-time prices.
+    Press Ctrl+C to stop.
+    """
+    packet_count = 0
+    start_time = time.time()
+    
+    print(f"\n📡 Subscribing to RTDS (Real-Time Data Streams)...")
+    try:
+        result, rtt = client.subscribe_rtds()
+        print(f"✓ Subscribed successfully (RTT: {rtt*1000:.1f}ms)")
+        print(f"  Subscribed: {result.get('subscribed', [])}")
+        print(f"  Failed: {result.get('failed', [])}")
+    except Exception as e:
+        print(f"✗ RTDS subscription failed: {e}")
+        return
+    
+    print(f"\n📊 Monitoring crypto prices... Press Ctrl+C to stop.")
+    print(f"\n{'#':<6} {'SYMBOL':<25} {'PRICE':<18} {'RAW PKT SIZE':<15}")
+    print("-" * 70)
+    
+    try:
+        while True:
+            packets = client.receive_p2_packets(timeout=0.1)
+            for packet_data in packets:
+                packet_count += 1
+                symbol = packet_data.get('symbol', 'UNKNOWN')
+                # RTDS packets only populate ask_0_price with the price value
+                price = packet_data.get('ask_0_price', 0)
+                
+                # rebuild approximate raw packet size from decoded dict for context
+                raw_size = len(str(packet_data))
+                
+                print(f"{packet_count:<6} {symbol:<25} {price:<18.6f} {raw_size:<15}")
+    
+    except KeyboardInterrupt:
+        print(f"\n\n🛑 Stopped by user.")
+        
+        # Unsubscribe
+        try:
+            print(f"📡 Unsubscribing from RTDS...")
+            result, _ = client.unsubscribe_rtds()
+            print(f"✓ Unsubscribed successfully")
+        except Exception as e:
+            print(f"⚠ Unsubscribe warning: {e}")
+        
+        duration = time.time() - start_time
+        print(f"\n📈 RTDS Session Summary:")
+        print(f"  Duration: {duration:.1f} seconds")
+        print(f"  Total packets: {packet_count}")
+        print(f"  Packets/sec: {packet_count/duration:.1f}" if duration > 0 else "  N/A")
+
+
+# =============================================================================
 # Interactive CLI Interface
 # =============================================================================
 
@@ -976,6 +1048,7 @@ def print_help():
     print("  info <ticker>              - Show detailed info about specific market")
     print("  clob <clob_id>            - Show info about a CLOB token ID")
     print("  sub <clob_id>             - Subscribe to CLOB and monitor latency (Ctrl+C to stop)")
+    print("  rtds                       - Subscribe to real-time crypto price streams (Ctrl+C to stop)")
     print("  price <ticker>            - Get price to beat for Up/Down markets")
     print("  order                      - Place an order (interactive prompts)")
     print("  orders                     - List all open orders")
@@ -991,6 +1064,7 @@ def print_help():
     print("  info bitcoin-up-or-down-february-10-11-am-et")
     print("  clob 661095475084821930790589425827399710453605787397495798070750303202782280580")
     print("  sub 661095475084821930790589425827399710453605787397495798070750303202782280580")
+    print("  rtds                       # Stream real-time crypto prices")
     print("  price bitcoin-up-or-down-february-10-4pm-et")
     print("  order                      # Interactive order placement")
     print("  orders                     # List open orders")
@@ -1076,6 +1150,8 @@ def interactive_loop(client: ArgusClient):
                     print(f"  Orderbook depth: {ORDERBOOK_DEPTH} levels")
                     continue
                 subscribe_clob_latency_mode(client, clob_id)
+            elif query.lower() == 'rtds':
+                subscribe_rtds_mode(client)
             elif query.lower().startswith('price '):
                 ticker = query[6:].strip()
                 if not ticker:

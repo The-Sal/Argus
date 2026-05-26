@@ -13,10 +13,9 @@ from argus.wireproxy import wrapper as wp_wrappers
 from py_clob_client_v2.endpoints import GET_TICK_SIZE
 from argus.polymarket_direct import _types as pm_types
 from concurrent.futures.thread import ThreadPoolExecutor
+from argus.polymarket._classes import print_with_name, P2ConvertClass
 from argus.polymarket_direct.order_types import OrderEvent, TradeEvent
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
-
-
 
 
 class PolymarketWSSBase:
@@ -169,7 +168,9 @@ class PolymarketWSSBase:
                                 )
 
                             ping_delta = abs(pings - pongs)
-                            if ping_delta > 3:
+                            pct_of_max = ping_delta / self._max_ping_pong_failures * 100
+                            pct_rounded = round(pct_of_max, 2)
+                            if pct_rounded >= 50:
                                 logging.warning(
                                     'No PONG received for last 3 PINGs on %s WebSocket. Maximum delta=%d Current delta=%d',
                                     self._name, self._max_ping_pong_failures, ping_delta)
@@ -266,7 +267,7 @@ class PolyMarketAccountEventWss(PolymarketWSSBase):
 
         # Handle different message types
         msg_type = content.get('type', '').upper()
-        
+
         if msg_type == 'TRADE':
             # Parse TRADE messages into TradeEvent
             try:
@@ -678,7 +679,8 @@ class OrderBookStore:
         # if the future is still running and there is no tick size update from the WSS,
         # wait for the future to complete and update the tick size in the misc info dict
         if future and not future.done() and (not misc_info.get('tick_size')):
-            print(colored('[polymarket wss] Waiting for {} future to complete'.format(asset_id), color='yellow', attrs=['bold', 'blink']))
+            print(colored('[polymarket wss] Waiting for {} future to complete'.format(asset_id), color='yellow',
+                          attrs=['bold', 'blink']))
             try:
                 tick_size = future.result(timeout=timeout)
                 with self._dict_lock:
@@ -817,6 +819,108 @@ class PolyMarketOrderBookConn(PolymarketWSSBase):
 
     def start(self) -> None:
         """Start the WS in a background thread (non-blocking)."""
+        self._start_ws()
+
+
+class PolymarketRTDSWss(PolymarketWSSBase):
+    """
+    A class that sends all the supported crypto prices from polymarket to the clients
+    that request subscription to RDTS. There are only 3-4 assets aavailable on polymarkets
+    both binance and chainlink stream hence why this class just subscribes to all and the
+    value passed into 
+
+    ask[0] = value returned from RTDS
+    ask_size[0-N] = 0
+    bids[0-N] = 0
+    ....
+
+    only ask[0] will have a value and ofc the timestamp. And the symbol will be
+    <source>-<asset> i.e. binance-btusdt or chainlink-btcusdt. Any special values sent
+    by polymarket like eth/usdt will auto convert -> ethust. The same padding guaraentees
+    can be accepted assumed since thats done in P2ConverterClass not here
+
+    """
+
+    def __init__(self, on_msg_callback, book_depth: int):
+        super().__init__(
+            name="Polymarket Real-Time Data Stream",
+            url="wss://ws-live-data.polymarket.com"
+        )
+        self.callback = on_msg_callback
+        self.subscription_msg = {
+            "action": "subscribe",
+            "subscriptions": [
+                {
+                    "topic": "crypto_prices",
+                    "type": "update",
+                },
+                {
+                    "topic": "crypto_prices_chainlink",
+                    "type": "*",
+                    "filters": ""
+                }
+            ]
+        }
+        self.depth = book_depth
+
+        # don't know why, but this connection does not pong
+        # but asks for ping IDK
+        self._max_ping_pong_failures = 100000000
+
+    def _create_ws_app(self):
+        self._ws = WebSocketApp(
+            url=self._url,
+            on_open=self._on_open_base,
+            on_close=self._on_close_base,
+            on_error=self._on_error_base,
+            on_message=self._on_message_base
+        )
+
+    def _on_open_impl(self):
+        self._ws.send_text(json.dumps(self.subscription_msg))
+
+    # even if the ws dies after it re-opens this should be called again
+    # restoring all things
+    def _on_message_impl(self, message: str):
+        try:
+            js_msg = json.loads(message)
+        except json.JSONDecodeError:
+            print_with_name("Unable to decode JSON (RDTS), msg=", message, "size=", len(message))
+            return
+
+        topic = str(js_msg["topic"])
+        payload = js_msg.get("payload", None)
+
+        if payload is None:
+            return
+
+        # below is based on polymarket/_classes.py P2ConverterClass
+
+        market_data = {
+            payload["symbol"]: {
+                "bids": [],
+                "asks": [
+                    {"price": payload["value"], "size": 0.0}
+                ]
+            },
+            "timestamp": payload["timestamp"]
+        }
+
+        if "crypto_prices_chainlink" in topic:
+            forced_symbol = "chainlink-" + payload["symbol"].replace("/", "")
+        else:
+            forced_symbol = "binance-" + payload["symbol"].replace("/", "")
+
+        # we set asset_id = payload[symbol] because `transferable_2` uses it to key out
+        # the market data from the market_data dict which we keyd with payload[symbol]
+        # The others are over-ridden with forced_symbol
+        p2_class = P2ConvertClass(ticker="", market_slug="", asset_id=payload["symbol"], market_data=market_data,
+                                  order_book_depth=self.depth, forced_symbol=forced_symbol)
+
+        self.callback(p2_class)
+
+    def start(self):
+        """Start the RTDS (non-blocking)"""
         self._start_ws()
 
 
@@ -1046,6 +1150,7 @@ class PolyMarketOrderBookPool:
 if __name__ == '__main__':
     _HIDDEN_ASSET_ID = '661095475084821930790589425827399710453605787397495798070750303202782280580'
 
+
     def ev(x):
         print('---ORDER BOOK UPDATE---')
         print(x)
@@ -1055,6 +1160,7 @@ if __name__ == '__main__':
             len(x[_HIDDEN_ASSET_ID]['asks']) if x.get(_HIDDEN_ASSET_ID) else 'N/A'
         ))
         print('-' * 100)
+
 
     pool = PolyMarketOrderBookPool(order_book_update_callback=ev)
     pool.run(main_thread=False)
