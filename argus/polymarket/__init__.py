@@ -1441,7 +1441,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
         Wrapper for _handle_get_price_to_beat_inner to add retry logic
         """
-        max_tries = 5
+        max_tries = 10
         for attempt in range(1, max_tries + 1):
             time.sleep(attempt * 0.5)
             logging.info(
