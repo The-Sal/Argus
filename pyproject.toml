@@ -3,7 +3,7 @@ name = "argus"
 version = "0.0.0"  # refer to argus/__init__.py for the actual version
 description = ""
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "httpx[socks]>=0.28.1",
     "numpy>=2.4.6",
