@@ -216,6 +216,107 @@ Trigger an on-demand orderbook snapshot for subscribed clob_ids. Data arrives vi
 
 ---
 
+#### `rtds_subscribe`
+Subscribe the client socket to the Real-Time Data Stream (RTDS), which delivers live crypto prices from Polymarket's live-data WebSocket (`wss://ws-live-data.polymarket.com`). Once subscribed, the client receives P2 packets for every crypto price update from both the Binance and Chainlink feeds. No arguments are required — RTDS is a single global stream, not per-asset.
+
+**Input:**
+```json
+{
+  "action": "rtds_subscribe",
+  "data": {}
+}
+```
+
+**Output:**
+```json
+{
+  "action": "rtds_subscribe",
+  "data": {
+    "subscribed": ["RTDS_MAGIC_ID"],
+    "failed": []
+  },
+  "error": null,
+  "compressed": false
+}
+```
+
+**Notes:**
+- RTDS data arrives as P2 packets on the same connection — see [RTDS P2 Format](#real-time-data-streams-rtds-p2-format) below.
+- Subscribing to RTDS also registers the socket for `account_update` pushes (same mechanism as `subscribe`).
+- You can hold both a market-data (`subscribe`) subscription and an RTDS subscription simultaneously on the same socket.
+
+---
+
+#### `rtds_unsubscribe`
+Unsubscribe the client socket from the Real-Time Data Stream.
+
+**Input:**
+```json
+{
+  "action": "rtds_unsubscribe",
+  "data": {}
+}
+```
+
+**Output:**
+```json
+{
+  "action": "rtds_unsubscribe",
+  "data": {
+    "unsubscribed": ["RTDS_MAGIC_ID"],
+    "failed": []
+  },
+  "error": null,
+  "compressed": false
+}
+```
+
+---
+
+### Real-Time Data Streams (RTDS) P2 Format
+
+RTDS data is delivered over the standard P2 binary channel. The packet structure is identical to regular order-book P2 packets, but the **symbol and data layout differ**.
+
+#### RTDS Symbol Format
+
+```
+<source>-<asset>
+```
+
+- `source`: Either `binance` or `chainlink`
+- `asset`: The normalized trading pair with `/` stripped (e.g. `BTC/USDT` → `btcusdt`)
+
+**Examples:**
+- `binance-btcusdt`
+- `binance-ethusdt`
+- `chainlink-btcusdt`
+- `chainlink-ethusd`
+
+#### RTDS CSV Data Layout
+
+RTDS packets use the same P2 CSV structure as order-book packets but carry only a single price value:
+
+```
+0,0,0,0,...,<price>,0,<exchange_timestamp>,<server_timestamp>
+```
+
+- **Bid levels (N pairs)**: All `0,0` — RTDS has no order book depth.
+- **Ask level 0**: `<price>,0` — the live crypto price, size is always `0`.
+- **Ask levels 1–N**: All `0,0`.
+- **Exchange timestamp**: Unix milliseconds from Polymarket's feed.
+- **Server timestamp**: Dispatcher local `time.time()`.
+
+In other words: `ask[0].price` is the live price; everything else is zero. The depth (N) is controlled by `POLYMARKET_ORDERBOOK_DEPTH` and is the same value used for regular order-book packets.
+
+**Decoding example (depth=10):**
+```
+Bids:  [0,0] × 10
+Asks:  [<price>,0], [0,0] × 9
+Tail:  <exchange_ts>, <server_ts>
+```
+
+---
+
 ### Market Data Requests
 
 #### `fetch_all_markets`
@@ -501,6 +602,25 @@ Get the account's USDC balance.
 
 ---
 
+#### `get_token_balance`
+Get the balance of a specific conditional outcome token (a YES or NO share). Accepts either a raw asset ID or a P2 symbol string.
+
+**Input:**
+```json
+{
+  "action": "get_token_balance",
+  "data": {
+    "token_id": "<asset_id_or_p2_symbol>"
+  }
+}
+```
+
+- `token_id`: The outcome token asset ID (raw clob_id), **or** a dash-separated P2 symbol string where the last segment is the asset ID (e.g. `ticker-slug-marketslug-<asset_id>`). If the string contains exactly 3 dashes the dispatcher extracts the last segment automatically.
+
+**Output:** Float representing the number of shares held (e.g. `150.0`)
+
+---
+
 ### Crypto Utilities
 
 #### `get_price_to_beat`
@@ -551,6 +671,21 @@ Measure round-trip time to the Polymarket exchange.
 ```
 
 **Output:** Float (seconds)
+
+---
+
+#### `version`
+Return the running Argus version string.
+
+**Input:**
+```json
+{
+  "action": "version",
+  "data": {}
+}
+```
+
+**Output:** String (e.g. `"1.4.2"`)
 
 ---
 
@@ -642,8 +777,11 @@ The dispatcher supports optional `correlation_id` fields for request/response tr
 |----------|---------|-------------|
 | `POLYMARKET_PRIVATE_KEY` | Required | Private key for authentication |
 | `POLYMARKET_PROXY_FUNDER` | Required | Proxy funder address |
-| `POLYMARKET_ORDERBOOK_DEPTH` | 10 | Order book levels in P2 packets |
+| `POLYMARKET_ORDERBOOK_DEPTH` | 10 | Order book levels in P2 packets (applies to both CLOB and RTDS streams) |
 | `POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL` | 300 | Market cache refresh (seconds) |
+| `POLYMARKET_BUILD_POOL_WORKERS` | 10 | Thread pool size for concurrent order building in `place_multiple_orders` |
+| `POLYMARKET_MAX_ASSETS_PER_WS` | 4 | Max subscribed assets per WebSocket shard |
+| `POLYMARKET_MEMORY_PRUNING` | false | If `true`, prune slim market data from in-memory cache on refresh |
 | `MAX_SEEN_CORRELATION_IDS` | 100000 | Max correlation IDs to track |
 | `MAX_CORRELATION_ID_LENGTH` | 40 | Max correlation ID length |
 
