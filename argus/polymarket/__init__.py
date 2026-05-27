@@ -2106,6 +2106,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             for sock in sockets:
                 self._routing_helper.remove_socket_from_subscription(sock, clob)
 
+        try:
+            self.market_data.unsubscribe_from_asset_id(clobs)
+        except Exception as e:
+            logging.warning(f"Error while unsubscribing from asset ids: {e}")
+
 
     def _toggle_print_p2_packets(self):
         """Toggle the printing of raw P2 packets with timestamps."""
