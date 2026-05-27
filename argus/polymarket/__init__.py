@@ -2100,11 +2100,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
     def _eject_all_subscriptions(self):
         """Evicts all the items from all shards"""
-        clobs = list(self._routing_helper.market_data_routing_table.keys())
+        clobs = list(self.market_data_routing_table.keys())
         for clob in tqdm.tqdm(clobs, desc="Removing CLOB"):
-            sockets = self._routing_helper.market_data_routing_table[clob]
+            sockets = self.market_data_routing_table[clob]
             for sock in sockets:
-                self._routing_helper.remove_socket_from_subscription(sock, clob)
+                self.remove_socket_from_subscription(sock, clob)
 
             try:
                 self.market_data.unsubscribe_from_asset_id(clob)
