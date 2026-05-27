@@ -130,9 +130,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             "Show P1 Packets": False,
             "Print P2 packets": False,
             "Show packet timestamps": True,
-            "Block Order Execution": False,
+            "Block Order Execution": False, # if this is true, when an order execution endpoint is called, an exception will be raised.
             "show response times": False,
-            # if this is true, when an order execution endpoint is called, an exception will be raised.
+            "P2 Packets for RTDS": False,
         }
         if private_key is None:
             private_key = os.environ["POLYMARKET_PRIVATE_KEY"]
@@ -651,8 +651,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         p2_packet = transmit_mkt_data_with_protocol_2(object)
 
-        # Print P2 packets if config is enabled
-        if self._configs.get("Print P2 packets", False):
+        if self._configs.get("P2 Packets for RTDS", False):
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
             if self._configs.get("Show packet timestamps", True):
                 print(f"[{timestamp}] → ({len(p2_packet)} bytes): {p2_packet!r}")
