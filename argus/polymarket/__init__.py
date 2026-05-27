@@ -33,6 +33,7 @@ import threading
 import traceback
 import subprocess
 import dataclasses
+from typing import List
 from collections import deque
 from datetime import datetime
 from termcolor import colored
@@ -205,6 +206,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
         self._market_api_limit = 150  # Max markets per API call
         self._max_seen_markets = 10100  # Typical polymarket size
+        self._fetch_on_cache_miss = os.environ.get("POLYMARKET_FETCH_ON_MISS", "false") == "true"
+        self._fetched_objects: List[PolymarketEvent] = []
 
         # Make sure we have markets ready to serve
         self._update_markets_cache(
@@ -268,6 +271,24 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             time.sleep(self._market_cache_refresh_interval)
             self._update_markets_cache(invalidate_cache=True)
 
+
+    def _fetch_event_on_cache_miss(self, slug: str) -> PolymarketEvent:
+        """
+        if a cache miss is triggered, fetch that slug.
+        Note: on the next refresh this slug will be dropped, triggering this
+        process again. This is intentional since this object is excluded from
+        the _mem slim process. To avoid bloating memory they get dropped each
+        refresh. Additonally the only reason this is not in cache bc it's an expired
+        market so....
+        """
+
+        obj = self.rest_api.fetch_event_by_slug(slug=slug)
+        with self._market_cache_lock:
+            self._all_markets_cache.update({slug: obj})
+        self._build_asset_id_to_ticker_mapping()
+        return obj
+        
+    
     # Note: The intended logic is that when the program boots, we already have a cache of markets
     # loaded from disk (if available) or freshly fetched from the API. Subsequent calls to this function with invalidate_cache=True
     # will force a refresh from the API. The invalidation call would be coming from the background thread.
@@ -1022,9 +1043,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         ticker = args_obj.args[0]
         market = self._all_markets_cache.get(ticker, None)
         if market is None:
-            raise PolyMarketDispatcherError(
-                f"Market with ticker '{ticker}' not found for subscription."
-            )
+            if self._fetch_on_cache_miss:
+                market = self._fetch_event_on_cache_miss(ticker)
+            else:
+                raise PolyMarketDispatcherError(
+                    f"Market with ticker '{ticker}' not found for subscription."
+                )
 
         subscribed = []
         failed = []

@@ -41,6 +41,7 @@ endpoints = {
     "events": "https://gamma-api.polymarket.com/events?order=id&ascending=false&closed=false&limit={}&offset={}",
     "geo_block_test": "https://polymarket.com/api/geoblock",
     "page_data": "https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json",
+    "slug-event": "https://gamma-api.polymarket.com/events/slug/{}",
 }
 qw = "[{}]".format(__name__)
 
@@ -333,6 +334,18 @@ class PolyRestAPI:
 
         return returns
 
+
+    def fetch_event_by_slug(self, slug: str) -> pm_types.PolymarketEvent:
+        """
+        Given some slug requests from polymarket for the event
+        """
+        url = endpoints["slug-event"].format(slug)
+        response = self.raw_session.get(url)
+        response.raise_for_status()
+        return pm_types.PolymarketEvent.from_dict(response.json())
+
+
+    
     # NOTE: PyClob is the worst library ever made and has this
     # fun little code so the tick size must be a string and only these
     # otherwise raise a key error
