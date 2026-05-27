@@ -2098,6 +2098,15 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     def run(self):
         self.dispatcher_svr.start()
 
+    def _eject_all_subscriptions(self):
+        """Evicts all the items from all shards"""
+        clobs = list(self._routing_helper.market_data_routing_table.keys())
+        for clob in tqdm.tqdm(clobs, desc="Removing CLOB"):
+            sockets = self._routing_helper.market_data_routing_table[clob]
+            for sock in sockets:
+                self._routing_helper.remove_socket_from_subscription(sock, clob)
+
+
     def _toggle_print_p2_packets(self):
         """Toggle the printing of raw P2 packets with timestamps."""
         current = self._configs["Print P2 packets"]
