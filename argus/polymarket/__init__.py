@@ -67,7 +67,6 @@ _poly_cache = FastCache(cache_file="~/.argus/polymarket_cache.pkl")
 _CACHE = DomainCache("polymarket_dispatcher_v2", cache=_poly_cache)
 
 
-
 def compress(data: dict) -> str:
     minified = json.dumps(data, separators=(',', ':')).encode()
     return base64.b64encode(zlib.compress(minified, level=9)).decode()
@@ -131,7 +130,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             "Show P1 Packets": False,
             "Print P2 packets": False,
             "Show packet timestamps": True,
-            "Block Order Execution": False, # if this is true, when an order execution endpoint is called, an exception will be raised.
+            "Block Order Execution": False,
+            # if this is true, when an order execution endpoint is called, an exception will be raised.
             "show response times": False,
             "P2 Packets for RTDS": False,
         }
@@ -271,7 +271,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             time.sleep(self._market_cache_refresh_interval)
             self._update_markets_cache(invalidate_cache=True)
 
-
     def _fetch_event_on_cache_miss(self, slug: str) -> PolymarketEvent:
         """
         if a cache miss is triggered, fetch that slug.
@@ -283,12 +282,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         """
 
         obj = self.rest_api.fetch_event_by_slug(slug=slug)
+        markets = obj.markets
         with self._market_cache_lock:
-            self._all_markets_cache.update({slug: obj})
-        self._build_asset_id_to_ticker_mapping()
-        return obj
-        
-    
+            for market in markets:
+                self._all_markets_cache.update({obj.ticker: obj})
+            self._build_asset_id_to_ticker_mapping()
+            return obj
+
     # Note: The intended logic is that when the program boots, we already have a cache of markets
     # loaded from disk (if available) or freshly fetched from the API. Subsequent calls to this function with invalidate_cache=True
     # will force a refresh from the API. The invalidation call would be coming from the background thread.
@@ -458,7 +458,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
                     if len(response) >= 9500:
                         raise Exception("Response size exceeds maximum allowed size even after compression.")
-
 
                 msg = {
                     "action": content.get("action", None),
@@ -686,14 +685,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             except (ConnectionResetError, BrokenPipeError, OSError) as e:
                 self.remove_socket(sock)
                 print_with_name("Removed dead socket while sending market data for: ",
-                                 object, "socket:", sock)
+                                object, "socket:", sock)
             except Exception as e:
                 self.remove_socket(sock)
                 print_with_name("Unexpected error sending market data for: ",
-                                 object, "socket:", sock, "error:", e)
+                                object, "socket:", sock, "error:", e)
                 traceback.print_exc()
         # this is not considered a WS-arrival so it will not count towards latency samples        
-    
+
     def print_latency_stats(self):
         """Print WS-arrival → sock.sendall propagation latency percentiles (market data only)."""
         samples = sorted(self._latency_samples)
@@ -1269,7 +1268,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 traceback.print_exc()
 
         return {"successful": successful, "failed": failed}
-
 
     def _fetch_clob_id_information(self, args_obj: ArgsObject):
         """
@@ -2110,7 +2108,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 self.market_data.unsubscribe_from_asset_id(clob)
             except Exception as e:
                 logging.warning(f"Error while unsubscribing from asset ids: {e}")
-
 
     def _toggle_print_p2_packets(self):
         """Toggle the printing of raw P2 packets with timestamps."""
