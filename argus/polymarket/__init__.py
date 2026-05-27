@@ -2216,6 +2216,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     "Display all shards and their states",
                     self.visualise_shards,
                 ),
+                "Eject all subscriptions": (
+                    "Evict all subscriptions from all shards",
+                    self._eject_all_subscriptions
+                )
             }
         )
 
