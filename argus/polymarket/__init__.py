@@ -1198,8 +1198,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         Returns only the tickers of matching markets.
         :return:
         """
+        items = list(self._all_markets_cache.keys())
+        try:
+            items.remove(None)
+        except ValueError:
+            pass
+
         sorted_markets = sorted(
-            self._all_markets_cache.keys(),
+            items,
             key=lambda x: difflib.SequenceMatcher(None, args_obj.args[0], x).ratio(),
             reverse=True,
         )
