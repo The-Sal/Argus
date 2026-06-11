@@ -199,7 +199,7 @@ class ArgusClient:
         """
         all_trades = []
         offset = 0
-        limit = 5  # Must match the default limit in _handle_get_trades
+        limit = 3  # Keep small — trades with many maker_orders can be ~2000 bytes each
         total_dt = 0.0
 
         while True:
@@ -530,6 +530,7 @@ def main():
 
                 except Exception as e:
                     print(f"[{format_timestamp(now)}] Error fetching trades: {e}")
+                    last_poll = now  # Prevent tight retry loop when positions is empty
 
             raw = client.recv_raw(timeout=0.5)
             if raw:
