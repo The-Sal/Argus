@@ -418,6 +418,180 @@ class TradeEvent:
 
 
 @dataclass
+class PolymarketPosition:
+    """Represents a single aggregated position for a wallet, as returned by Polymarket's
+    data-api (GET https://data-api.polymarket.com/positions?user=<address>).
+
+    Unlike Trade/PolyMarketOrder which reflect individual fills/orders on the CLOB, a
+    PolymarketPosition is a server-side aggregation of all fills for a given outcome token,
+    enriched with market metadata (title, slug, event info) and live mark-to-market pricing.
+
+    This is the return type used by PolyRestAPI.get_positions().
+
+    Attributes:
+        proxy_wallet: The wallet address (proxy/funder) that holds this position.
+        asset: The outcome token (CLOB asset/token) ID for this position.
+        condition_id: The condition ID of the market this position belongs to.
+        size: Number of outcome shares currently held.
+        avg_price: Average entry price paid per share.
+        initial_value: Cost basis of the position (size * avg_price).
+        current_value: Current mark-to-market value of the position (size * cur_price).
+        cash_pnl: Unrealized + realized profit/loss in cash terms (USDC).
+        percent_pnl: Profit/loss as a percentage of initial value.
+        total_bought: Total number of shares ever bought for this asset.
+        realized_pnl: Profit/loss that has been realized via sells/redemptions.
+        percent_realized_pnl: Realized profit/loss as a percentage.
+        cur_price: Current market price per share for this outcome.
+        redeemable: Whether this position can currently be redeemed (market resolved).
+        mergeable: Whether this position can be merged with its opposite outcome.
+        title: Human-readable title of the market/event.
+        slug: URL slug of the market.
+        icon: URL to the market/event icon image.
+        event_id: ID of the parent event.
+        event_slug: URL slug of the parent event.
+        outcome: The outcome label this position represents (e.g. 'Yes', 'No').
+        outcome_index: Index of the outcome within the market (0 or 1 for binary markets).
+        opposite_outcome: The label of the opposite outcome.
+        opposite_asset: The token ID of the opposite outcome.
+        end_date: ISO date string for when the market resolves/ends.
+        negative_risk: Whether this market is part of a negative-risk (multi-outcome) event.
+    """
+    proxy_wallet: str
+    asset: str
+    condition_id: str
+    size: float
+    avg_price: float
+    initial_value: float
+    current_value: float
+    cash_pnl: float
+    percent_pnl: float
+    total_bought: float
+    realized_pnl: float
+    percent_realized_pnl: float
+    cur_price: float
+    redeemable: bool
+    mergeable: bool
+    title: str
+    slug: str
+    icon: str
+    event_id: str
+    event_slug: str
+    outcome: str
+    outcome_index: int
+    opposite_outcome: str
+    opposite_asset: str
+    end_date: str
+    negative_risk: bool
+
+    def __repr__(self) -> str:
+        return (f"PolymarketPosition(asset={self.asset!r}, condition_id={self.condition_id!r}, "
+                f"title={self.title!r}, outcome={self.outcome!r}, size={self.size}, "
+                f"avg_price={self.avg_price}, cur_price={self.cur_price}, "
+                f"current_value={self.current_value}, cash_pnl={self.cash_pnl}, "
+                f"percent_pnl={self.percent_pnl})")
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'PolymarketPosition':
+        return cls(
+            proxy_wallet=data['proxyWallet'],
+            asset=data['asset'],
+            condition_id=data['conditionId'],
+            size=float(data['size']),
+            avg_price=float(data['avgPrice']),
+            initial_value=float(data['initialValue']),
+            current_value=float(data['currentValue']),
+            cash_pnl=float(data['cashPnl']),
+            percent_pnl=float(data['percentPnl']),
+            total_bought=float(data['totalBought']),
+            realized_pnl=float(data['realizedPnl']),
+            percent_realized_pnl=float(data['percentRealizedPnl']),
+            cur_price=float(data['curPrice']),
+            redeemable=bool(data['redeemable']),
+            mergeable=bool(data['mergeable']),
+            title=data['title'],
+            slug=data['slug'],
+            icon=data.get('icon', ''),
+            event_id=data['eventId'],
+            event_slug=data['eventSlug'],
+            outcome=data['outcome'],
+            outcome_index=int(data['outcomeIndex']),
+            opposite_outcome=data['oppositeOutcome'],
+            opposite_asset=data['oppositeAsset'],
+            end_date=data['endDate'],
+            negative_risk=bool(data['negativeRisk']),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            'proxyWallet': self.proxy_wallet,
+            'asset': self.asset,
+            'conditionId': self.condition_id,
+            'size': self.size,
+            'avgPrice': self.avg_price,
+            'initialValue': self.initial_value,
+            'currentValue': self.current_value,
+            'cashPnl': self.cash_pnl,
+            'percentPnl': self.percent_pnl,
+            'totalBought': self.total_bought,
+            'realizedPnl': self.realized_pnl,
+            'percentRealizedPnl': self.percent_realized_pnl,
+            'curPrice': self.cur_price,
+            'redeemable': self.redeemable,
+            'mergeable': self.mergeable,
+            'title': self.title,
+            'slug': self.slug,
+            'icon': self.icon,
+            'eventId': self.event_id,
+            'eventSlug': self.event_slug,
+            'outcome': self.outcome,
+            'outcomeIndex': self.outcome_index,
+            'oppositeOutcome': self.opposite_outcome,
+            'oppositeAsset': self.opposite_asset,
+            'endDate': self.end_date,
+            'negativeRisk': self.negative_risk,
+        }
+
+
+@dataclass
+class PositionData:
+    """Container for a list of PolymarketPosition objects with built-in serialization.
+
+    This is the top-level return type from PolyRestAPI.get_positions() and wraps the raw
+    positions list from https://data-api.polymarket.com/positions with convenience methods
+    for converting back to dict/JSON format, and indexing/length operations.
+
+    Attributes:
+        positions: List of PolymarketPosition objects representing all fetched positions.
+    """
+    positions: List[PolymarketPosition] = field(default_factory=list)
+
+    def __repr__(self) -> str:
+        return f"PositionData(positions={self.positions!r})"
+
+    @classmethod
+    def from_list(cls, data: list) -> 'PositionData':
+        positions = [PolymarketPosition.from_dict(position_dict) for position_dict in data]
+        return cls(positions=positions)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> 'PositionData':
+        data = json.loads(json_str)
+        return cls.from_list(data)
+
+    def to_dict(self) -> list:
+        return [position.to_dict() for position in self.positions]
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2)
+
+    def __len__(self) -> int:
+        return len(self.positions)
+
+    def __getitem__(self, index: int) -> PolymarketPosition:
+        return self.positions[index]
+
+
+@dataclass
 class OrderEvent:
     """Represents an order lifecycle event from the Polymarket CLOB WebSocket or event stream.
 

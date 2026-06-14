@@ -852,6 +852,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 "get_balance": self._handle_get_balance,
                 "get_token_balance": self._handle_get_token_balance,
                 "get_trades": self._handle_get_trades,
+                "get_positions": self._handle_get_positions,
                 # Crypto Utilities
                 "get_price_to_beat": self._handle_get_price_to_beat,
                 # Utilities
@@ -1958,6 +1959,21 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         trades = self.rest_api.get_trades()
         raw = [dataclasses.asdict(trade) for trade in trades.trades]
         return raw[offset: offset + limit]
+
+    def _handle_get_positions(self, args_obj: ArgsObject):
+        """
+        Handle a request to fetch current aggregated positions for this account's wallet
+        from Polymarket's data-api. Delegates to the REST API's get_positions (which
+        defaults to this client's proxy_funder address) and serializes each
+        PolymarketPosition dataclass to a dict.
+
+        :param args_obj: ArgsObject containing the socket and arguments.
+            Args is expected to be empty (no arguments required).
+        :return: List of dicts, each representing a PolymarketPosition.
+        """
+        _ = args_obj
+        positions = self.rest_api.get_positions()
+        return [dataclasses.asdict(position) for position in positions.positions]
 
     def _handle_get_balance(self, args_obj: ArgsObject):
         """

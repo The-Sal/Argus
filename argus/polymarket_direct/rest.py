@@ -17,8 +17,8 @@ from py_clob_client_v2.order_builder.constants import BUY, SELL
 from py_clob_client_v2.order_utils import SignedOrderV2 as SignedOrder
 from py_clob_client_v2.clob_types import PostOrdersV2Args, OrderPayload
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
-from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData
 from py_clob_client_v2.client import OrderArgsV2, OrderType, ClobClient, PartialCreateOrderOptions
+from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData, PositionData
 
 # Line-by-line timing utility
 _timer_last = {}
@@ -39,6 +39,7 @@ def _tick(label: str, location: str):
 REST_CACHE = DomainCache("polymarket_direct.rest")
 endpoints = {
     "events": "https://gamma-api.polymarket.com/events?order=id&ascending=false&closed=false&limit={}&offset={}",
+    "positions": "https://data-api.polymarket.com/positions",
     "geo_block_test": "https://polymarket.com/api/geoblock",
     "page_data": "https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json",
 }
@@ -687,6 +688,25 @@ class PolyRestAPI:
         """
         trades = self.clob.get_trades()
         return TradeData.from_list(trades)
+
+    @fatal_decorator("get_positions")
+    def get_positions(self, user: str | None = None, **params) -> PositionData:
+        """
+        Get the current aggregated positions for a wallet from Polymarket's data-api.
+
+        :param user: The wallet address to fetch positions for. Defaults to this client's
+            proxy_funder address if not provided.
+        :param params: Additional optional query parameters supported by the data-api,
+            e.g., market, eventId, sizeThreshold, redeemable, mergeable, limit, offset,
+            sortBy, sortDirection.
+        :return: A PositionData object containing the list of PolymarketPosition objects.
+        """
+        query = {"user": user or self.proxy_funder}
+        query.update(params)
+
+        response = self.raw_session.get(endpoints["positions"], params=query)
+        response.raise_for_status()
+        return PositionData.from_list(response.json())
 
     @fatal_decorator("get_order_status")
     @retry(max_attempts=3, delay=0.35)
