@@ -1,7 +1,5 @@
 # Argus
 
-![CI/CD Status](https://github.com/The-Sal/Argus/workflows/Manual%20CI%2FCD%20Trigger/badge.svg)
-
 **Argus** aims to be a high-performance financial market data aggregation system built around a server-client architecture. It provides unified access to multiple financial data sources through a custom Protocol 2 (P2) binary protocol for efficient, standardized data transmission.
 
 ----
@@ -30,7 +28,7 @@ Argus is designed as a **server-client architecture** centered around `runtime.p
 
 ```bash
 # Start a dispatcher server
-python runtime.py ib.core --port 9972
+python3 runtime.py ib.core --port 9972
 
 # Connect from any client (Python, C++, Rust, etc.)
 import socket
@@ -45,9 +43,9 @@ s.sendall(b'add=AAPL')  # Subscribe to AAPL
 - **Resource efficiency** - Single WebSocket connection shared across clients
 - **Fault isolation** - Client crashes don't affect dispatcher or other clients
 
-### Alternative: Python Module Import
+### Alternative: python3 Module Import
 
-While Argus **can** be imported like any other Python module, this is **not the primary design pattern**:
+While Argus **can** be imported like any other python3 module, this is **not the primary design pattern**:
 
 ```python
 # Supported but not recommended for production
@@ -59,7 +57,7 @@ wss.subscribe_to_contracts([...])
 
 The server-client architecture is preferred because:
 - Better separation of concerns
-- Enables polyglot systems (Python server, C++ trading engine)
+- Enables polyglot systems (python3 server, C++ trading engine)
 - Simplifies deployment and monitoring
 - Reduces memory overhead (shared data streams)
 
@@ -170,8 +168,6 @@ result = parser.parse(data)
 | **Extensibility** | Backward compatible | Versioning required |
 | **Bandwidth** | Minimal | 3x larger |
 
-For high-frequency trading and real-time analytics, Protocol 2's efficiency is critical.
-
 
 ## Module Documentation
 
@@ -233,8 +229,6 @@ Argus consists of several specialized modules, each providing access to differen
   - Automatically works with regular Wireguard Configs
   - Downloading/installing WireProxy binary is handled automatically
   
-  _Note: WireProxy is experimental and may have limitations._
-  
 
 ## Getting Started
 
@@ -278,16 +272,16 @@ ARGUS_CACHES_DISABLED=0
 
 ```bash
 # Interactive Brokers
-python runtime.py ib.core --port 9972
+python3 runtime.py ib.core --port 9972
 
 # Capital.com (Unix Domain Socket)
-python runtime.py capital.com --capital-env demo
+python3 runtime.py capital.com --capital-env demo
 
 # Binance
-python runtime.py binance --port 9982
+python3 runtime.py binance --port 9982
 
 # Polymarket
-python runtime.py polymarket --port 9972
+python3 runtime.py polymarket --port 9972
 ```
 
 ### Connecting a Client
@@ -386,26 +380,22 @@ with NASDAQDataDownloader(headless=True) as downloader:
 ```
 
 ## System Requirements
-
-- **Python**: 3.10+
+- **Python**: 3.14t (should work with lower versions)
 - **Operating Systems**:
   - **macOS**: Full support (all modules)
   - **Linux**: 
     - No desktop notifications (powered by AppleScript)
     - All other modules work fully
   - **Windows**: Not tested, not a target platform
-- **Dependencies**: See `requirements.txt`
+- **Dependencies**: See `requirements.txt` (or uv, this project uses pyproject.toml)
 - **Optional**: Firefox + geckodriver (for NASDAQ module)
 
-
-## Development
-
-Argus is under active development. Current efforts:
-
-**Swift Transcompilation**: There is an ongoing transcompilation effort from Python to Swift in the `argus-swift` branch. Python remains the primary source code - all patches and updates are applied to Python first, with Swift playing catchup through manual transcompilation. Python is not going anywhere.
+## Development Ecosystem
+- **argus-swift**: An experimental fork of Argus that's written in Swift (macOS/Linux only). It is far behind the main branch. Available [here](https://github.com/The-Sal/Argus/tree/argus-swift).
+- **WpDaemon**: A sidecar daemon that manages WireProxy processes, it works as a drop-in replacement for the internal WireProxyServer. Available [here](https://github.com/the-sal/WpDaemon).
+- **argus-polymarket**: A Rust SDK for the Polymarket Dispatcher, available [here](https://github.com/the-sal/argus-polymarket).
 
 ## Support
-
 For questions, issues, or feature requests:
 - **GitHub Issues**: https://github.com/The-Sal/Argus/issues
 - **Documentation**: `/docs` directory (docs are branch-specific and differes between `main` and `argus-swift`)
