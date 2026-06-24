@@ -18,7 +18,7 @@ from py_clob_client_v2.order_utils import SignedOrderV2 as SignedOrder
 from py_clob_client_v2.clob_types import PostOrdersV2Args, OrderPayload
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
 from py_clob_client_v2.client import OrderArgsV2, OrderType, ClobClient, PartialCreateOrderOptions
-from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData, PositionData
+from argus.polymarket_direct.order_types import OrderException, PolyMarketOrder, TradeData, PositionData, PolyMarketException
 
 # Line-by-line timing utility
 _timer_last = {}
@@ -38,7 +38,7 @@ def _tick(label: str, location: str):
 
 REST_CACHE = DomainCache("polymarket_direct.rest")
 endpoints = {
-    "events": "https://gamma-api.polymarket.com/events?order=id&ascending=false&closed=false&limit={}&offset={}",
+    "events": "https://gamma-api.polymarket.com/events",
     "positions": "https://data-api.polymarket.com/positions",
     "geo_block_test": "https://polymarket.com/api/geoblock",
     "page_data": "https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json",
@@ -317,22 +317,120 @@ class PolyRestAPI:
     ###########################################
 
     def fetch_events(
-            self, offset=0, limit=20, debug_raw_callback=None
+            self, offset=0, limit=100, order="id", ascending=False,
+            closed=False, end_date_min=None, debug_raw_callback=None,
     ) -> list[pm_types.PolymarketEvent]:
-        url = endpoints["events"].format(limit, offset)
-        response = self.raw_session.get(url)
+        """
+        Fetch a single page of events from Gamma.
+
+        IMPORTANT: Gamma's offset pagination is hard-capped at offset 2100. Beyond
+        it the endpoint returns a validation-error *dict*
+        ({"type": "validation error", "error": "offset too large, use
+        /events/keyset for deeper pagination"}) instead of a list. We surface that
+        as an exception rather than silently returning [], so a truncated crawl can
+        never be mistaken for "no more data" (which is exactly the bug that left
+        ~80% of open markets out of the cache). Use `iter_open_events` to crawl the
+        full set past that cap.
+
+        :param offset: Pagination offset (must stay <= 2100 for this endpoint).
+        :param limit: Page size. Gamma clamps this to 100.
+        :param order: Field to order by (e.g. "id", "endDate").
+        :param ascending: Sort direction.
+        :param closed: Whether to include closed markets.
+        :param end_date_min: Optional ISO-8601 lower bound on endDate; used by
+            `iter_open_events` as a cursor to page past the offset cap.
+        """
+        params = {
+            "order": order,
+            "ascending": str(bool(ascending)).lower(),
+            "closed": str(bool(closed)).lower(),
+            "limit": limit,
+            "offset": offset,
+        }
+        if end_date_min:
+            params["end_date_min"] = end_date_min
+
+        response = self.raw_session.get(endpoints["events"], params=params)
         response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise PolyMarketException(
+                f"{qw} Gamma /events returned a non-list response "
+                f"(offset={offset}, limit={limit}): {payload!r}"
+            )
+
         returns = []
-        for event in response.json():
+        for event in payload:
             try:
                 if debug_raw_callback:
                     debug_raw_callback(event)
                 v = pm_types.PolymarketEvent.from_dict(event)
                 returns.append(v)
             except Exception as e:
-                print("Error parsing event:", e)
+                logging.warning("%s Error parsing event: %s", qw, e)
 
         return returns
+
+    def iter_open_events(
+            self, page_limit=100, cursor_cap=2000, max_iterations=50,
+            debug_raw_callback=None,
+    ):
+        """
+        Yield successive pages (lists of PolymarketEvent) covering ALL open
+        (closed=false) events, working around Gamma's offset>2100 hard cap.
+
+        Strategy: page events ordered by endDate ascending. Within one pass we
+        offset-paginate until we approach the 2100 offset cap (`cursor_cap`), then
+        advance an `end_date_min` cursor to the last endDate seen and restart the
+        offset at 0. The pass ends when a fetch returns an empty page (no events
+        remain at/after the cursor). Events sitting exactly on the cursor boundary
+        are re-yielded on the next pass and MUST be de-duplicated by the caller
+        (callers key events by ticker, so this is harmless).
+
+        Caveat: events with a null endDate do not sort under `order=endDate` and
+        will not be yielded. All tradeable open markets carry an endDate, so this
+        is acceptable; the alternative (the old id-desc offset crawl) silently
+        dropped ~80% of markets instead.
+
+        :param page_limit: Requested page size (Gamma clamps to 100).
+        :param cursor_cap: Offset at which to advance the endDate cursor. Must be
+            < 2100 to stay under Gamma's hard cap.
+        :param max_iterations: Safety bound on cursor advances to avoid infinite
+            loops if the API misbehaves.
+        """
+        boundary = None
+        for _ in range(max_iterations):
+            offset = 0
+            last_end_date = None
+            while True:
+                page = self.fetch_events(
+                    offset=offset, limit=page_limit,
+                    order="endDate", ascending=True,
+                    end_date_min=boundary, debug_raw_callback=debug_raw_callback,
+                )
+                if not page:
+                    # No events remain at/after the cursor: crawl complete.
+                    return
+                yield page
+                offset += len(page)
+                last_end_date = page[-1].endDate
+                if offset >= cursor_cap:
+                    break
+
+            if not last_end_date or last_end_date == boundary:
+                # Cannot advance the cursor (e.g. > cursor_cap events share one
+                # endDate). Stop rather than spin forever.
+                logging.warning(
+                    "%s iter_open_events could not advance past endDate %s; "
+                    "stopping with a partial crawl.", qw, boundary,
+                )
+                return
+            boundary = last_end_date
+
+        logging.warning(
+            "%s iter_open_events hit max_iterations=%d; crawl may be incomplete.",
+            qw, max_iterations,
+        )
 
     # NOTE: PyClob is the worst library ever made and has this
     # fun little code so the tick size must be a string and only these

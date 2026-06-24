@@ -203,7 +203,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._market_cache_refresh_interval = int(
             os.environ.get("POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL", 300)
         )
-        self._market_api_limit = 150  # Max markets per API call
+        self._market_api_limit = 100  # Gamma /events clamps page size to 100
         self._max_seen_markets = 10100  # Typical polymarket size
 
         # Make sure we have markets ready to serve
@@ -301,25 +301,22 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 dynamic_ncols=True,
             )
             try:
-                offset = 0
-                while True:
-                    markets = self.rest_api.fetch_events(
-                        offset=offset, limit=self._market_api_limit
-                    )
+                # NOTE: Gamma's offset pagination is hard-capped at offset 2100,
+                # so the old offset loop silently truncated the cache to the ~2100
+                # newest-by-id open events (almost all of them today's ephemeral
+                # crypto up/down markets), dropping ~80% of open markets. We crawl
+                # via an endDate cursor instead, which reaches the full set.
+                for page in self.rest_api.iter_open_events(
+                        page_limit=self._market_api_limit
+                ):
                     scoped_all_markets_cache.update(
-                        {market.ticker: market for market in markets}
+                        {market.ticker: market for market in page}
                     )
-                    offset += len(markets)
-                    progress.update(len(markets))
+                    progress.update(len(page))
                     progress.set_postfix(
-                        {
-                            "Total Markets": len(scoped_all_markets_cache),
-                            "Offset": offset,
-                        }
+                        {"Unique Markets": len(scoped_all_markets_cache)}
                     )
                     progress.refresh()
-                    if len(markets) == 0:
-                        break
 
                 progress.close()
                 progress.refresh()
@@ -328,7 +325,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                     "Refreshed all markets cache with %d markets.",
                     len(scoped_all_markets_cache),
                 )
-                self._max_seen_markets = max(self._max_seen_markets, len(markets))
+                self._max_seen_markets = max(
+                    self._max_seen_markets, len(scoped_all_markets_cache)
+                )
             except Exception as e:
                 logging.error("Error refreshing all markets cache: %s", e)
 
