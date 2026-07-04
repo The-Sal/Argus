@@ -888,7 +888,11 @@ class PolymarketRTDSWss(PolymarketWSSBase):
             print_with_name("Unable to decode JSON (RDTS), msg=", message, "size=", len(message))
             return
 
-        topic = str(js_msg["topic"])
+        try:
+            topic = str(js_msg["topic"])
+        except KeyError as e:
+            print("Unable to find topic in JSON payload. Msg=", js_msg)
+            raise e
         payload = js_msg.get("payload", None)
 
         if payload is None:
