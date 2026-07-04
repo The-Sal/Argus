@@ -1483,6 +1483,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             "solana": "SOL",
             "xrp": "XRP",
             "ripple": "XRP",
+            "bnb": "BNB",
+            "doge": "DOGE",
+            "dogecoin": "DOGE",
+            "hype": "HYPE",
+            "hyperliquid": "HYPE",
         }
 
         # Try to extract from ticker first (e.g., "btc-updown-15m-1769111100")
@@ -1492,13 +1497,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 return symbol
 
         # Try to extract from resolution source (e.g., "https://data.chain.link/streams/btc-usd")
-        resolution_source = market_event.resolutionSource or ""
-        if "btc" in resolution_source.lower():
-            return "BTC"
-        elif "eth" in resolution_source.lower():
-            return "ETH"
-        elif "sol" in resolution_source.lower():
-            return "SOL"
+        resolution_source = (market_event.resolutionSource or "").lower()
+        for key, symbol in crypto_map.items():
+            if key in resolution_source:
+                return symbol
 
         return None
 
