@@ -38,18 +38,22 @@ _unsafe_api_cache = DomainCache(domain='POLYMARKET_UNSAFE_API', cache=CACHE)
 # As of ~July 2026 Polymarket no longer ships a single raw `{"props":{"pageProps":...}}` JSON
 # blob at the bottom of the page. Instead, page data is streamed via Next.js's React Server
 # Components "flight" protocol: a series of inline `<script>` tags each calling
-# `self.__next_f.push([1, "<escaped string>"])`. One of those pushed strings contains (after a
-# single layer of JSON-string unescaping) a `"dehydratedState":{...}` object -- the same
-# react-query dehydrated cache the old scraper used to read directly out of `pageProps`, just
-# nested one level deeper and JSON-string-escaped once instead of being raw in the page.
+# `self.__next_f.push([1, "<escaped string>"])`. Those pushed strings contain (after a single
+# layer of JSON-string unescaping) the react-query cache data the old scraper used to read
+# directly out of `pageProps`.
 #
-# Rather than hardcode any exact offsets/markers, we:
+# The wrapper around that cache data is NOT stable -- it has already changed from a raw
+# `pageProps` blob, to a `"dehydratedState":{"queries":[...]}` object, to (as of this fix)
+# individual query objects with no consistent enclosing key at all. What HAS stayed identical
+# since at least Feb 2026 is the shape of each individual cached query object itself, which
+# always starts with the literal key `"dehydratedAt":`. So instead of anchoring on whatever
+# wrapper key Polymarket happens to use this week, we anchor directly on that per-query marker:
 #   1. Find every `self.__next_f.push([1, "..."])` call and unescape its string payload.
-#   2. Within each decoded payload, scan for the literal key `"dehydratedState":` and then
-#      bracket-match (respecting JSON string literals) to find the full object, instead of
-#      relying on a fixed end-of-string marker.
-#   3. json.loads() just that isolated object and walk `queries[*].state.data` exactly like
-#      the old code did looking for a dict with an `openPrice` key.
+#   2. Within each decoded payload, find every occurrence of `{"dehydratedAt":` and
+#      bracket-match (respecting JSON string literals) to isolate that single query object,
+#      instead of relying on a wrapper key or fixed end-of-string marker.
+#   3. json.loads() each isolated object and read `state.data` looking for a dict with an
+#      `openPrice` key -- exactly like the old code did after digging out `queries[*]`.
 _NEXT_F_PUSH_RE = re.compile(r'self\.__next_f\.push\(\[1,\s*"((?:\\.|[^"\\])*)"\]\)')
 
 
@@ -97,31 +101,30 @@ def _find_matching_brace(text: str, open_index: int) -> int:
     return -1
 
 
-def _extract_dehydrated_states(html: str):
+_QUERY_OBJECT_MARKER = '{"dehydratedAt":'
+
+
+def _extract_query_objects(html: str):
     """
-    Find every `"dehydratedState":{...}` object embedded within the page's Next.js flight
-    data and return a list of parsed dicts (one per occurrence). In practice a Polymarket
-    event page embeds exactly one, but we don't assume that -- we scan every flight chunk
-    and every occurrence within it, so this keeps working even if Polymarket's build starts
-    splitting/duplicating the hydration boundary differently.
+    Find every individual cached react-query object (`{"dehydratedAt": ..., "state": {"data":
+    ...}, "queryKey": [...], ...}`) embedded within the page's Next.js flight data, regardless
+    of whatever (if anything) wraps them, and return a flat list of parsed dicts. We scan every
+    flight chunk and every occurrence within it, so this keeps working even if Polymarket's
+    build starts nesting/wrapping these objects differently again.
     """
     results = []
-    key = '"dehydratedState":'
     for decoded in _iter_next_f_strings(html):
-        if key not in decoded:
+        if _QUERY_OBJECT_MARKER not in decoded:
             continue
         search_from = 0
         while True:
-            key_idx = decoded.find(key, search_from)
-            if key_idx == -1:
+            start_idx = decoded.find(_QUERY_OBJECT_MARKER, search_from)
+            if start_idx == -1:
                 break
-            brace_idx = decoded.find('{', key_idx + len(key))
-            if brace_idx == -1:
-                break
-            end_idx = _find_matching_brace(decoded, brace_idx)
+            end_idx = _find_matching_brace(decoded, start_idx)
             if end_idx == -1:
                 break
-            snippet = decoded[brace_idx:end_idx + 1]
+            snippet = decoded[start_idx:end_idx + 1]
             try:
                 results.append(json.loads(snippet))
             except (json.JSONDecodeError, ValueError):
@@ -168,19 +171,13 @@ class UnsafePolyMarket:
         # As of ~July 2026 Polymarket no longer embeds a raw '{"props":{"pageProps":...}}' blob
         # at the bottom of the page. The data has moved into Next.js's React Server Components
         # "flight" protocol -- a series of `self.__next_f.push([1, "..."])` script calls whose
-        # (escaped) string payloads, once unescaped, contain a `"dehydratedState":{...}` object.
-        # See `_extract_dehydrated_states` above for how we robustly locate and parse that
-        # object without relying on brittle fixed string offsets.
+        # (escaped) string payloads, once unescaped, contain the individual cached query
+        # objects we want. See `_extract_query_objects` above for how we robustly locate and
+        # parse those objects without relying on a wrapper key that keeps changing.
         try:
-            dehydrated_states = _extract_dehydrated_states(response.text)
+            queries = _extract_query_objects(response.text)
         except Exception as e:
             raise UnableToReachPolymarket(f"Unable to parse price to beat for slug {slug}. Error: {str(e)}")
-
-        if len(dehydrated_states) == 0:
-            raise UnableToReachPolymarket(
-                f"No dehydratedState found in the page for slug {slug}. This may be because "
-                f"Polymarket has changed their page structure again, or the page hasn't updated yet, "
-                f"trying again later")
 
         # There are many nested pointless fields within this JSON and even duplicates of our key so we are
         # going to rely on the structure of the JSON to get what we want.
@@ -215,13 +212,11 @@ class UnsafePolyMarket:
         #     "queryHash": "[\"crypto-prices\",\"price\",\"BTC\",\"2026-02-10T21:00:00Z\",\"fifteen\",\"2026-02-10T21:15:00Z\"]"
         # }
 
-        queries = []
-        for dehydrated_state in dehydrated_states:
-            queries.extend(dehydrated_state.get('queries', []))
         if len(queries) == 0:
-            raise UnableToReachPolymarket(f"No queries found in the JSON data for slug {slug}. "
-                                          f"This may be because polymarket has not updated yet, "
-                                          f"trying again later")
+            raise UnableToReachPolymarket(
+                f"No cached query objects found in the page for slug {slug}. This may be because "
+                f"Polymarket has changed their page structure again, or the page hasn't updated yet, "
+                f"trying again later")
 
         for query in queries:
             data = query.get('state', {}).get('data', {})
