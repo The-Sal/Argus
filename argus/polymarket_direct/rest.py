@@ -3,6 +3,7 @@ import time
 import logging
 import requests
 import functools
+import threading
 import traceback
 from typing import cast
 from utils3 import Timer
@@ -34,6 +35,38 @@ def _tick(label: str, location: str):
     else:
         print(f"[TIMER][{label}] {location}: start")
     _timer_last[key] = now
+
+
+class _SuppressOkPingFilter(logging.Filter):
+    """
+    Drop httpx's INFO ``HTTP Request: ...`` line for the ``/ok`` keepalive ping only,
+    leaving every other endpoint's request log fully intact.
+
+    httpx logs ``'HTTP Request: %s %s "%s %d %s"' % (method, url, http_ver, status,
+    reason)``, so the request URL is ``record.args[1]``. Matching that structured arg
+    (rather than the formatted message) avoids the false positive from the trailing
+    ``"... 200 OK"`` reason phrase.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if args and isinstance(args, tuple) and len(args) >= 2:
+            url = str(args[1]).split("?", 1)[0]
+            if url.endswith("/ok"):
+                return False
+        return True
+
+
+_ok_ping_filter_installed = False
+
+
+def _install_httpx_ok_ping_filter():
+    """Attach _SuppressOkPingFilter to the 'httpx' logger exactly once."""
+    global _ok_ping_filter_installed
+    if _ok_ping_filter_installed:
+        return
+    logging.getLogger("httpx").addFilter(_SuppressOkPingFilter())
+    _ok_ping_filter_installed = True
 
 
 REST_CACHE = DomainCache("polymarket_direct.rest")
@@ -198,9 +231,78 @@ class PolyRestAPI:
 
             self.fatal_callback = default_fatal_callback
 
+        # Keep the CLOB REST connection warm so the hot-path order POST always reuses
+        # an established connection instead of paying a cold TCP+TLS(+SOCKS5) handshake
+        # after an idle stretch. Works identically whether WireProxy is on or off — it
+        # rides the same shared httpx client the order POST uses. See _keepalive_loop.
+        self._keepalive_stop = threading.Event()
+        self._keepalive_interval = float(
+            os.environ.get("POLYMARKET_KEEPALIVE_INTERVAL", "5.0")
+        )
+        self._keepalive_thread = None
+        if os.environ.get("POLYMARKET_KEEPALIVE_DISABLE", "false") != "true":
+            self._start_keepalive()
+
     ###########################################
     # Utility Methods
     ###########################################
+
+    def _start_keepalive(self):
+        """Start the background keepalive pinger thread (idempotent)."""
+        if self._keepalive_thread is not None and self._keepalive_thread.is_alive():
+            return
+        # Silence httpx's INFO request log for the /ok pings only; all other
+        # endpoints keep logging normally.
+        _install_httpx_ok_ping_filter()
+        self._keepalive_stop.clear()
+        self._keepalive_thread = threading.Thread(
+            target=self._keepalive_loop,
+            name="polymarket-clob-keepalive",
+            daemon=True,
+        )
+        self._keepalive_thread.start()
+
+    def _keepalive_loop(self):
+        """
+        Periodically issue a cheap, unauthenticated ``GET /ok`` on the shared httpx
+        client so the pooled CLOB connection stays genuinely alive end-to-end —
+        through any WireProxy SOCKS5 + WireGuard tunnel and through server/NAT idle
+        timeouts. This keeps the hot-path order POST on a warm connection rather than
+        eating a fresh TCP+TLS(+SOCKS5) handshake.
+
+        Fail-soft: a failed ping is logged and retried on the next tick; it must never
+        propagate into, or block, order flow.
+        """
+        consecutive_failures = 0
+        while not self._keepalive_stop.wait(self._keepalive_interval):
+            t0 = time.perf_counter()
+            try:
+                self.clob.get_ok()
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                consecutive_failures = 0
+                logging.debug("[polymarket-keepalive] ok in %.1fms", elapsed_ms)
+            except Exception as e:
+                consecutive_failures += 1
+                logging.warning(
+                    "[polymarket-keepalive] ping failed (%d in a row): %s",
+                    consecutive_failures,
+                    e,
+                )
+
+    def stop_keepalive(self):
+        """Stop the background keepalive pinger. Safe to call multiple times."""
+        self._keepalive_stop.set()
+        thread = self._keepalive_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=self._keepalive_interval + 1.0)
+        self._keepalive_thread = None
+
+    def __del__(self):
+        # Best-effort cleanup; a finalizer must never raise.
+        try:
+            self.stop_keepalive()
+        except Exception:
+            pass
 
     def ip_safety_check(self):
         print(qw, "Starting Polymarket REST API client initialization...")
@@ -303,13 +405,25 @@ class PolyRestAPI:
         This function patches the internal httpx Client used by py_clob_client_v2 to use a proxy if specified
         via WireProxy.
         """
-        from httpx import Client
+        from httpx import Client, Limits
         from py_clob_client_v2.http_helpers import helpers
 
         proxy = wp_wrappers.start_proxy_and_return_bind("POLYMARKET")
         if proxy is not None:
             proxy = f"socks5://{proxy}"
-        _client = Client(http2=False, proxy=proxy)
+        # keepalive_expiry=None keeps pooled connections open indefinitely so the
+        # hot-path order POST never pays a fresh TCP+TLS(+SOCKS5) handshake after an
+        # idle period. httpx's default is 5s, which the WSS-only lull between fires
+        # would blow past. The background keepalive pinger (see _keepalive_loop)
+        # then exercises the connection so it stays genuinely alive end-to-end
+        # through NAT / WireProxy SOCKS5 + WireGuard idle timeouts. Other limits keep
+        # httpx's defaults.
+        limits = Limits(
+            max_connections=100,
+            max_keepalive_connections=20,
+            keepalive_expiry=None,
+        )
+        _client = Client(http2=False, proxy=proxy, limits=limits)
         setattr(helpers, "_http_client", _client)
 
     ###########################################
@@ -576,8 +690,18 @@ class PolyRestAPI:
         _tick("place_built_orders", "after_postable_orders_map")
         postable_orders_list = list(postable_orders)
         _tick("place_built_orders", "after_list_conversion")
+        _post_t0 = time.perf_counter()
         post: list[dict] = self.clob.post_orders(postable_orders_list)
+        _post_ms = (time.perf_counter() - _post_t0) * 1000
         _tick("place_built_orders", "after_post_orders_call")
+        # Warm connection => low & stable; a cold reconnect adds TCP+TLS(+SOCKS5) RTTs
+        # on top. Watch this against the keepalive pinger to confirm the POST stays warm.
+        logging.info(
+            colored(
+                "[polymarket] POST /orders network time: {:.1f}ms".format(_post_ms),
+                "cyan",
+            )
+        )
         # Example Response:
         # [
         #    {
