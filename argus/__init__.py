@@ -10,7 +10,7 @@ The following sources are available through Argus:
 - Polymarket (polymarket): Real-time market data and order ability from Polymarket prediction markets.
 """
 
-__version__ = '1.0.8'
+__version__ = '1.1.0'
 
 # Warning: Kept for compatibility with a cache mechanism; do not remove
 # noinspection PyUnresolvedReferences
