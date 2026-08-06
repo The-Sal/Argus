@@ -18,8 +18,8 @@ import json
 import socket
 import threading
 from typing import Iterator, List, Optional
-
 from argus.polymarket_direct import PolymarketEvent
+
 
 DEFAULT_SOCKET_PATH = "/tmp/argus_polymarket_db.sock"
 # Same env var name the Rust server itself reads for its own bind address —

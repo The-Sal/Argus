@@ -41,9 +41,9 @@ from utils3.networking.sockets import Server
 from argus import __version__ as ARGUS_VERSION
 from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus._argus_utils import Introspective, throw_fuss
-from argus.polymarket.apdb_client import APDBClient, APDBError
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
+from argus.polymarket.apdb_client import APDBClient, APDBError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
@@ -319,6 +319,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 for index in range(len(markets)):
                     dict_ticker_index_to_slug[(event.ticker, index)] = markets[index].slug
                     clobs: list[str] = markets[index].clobTokenIds
+                    # noinspection all
                     if clobs is None:
                         # logging.warning("Market %s has no clobTokenIds, skipping.", markets[index].slug)
                         continue
@@ -777,6 +778,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         print(f"  Draining Shards: {len(draining_shards)}")
         print(f"  Total Assets: {total_assets}")
         print(f"  Average Load: {avg_load:.1f} assets per shard")
+        # noinspection all
         print(f"  Capacity Utilization: {utilization:.1f}%")
         print("=" * 65 + "\n")
 
@@ -1014,6 +1016,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         failed = []
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
+            # noinspection all
             if clobs is None:
                 logging.warning(
                     "Market %s has no clobTokenIds, skipping subscription for this submarket.",
@@ -1063,6 +1066,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         failed = []
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
+            # noinspection all
             if clobs is None:
                 logging.warning(
                     "Market %s has no clobTokenIds, skipping unsubscription for this submarket.",
@@ -1265,6 +1269,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for market in event.markets:
             if market.clobTokenIds and clob_id in market.clobTokenIds:
                 outcome_index = market.clobTokenIds.index(clob_id)
+                # noinspection all
                 if market.outcomes and isinstance(market.outcomes, list):
                     outcome = market.outcomes[outcome_index]
                 else:
@@ -1544,6 +1549,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 return "daily"
 
             # Log warning for unclassified durations
+            # noinspection all
             logging.warning(
                 f"Could not determine variant for duration of {duration_minutes:.1f} minutes"
             )
