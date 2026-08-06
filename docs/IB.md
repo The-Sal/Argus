@@ -132,9 +132,9 @@ The main dispatcher for Interactive Brokers market data.
 
 **Client Commands:**
 
-| Command | Description |
-|---------|-------------|
-| `add=SYMBOL` | Subscribe to a ticker |
+| Command             | Description                 |
+|---------------------|-----------------------------|
+| `add=SYMBOL`        | Subscribe to a ticker       |
 | `conid=CONTRACT_ID` | Subscribe using contract ID |
 
 **Note:** The dispatcher sends `$` (ping byte) to clients as a health check, but clients cannot send ping commands.
@@ -287,16 +287,16 @@ python runtime.py ib.forecast --port 9972
 
 ### Feature Matrix
 
-| Feature | MKTDispatcher | FXCDispatcher |
-|---------|--------------|---------------|
-| Real-time market data | ✅ | ✅ |
-| Protocol 2 support | ✅ | ⚠️ (custom) |
-| Caching | ✅ | ✅ |
-| Multi-client support | ✅ | ⚠️ (limited) |
-| Account integration | ✅ (via AccountProvider) | ✅ |
-| Protected assets | ✅ | ✅ |
-| Interactive configuration | ✅ | ✅ |
-| Shortable shares | ✅ | ❌ |
+| Feature                   | MKTDispatcher            | FXCDispatcher |
+|---------------------------|--------------------------|---------------|
+| Real-time market data     | ✅                       | ✅            |
+| Protocol 2 support        | ✅                       | ⚠️ (custom)   |
+| Caching                   | ✅                       | ✅            |
+| Multi-client support      | ✅                       | ⚠️ (limited)  |
+| Account integration       | ✅ (via AccountProvider) | ✅            |
+| Protected assets          | ✅                       | ✅            |
+| Interactive configuration | ✅                       | ✅            |
+| Shortable shares          | ✅                       | ❌            |
 
 ### Caching
 

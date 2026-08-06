@@ -1010,8 +1010,8 @@ socks = [
 
 [[package]]
 name = "utils3"
-version = "0.2.3"
-source = { git = "https://github.com/the-sal/utils3#7ce5947d637e07d422918f7a0bdbd44cb44fff87" }
+version = "1.0.0"
+source = { git = "https://github.com/the-sal/utils3#b4aa02794705b7553ce301a8b651ae3944cd976a" }
 
 [[package]]
 name = "websocket-client"

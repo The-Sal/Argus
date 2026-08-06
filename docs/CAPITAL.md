@@ -67,17 +67,17 @@ python runtime.py capital.com --capital-env live
 
 ### Feature Matrix
 
-| Feature | Support | Notes |
-|---------|---------|-------|
-| Real-time market data | ✅ | Bid/Ask/Last via WebSocket |
-| Symbol resolution | ✅ | Cached lookups for EPIC format |
-| Multi-client support | ✅ | UDS allows multiple connections |
-| Protocol 2 streaming | ✅ | Normalized data format |
-| Batch symbol subscription | ✅ | Load from file |
-| Unsubscribe | ✅ | Clean disconnection |
-| Caching | ✅ | Symbol resolution cached |
-| Demo environment | ✅ | Paper trading |
-| Live environment | ✅ | Real trading |
+| Feature                   | Support | Notes                           |
+|---------------------------|---------|---------------------------------|
+| Real-time market data     | ✅      | Bid/Ask/Last via WebSocket      |
+| Symbol resolution         | ✅      | Cached lookups for EPIC format  |
+| Multi-client support      | ✅      | UDS allows multiple connections |
+| Protocol 2 streaming      | ✅      | Normalized data format          |
+| Batch symbol subscription | ✅      | Load from file                  |
+| Unsubscribe               | ✅      | Clean disconnection             |
+| Caching                   | ✅      | Symbol resolution cached        |
+| Demo environment          | ✅      | Paper trading                   |
+| Live environment          | ✅      | Real trading                    |
 
 ### Why Unix Domain Socket?
 
@@ -101,13 +101,13 @@ For remote access, consider SSH tunneling or switching to TCP (requires code mod
 
 Clients send JSON-encoded actions to the dispatcher:
 
-| Action | Parameters | Description |
-|--------|------------|-------------|
-| `resolve_symbol` | `symbol` | Resolve ticker to Capital.com EPIC |
-| `stream_epic` | `epic` | Start streaming market data for EPIC |
-| `resolve/stream` | `symbol` | Resolve and stream in one call |
-| `unsubscribe` | `epic` | Stop streaming for EPIC |
-| `resolve/stream/batch/file` | `file` | Bulk subscribe from file |
+| Action                      | Parameters | Description                          |
+|-----------------------------|------------|--------------------------------------|
+| `resolve_symbol`            | `symbol`   | Resolve ticker to Capital.com EPIC   |
+| `stream_epic`               | `epic`     | Start streaming market data for EPIC |
+| `resolve/stream`            | `symbol`   | Resolve and stream in one call       |
+| `unsubscribe`               | `epic`     | Stop streaming for EPIC              |
+| `resolve/stream/batch/file` | `file`     | Bulk subscribe from file             |
 
 #### Action Examples
 
