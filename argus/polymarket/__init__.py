@@ -40,6 +40,7 @@ from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
 from argus import __version__ as ARGUS_VERSION
 from argus.wireproxy.wrapper import BIND_ADDRESS
+from argus.satellite_sys import ArgusPolymarketDB
 from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
@@ -161,6 +162,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
 
         self.unsafe_api = UnsafePolyMarket()
+        self.argus_pm_db = ArgusPolymarketDB()
 
         # Proxy Profiling if enabled
         if profile_proxy in [0, 1]:
@@ -183,6 +185,22 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         atexit.register(self._build_pool.shutdown, wait=False)
 
         self._routing_helper = RoutingHelper()
+
+        logging.info('Checking Argus Polymarket Database...')
+        logging.info('APDB Installed: {}'.format(self.argus_pm_db.check_installed()))
+        logging.info('APDB Running: {}'.format(self.argus_pm_db.is_running()))
+        if not self.argus_pm_db.check_installed():
+            logging.info('Installing Argus Polymarket Database...')
+            self.argus_pm_db.install()
+
+        if not self.argus_pm_db.is_running():
+            self.argus_pm_db.start_sidecar()
+
+        version = self.argus_pm_db.get_version_number()
+
+        logging.info('Argus Polymarket Database Version: {}'.format(version))
+
+
         # APDB (argus-polymarket-db) owns the Gamma crawl and the full event
         # set now — this dispatcher queries it over a Unix domain socket
         # instead of holding every tracked market in an in-process dict.
