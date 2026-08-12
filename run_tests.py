@@ -51,9 +51,15 @@ def discover_modules_and_test_imports():
         print('Module:', imported_module)
 
 
+def call_runtime():
+    subprocess.check_call([
+        sys.executable, __file__.replace('run_tests.py', 'runtime.py'), '--help'
+    ])
+
 if __name__ == '__main__':
     checks = [
-        discover_modules_and_test_imports
+        discover_modules_and_test_imports,
+        call_runtime
     ]
 
     for check in checks:

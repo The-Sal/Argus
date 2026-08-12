@@ -12,7 +12,7 @@ import time
 import socket
 import platform
 import subprocess
-from wireproxy import wrapper
+from argus.wireproxy import wrapper
 from utils3 import Container, networking
 
 _addrs_and_hashes = {
