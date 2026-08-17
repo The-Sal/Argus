@@ -6,6 +6,7 @@ import logging
 import requests
 import threading
 import traceback
+from collections import deque
 from termcolor import colored
 from utils3 import runAsThread
 from websocket import WebSocketApp
@@ -340,8 +341,21 @@ class OrderBookStore:
                 verbose=False,
             )
 
-        # Stats
-        self._updates: list[float] = []
+        # Stats — arrival timestamps of recent WS frames, newest last.
+        #
+        # This was an unbounded `list` appended once per frame in `apply_message` and
+        # never trimmed, so it grew for the life of the process: at ~380 frames/s
+        # (157 assets in prod) each entry costs ~67 bytes on free-threaded 3.14
+        # (a 40-byte float plus its list slot), i.e. ~2.2 GB/day of immortal objects.
+        # Because frames are applied on every shard thread, those floats landed in
+        # every thread's mimalloc arena and pinned all of them — which is what a
+        # 5 GB RSS / 4.7 GB-across-six-arenas prod process turned out to be made of.
+        #
+        # Nothing in production reads these samples (`print_stats` is only reachable
+        # from the __main__ demo below), so a bounded window is strictly sufficient.
+        self._updates: deque[float] = deque(
+            maxlen=int(os.environ.get('POLYMARKET_WS_STAT_SAMPLES', '4096'))
+        )
 
     ##############################################
     # Pool-facing entry points
@@ -622,20 +636,30 @@ class OrderBookStore:
         Print msgs/sec received in the last 10 seconds.
         :return:
         """
-        updates_copy = self._updates.copy()
+        updates_copy = list(self._updates)
         now = time.time()
         last_10s = [t for t in updates_copy if now - t <= 10]
         msgs_per_sec = len(last_10s) / 10
         logging.info('Polymarket Order Book WebSocket stats: %.2f msgs/sec in the last 10 seconds.', msgs_per_sec)
 
-        # find the highest 10s msgs/sec in history
+        # Highest 10s msgs/sec within the retained window, via a two-pointer sweep — the
+        # previous nested-loop version was O(n^2) over a list that grew without bound,
+        # which made this unrunnable in production long before the memory became a problem.
+        #
+        # Sort first: `apply_message` runs concurrently on every shard thread and there is
+        # no lock around "read time.time() -> append", so two threads can interleave and
+        # leave the deque very slightly out of order.  The sweep assumes ascending input
+        # and silently overcounts without this; the old brute force was order-independent.
+        # O(n log n) on a bounded window is still far cheaper than the O(n^2) it replaced.
+        updates_copy.sort()
         highest_10s = 0
-        for i in range(len(updates_copy)):
-            start_time = updates_copy[i]
-            end_time = start_time + 10
-            count = sum(1 for t in updates_copy if start_time <= t < end_time)
-            if count > highest_10s:
-                highest_10s = count
+        left = 0
+        for right, start_time in enumerate(updates_copy):
+            while updates_copy[left] <= start_time - 10:
+                left += 1
+            span = right - left + 1
+            if span > highest_10s:
+                highest_10s = span
         highest_msgs_per_sec = highest_10s / 10
         logging.info('Polymarket Order Book WebSocket highest recorded: %.2f msgs/sec in any 10 second window.',
                      highest_msgs_per_sec)
@@ -736,6 +760,14 @@ class PolyMarketOrderBookConn(PolymarketWSSBase):
         self._shard_index = shard_index
         self._roster: set[str] = set()
         self._roster_lock = threading.Lock()
+        # Upper bound on how long a restore thread will wait for the first PONG after a
+        # reconnect before giving up.  Generous on purpose: PING goes out every 10s and
+        # the ping/pong failure detector tears the socket down after 3 missed PONGs
+        # (~30s), which spawns a fresh restore thread anyway — so this only ever fires
+        # for a socket that is wedged rather than merely slow.
+        self._restore_state_timeout = float(
+            os.environ.get('POLYMARKET_WS_RESTORE_TIMEOUT', '120')
+        )
 
     def _create_ws_app(self):
         self._ws = WebSocketApp(
@@ -757,12 +789,48 @@ class PolyMarketOrderBookConn(PolymarketWSSBase):
 
     def _on_reconnect_start(self):
         self._reset_threading_events()
-        self._defer_restore_state()
+        # Hand the restore thread the Event it was spawned for.  See _defer_restore_state.
+        self._defer_restore_state(self.wait_till_first_pong)
 
     @runAsThread
-    def _defer_restore_state(self):
-        """After the new socket comes back up, replay every asset_id in our roster."""
-        self.wait_till_first_pong.wait()
+    def _defer_restore_state(self, pong_event: threading.Event):
+        """After the new socket comes back up, replay every asset_id in our roster.
+
+        `pong_event` is bound at spawn time rather than read off `self` inside the
+        thread, and the wait is bounded.  Both matter:
+
+        `_reset_threading_events()` *replaces* `self.wait_till_first_pong` with a brand
+        new Event on every reconnect.  The old code re-read that attribute here, so if a
+        second reconnect landed before the first PONG arrived (trivially easy — PING is
+        only sent every 10s), this thread was left parked on an Event that nothing held
+        a reference to any more and that nothing would ever `.set()`.  With no timeout on
+        the wait, that thread never woke up again: one permanently parked thread per
+        rapid-reconnect pair, each keeping a live per-thread mimalloc arena resident on
+        free-threaded 3.14.  A prod dispatcher accumulated 721 of them in 29.5 hours.
+
+        Binding the Event makes the wait immune to the swap; the timeout guarantees the
+        thread exits even if the socket is wedged; and the identity check below drops the
+        restore if a newer reconnect has already superseded us, so only one thread ever
+        replays the roster.
+        """
+        if not pong_event.wait(timeout=self._restore_state_timeout):
+            logging.warning(
+                '%s: no PONG within %.0fs of reconnect; abandoning subscription restore '
+                '(a later reconnect will retry).',
+                self._name, self._restore_state_timeout,
+            )
+            return
+
+        if self._internally_closed:
+            logging.info('%s: shard closed while awaiting PONG; skipping restore.', self._name)
+            return
+
+        if pong_event is not self.wait_till_first_pong:
+            logging.info(
+                '%s: superseded by a newer reconnect; leaving restore to it.', self._name
+            )
+            return
+
         with self._roster_lock:
             assets = list(self._roster)
         if assets:

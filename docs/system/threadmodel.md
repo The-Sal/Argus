@@ -12,14 +12,14 @@ The PolymarketDispatcher employs a **hybrid multi-threaded architecture** combin
 
 These threads run for the entire lifetime of the dispatcher:
 
-| Thread | File | Spawn Function | Lifespan | Purpose |
-|--------|------|----------------|----------|---------|
-| **TCP Server Main Loop** | `polymarket/__init__.py:1409-1411` | `@runAsThread run()` | Until process exit | Accepts incoming client connections |
-| **Market Cache Refresher** | `polymarket/__init__.py:170-179` | `@runAsThread start_update_markets_cache_thread()` | Infinite loop (5min sleep) | Periodically refreshes market metadata cache |
-| **Order Book WebSocket** | `polymarket_direct/wss.py:187-190` | `@runAsThread _start_ws()` | Until reconnect | WebSocket connection to Polymarket order book |
-| **Order Book Ping/Pong** | `polymarket_direct/wss.py:130-176` | `@runAsThread ping()` | Infinite loop (10s sleep) | Heartbeat maintenance for order book WS |
-| **Account Events WebSocket** | `polymarket_direct/wss.py:187-190` | `@runAsThread _start_ws()` | Until reconnect | Authenticated WS for account events |
-| **Account Events Ping/Pong** | `polymarket_direct/wss.py:130-176` | `@runAsThread ping()` | Infinite loop (10s sleep) | Heartbeat for account events WS |
+| Thread                       | File                               | Spawn Function                                     | Lifespan                   | Purpose                                       |
+|------------------------------|------------------------------------|----------------------------------------------------|----------------------------|-----------------------------------------------|
+| **TCP Server Main Loop**     | `polymarket/__init__.py:1409-1411` | `@runAsThread run()`                               | Until process exit         | Accepts incoming client connections           |
+| **Market Cache Refresher**   | `polymarket/__init__.py:170-179`   | `@runAsThread start_update_markets_cache_thread()` | Infinite loop (5min sleep) | Periodically refreshes market metadata cache  |
+| **Order Book WebSocket**     | `polymarket_direct/wss.py:187-190` | `@runAsThread _start_ws()`                         | Until reconnect            | WebSocket connection to Polymarket order book |
+| **Order Book Ping/Pong**     | `polymarket_direct/wss.py:130-176` | `@runAsThread ping()`                              | Infinite loop (10s sleep)  | Heartbeat maintenance for order book WS       |
+| **Account Events WebSocket** | `polymarket_direct/wss.py:187-190` | `@runAsThread _start_ws()`                         | Until reconnect            | Authenticated WS for account events           |
+| **Account Events Ping/Pong** | `polymarket_direct/wss.py:130-176` | `@runAsThread ping()`                              | Infinite loop (10s sleep)  | Heartbeat for account events WS               |
 
 **Thread Creation Count**: ~6 persistent threads minimum
 
@@ -144,21 +144,21 @@ Total Client Threads = (1 connect thread) + (N message handling threads per clie
 
 ### Lock Inventory
 
-| Lock Name | Location | Protects | Type |
-|-----------|----------|----------|------|
-| `_market_cache_lock` | `__init__.py:132` | `_all_markets_cache`, `_asset_id_to_ticker` | `threading.Lock()` |
-| `_lock` (inherited) | `_classes.py:119` | `_sockets`, `_market_data_routing_table`, `_order_subscriptions` | `threading.Lock()` |
-| `_dict_lock` | `wss.py:289` | `_asset_id_to_order_book`, `_asset_id_to_misc_info` | `threading.Lock()` |
-| `_ping_pong_lock` | `wss.py:38` | `_ping_pongs` counter tuple | `threading.Lock()` |
-| `_pinging_lock` | `wss.py:43` | Prevents concurrent ping threads | `threading.Lock()` |
-| `_lock` | `CorrelationIDChecker` (`_classes.py:248`) | `seen_correlation_ids` OrderedDict | `threading.Lock()` |
+| Lock Name            | Location                                   | Protects                                                         | Type               |
+|----------------------|--------------------------------------------|------------------------------------------------------------------|--------------------|
+| `_market_cache_lock` | `__init__.py:132`                          | `_all_markets_cache`, `_asset_id_to_ticker`                      | `threading.Lock()` |
+| `_lock` (inherited)  | `_classes.py:119`                          | `_sockets`, `_market_data_routing_table`, `_order_subscriptions` | `threading.Lock()` |
+| `_dict_lock`         | `wss.py:289`                               | `_asset_id_to_order_book`, `_asset_id_to_misc_info`              | `threading.Lock()` |
+| `_ping_pong_lock`    | `wss.py:38`                                | `_ping_pongs` counter tuple                                      | `threading.Lock()` |
+| `_pinging_lock`      | `wss.py:43`                                | Prevents concurrent ping threads                                 | `threading.Lock()` |
+| `_lock`              | `CorrelationIDChecker` (`_classes.py:248`) | `seen_correlation_ids` OrderedDict                               | `threading.Lock()` |
 
 ### Threading Events
 
-| Event | Location | Purpose |
-|-------|----------|---------|
+| Event                   | Location    | Purpose                                  |
+|-------------------------|-------------|------------------------------------------|
 | `wait_till_socket_open` | `wss.py:50` | Signals WebSocket connection established |
-| `wait_till_first_pong` | `wss.py:51` | Signals first PONG received after PING |
+| `wait_till_first_pong`  | `wss.py:51` | Signals first PONG received after PING   |
 
 ---
 
@@ -294,35 +294,35 @@ with self._dict_lock:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                   PolymarketDispatcher                     │
+│                   PolymarketDispatcher                      │
 ├─────────────────────────────────────────────────────────────┤
-│  Main Process Thread                                         │
-│  ├── Initializes all components                              │
+│  Main Process Thread                                        │
+│  ├── Initializes all components                             │
 │  ├── Spawns background threads via @runAsThread             │
-│  └── Runs interactive_mode()                                 │
+│  └── Runs interactive_mode()                                │
 ├─────────────────────────────────────────────────────────────┤
 │  TCP Server (utils3.networking.sockets.Server)              │
-│  ├── Thread #1: Server accept loop (daemon)                  │
-│  ├── Thread N: Per-client connection (daemon)                │
-│  └── Thread M: Per-message handling (daemon)                 │
+│  ├── Thread #1: Server accept loop (daemon)                 │
+│  ├── Thread N: Per-client connection (daemon)               │
+│  └── Thread M: Per-message handling (daemon)                │
 ├─────────────────────────────────────────────────────────────┤
-│  RoutingHelper (Thread-Safe)                                 │
-│  ├── _lock protects routing tables                           │
-│  ├── add_socket() → Lock acquired                          │
+│  RoutingHelper (Thread-Safe)                                │
+│  ├── _lock protects routing tables                          │
+│  ├── add_socket() → Lock acquired                           │
 │  └── remove_socket() → Lock acquired + cleanup              │
 ├─────────────────────────────────────────────────────────────┤
 │  Order Book WebSocket (PolyMarketOrderBookWss)              │
 │  ├── Thread: WebSocket connection (persistent)              │
-│  ├── Thread: Ping/Pong heartbeat (persistent)                │
-│  ├── ThreadPool: 5 workers for tick sizes                  │
-│  └── _dict_lock: Order book state protection               │
+│  ├── Thread: Ping/Pong heartbeat (persistent)               │
+│  ├── ThreadPool: 5 workers for tick sizes                   │
+│  └── _dict_lock: Order book state protection                │
 ├─────────────────────────────────────────────────────────────┤
 │  Account Events WebSocket (PolyMarketAccountEventWss)       │
-│  ├── Thread: WebSocket connection (persistent)            │
-│  └── Thread: Ping/Pong heartbeat (persistent)              │
+│  ├── Thread: WebSocket connection (persistent)              │
+│  └── Thread: Ping/Pong heartbeat (persistent)               │
 ├─────────────────────────────────────────────────────────────┤
-│  REST API (PolyRestAPI)                                      │
-│  └── ThreadPool: 5 workers for rapid order building        │
+│  REST API (PolyRestAPI)                                     │
+│  └── ThreadPool: 5 workers for rapid order building         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -351,16 +351,16 @@ Market Data Update (WebSocket Thread)
 
 ### Environment Variables Affecting Threading
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `POLYMARKET_MAX_SOCKET_RETRIES` | 50 | Max WebSocket reconnection attempts |
-| `POLYMARKET_MAX_PING_PONG_FAILURES` | 3 | Max ping/pong failures before reconnect |
-| `POLYMARKET_DISABLE_PING_PONG_LOGS` | false | Disable ping/pong logging |
-| `POLYMARKET_ORDERBOOK_DEPTH` | 10 | Depth for P2 encoding |
-| `POLYMARKET_RAPID_ORDER_BUILD` | false | Enable rapid order building thread pool |
-| `POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL` | 300 | Cache refresh interval in seconds |
-| `MAX_SEEN_CORRELATION_IDS` | 100,000 | Max correlation IDs to track |
-| `MAX_CORRELATION_ID_LENGTH` | 40 | Max correlation ID length |
+| Variable                                        | Default | Description                             |
+|-------------------------------------------------|---------|-----------------------------------------|
+| `POLYMARKET_MAX_SOCKET_RETRIES`                 | 50      | Max WebSocket reconnection attempts     |
+| `POLYMARKET_MAX_PING_PONG_FAILURES`             | 3       | Max ping/pong failures before reconnect |
+| `POLYMARKET_DISABLE_PING_PONG_LOGS`             | false   | Disable ping/pong logging               |
+| `POLYMARKET_ORDERBOOK_DEPTH`                    | 10      | Depth for P2 encoding                   |
+| `POLYMARKET_RAPID_ORDER_BUILD`                  | false   | Enable rapid order building thread pool |
+| `POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL` | 300     | Cache refresh interval in seconds       |
+| `MAX_SEEN_CORRELATION_IDS`                      | 100,000 | Max correlation IDs to track            |
+| `MAX_CORRELATION_ID_LENGTH`                     | 40      | Max correlation ID length               |
 
 ---
 
@@ -394,16 +394,16 @@ if possible_future and not possible_future.done():
 
 ## Summary Statistics
 
-| Category | Count | Notes |
-|----------|-------|-------|
-| **Persistent Threads** | 6+ | Background maintenance |
-| **ThreadPools** | 3 | Fixed worker pools |
-| **Locks** | 6+ | Synchronization |
-| **Events** | 2 | State synchronization |
-| **Max Workers (Order Building)** | 10 | Temporary pool |
-| **Max Workers (Tick Size)** | 5 | Persistent pool |
-| **Max Workers (REST API)** | 5 | Persistent pool |
-| **Total Thread Count** | 6 + 3*N + 10 (variable) | N = connected clients |
+| Category                         | Count                   | Notes                  |
+|----------------------------------|-------------------------|------------------------|
+| **Persistent Threads**           | 6+                      | Background maintenance |
+| **ThreadPools**                  | 3                       | Fixed worker pools     |
+| **Locks**                        | 6+                      | Synchronization        |
+| **Events**                       | 2                       | State synchronization  |
+| **Max Workers (Order Building)** | 10                      | Temporary pool         |
+| **Max Workers (Tick Size)**      | 5                       | Persistent pool        |
+| **Max Workers (REST API)**       | 5                       | Persistent pool        |
+| **Total Thread Count**           | 6 + 3*N + 10 (variable) | N = connected clients  |
 
 ---
 

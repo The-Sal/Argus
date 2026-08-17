@@ -56,29 +56,29 @@ python3 runtime.py binance.core
 
 ### Feature Matrix
 
-| Feature | Support | Notes |
-|---------|---------|-------|
-| Real-time market data | ✅ | Book ticker (best bid/ask) via WebSocket |
-| Multi-stream per symbol | ✅ | aggTrade, depth@100ms, kline_1s, bookTicker |
-| Multi-client support | ✅ | TCP allows multiple concurrent connections |
-| Protocol 2 streaming | ✅ | Market data normalization |
-| Automatic subscription | ✅ | Subscribe on client request, unsubscribe on disconnect |
-| Message statistics | ✅ | Real-time throughput monitoring |
-| Auto-dump to file | ✅ | Periodic JSON dumps of raw WebSocket messages |
-| Health checking | ✅ | Periodic ping/cleanup of disconnected clients |
-| Interactive CLI | ✅ | Runtime configuration and monitoring |
-| Automatic reconnection | ✅ | Reconnects to Binance on WebSocket close |
+| Feature                 | Support | Notes                                                  |
+|-------------------------|---------|--------------------------------------------------------|
+| Real-time market data   | ✅      | Book ticker (best bid/ask) via WebSocket               |
+| Multi-stream per symbol | ✅      | aggTrade, depth@100ms, kline_1s, bookTicker            |
+| Multi-client support    | ✅      | TCP allows multiple concurrent connections             |
+| Protocol 2 streaming    | ✅      | Market data normalization                              |
+| Automatic subscription  | ✅      | Subscribe on client request, unsubscribe on disconnect |
+| Message statistics      | ✅      | Real-time throughput monitoring                        |
+| Auto-dump to file       | ✅      | Periodic JSON dumps of raw WebSocket messages          |
+| Health checking         | ✅      | Periodic ping/cleanup of disconnected clients          |
+| Interactive CLI         | ✅      | Runtime configuration and monitoring                   |
+| Automatic reconnection  | ✅      | Reconnects to Binance on WebSocket close               |
 
 ### WebSocket Streams
 
 Each subscribed symbol receives **4 concurrent streams** from Binance:
 
-| Stream | Data | Update Rate |
-|--------|------|-------------|
-| `@aggTrade` | Price, quantity, trade ID | Real-time |
-| `@depth@100ms` | Bids/asks (up to 100 levels) | Every 100ms |
-| `@kline_1s` | OHLCV + trade count | Every 1 second |
-| `@bookTicker` | Best bid/ask prices and sizes | Every 100ms |
+| Stream         | Data                          | Update Rate    |
+|----------------|-------------------------------|----------------|
+| `@aggTrade`    | Price, quantity, trade ID     | Real-time      |
+| `@depth@100ms` | Bids/asks (up to 100 levels)  | Every 100ms    |
+| `@kline_1s`    | OHLCV + trade count           | Every 1 second |
+| `@bookTicker`  | Best bid/ask prices and sizes | Every 100ms    |
 
 **Currently Used:** Only `@bookTicker` is actively processed for Protocol 2 transmission. Other streams are collected but not forwarded to clients.
 

@@ -55,7 +55,11 @@ def _setup_proxy_for_dispatcher(idx, verbose=True):
         config_name = mappings[str(idx)].split('.conf')[0]
         if verbose:
             print(__name__, f'Sending command to WireProxy daemon to start proxy with config name: {config_name}')
-        state = send_server_command('state')['result']
+        raw = send_server_command('state')
+        try:
+            state = raw['result']
+        except KeyError:
+            raise RuntimeError(f'Failed to get WireProxy daemon state: {raw}')
         already_running = False
         if state['running']:
             active_config = state['config'].split('.conf')[0]

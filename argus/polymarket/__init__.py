@@ -18,7 +18,6 @@ IMPORTANT — Account Update Delivery Requirement:
     to market data.  If your workflow depends on receiving account lifecycle
     events, you MUST subscribe to at least one asset_id before placing orders.
 """
-import gc
 import os
 import json
 import time
@@ -41,11 +40,11 @@ from argus.polymarket_direct import wss
 from utils3.networking.sockets import Server
 from argus import __version__ as ARGUS_VERSION
 from argus.wireproxy.wrapper import BIND_ADDRESS
-from argus.cache_sys import DomainCache, FastCache
+from argus.satellite_sys import ArgusPolymarketDB
 from argus._argus_utils import Introspective, throw_fuss
-from argus.polymarket._mem_slim import traverse_and_slim
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
+from argus.polymarket.apdb_client import APDBClient, APDBError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
@@ -61,15 +60,14 @@ from argus.polymarket._classes import (
     OrderExecutionDisabledError,
 )
 
-# Much like it's predecessor on legacy/ this dispatcher is contained to its own cache file due to bloat.
-_poly_cache = FastCache(cache_file="~/.argus/polymarket_cache.pkl")
-_CACHE = DomainCache("polymarket_dispatcher_v2", cache=_poly_cache)
-
-
-
 def compress(data: dict) -> str:
     minified = json.dumps(data, separators=(',', ':')).encode()
     return base64.b64encode(zlib.compress(minified, level=9)).decode()
+
+
+# Sentinel distinguishing "not in the negRisk cache yet" from a cached value
+# of None (negRisk is Optional[bool] on PolymarketEvent).
+_NEG_RISK_UNSET = object()
 
 
 class PolymarketDispatcher(Introspective, RoutingHelper):
@@ -125,7 +123,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         super().__init__()
         RoutingHelper.__init__(self)
 
-        # Configs dictionary for dispatcher settings
+        # Config dictionary for dispatcher settings
         self._configs = {
             "Show P1 Packets": False,
             "Print P2 packets": False,
@@ -164,6 +162,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
 
         self.unsafe_api = UnsafePolyMarket()
+        self.argus_pm_db = ArgusPolymarketDB()
 
         # Proxy Profiling if enabled
         if profile_proxy in [0, 1]:
@@ -186,16 +185,60 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         atexit.register(self._build_pool.shutdown, wait=False)
 
         self._routing_helper = RoutingHelper()
-        # str is 'ticker' for Polymarket
-        self._all_markets_cache: dict[str, PolymarketEvent] = {}
+
+        logging.info('Checking Argus Polymarket Database...')
+        logging.info('APDB Installed: {}'.format(self.argus_pm_db.check_installed()))
+        logging.info('APDB Running: {}'.format(self.argus_pm_db.is_running()))
+        if not self.argus_pm_db.check_installed():
+            logging.info('Installing Argus Polymarket Database...')
+            self.argus_pm_db.install()
+
+        if not self.argus_pm_db.is_running():
+            self.argus_pm_db.start_sidecar()
+
+        version = self.argus_pm_db.get_version_number()
+
+        logging.info('Argus Polymarket Database Version: {}'.format(version))
+
+
+        # APDB (argus-polymarket-db) owns the Gamma crawl and the full event
+        # set now — this dispatcher queries it over a Unix domain socket
+        # instead of holding every tracked market in an in-process dict.
+        self._apdb = APDBClient()
+        # Fail loudly and immediately if APDB isn't reachable at startup,
+        # rather than booting with empty asset-id/slug/negRisk caches and
+        # failing every order and market-data update with confusing
+        # downstream errors for up to _market_cache_refresh_interval seconds.
+        try:
+            apdb_info = self._apdb.db_info()
+            logging.info(
+                "Connected to APDB: version=%s events=%s",
+                apdb_info.get("version"),
+                apdb_info.get("lines"),
+            )
+        except APDBError as e:
+            raise RuntimeError(
+                f"PolymarketDispatcher could not connect to APDB at startup: {e}. "
+                f"argus-polymarket-db must be running before the dispatcher starts "
+                f"(see the APDB_BIND_ADDRESS env var; default /tmp/argus_polymarket_db.sock)."
+            ) from e
 
         # TL;DR the P2 encoding format's ticker field
         # is formatted like <Event-Ticker><Market-Slug><Asset_id>
         # now we will get asset_id from the market data wss, but we need
         # to match the asset_id to the ticker and market index so we can route the data and also decode the market data correctly.
         self._asset_id_to_ticker = {}
-        # ^^^ is locked with '_market_cache_lock' since it is only updated in the market cache refresh
-        # function and read in the market data update callback, which are both protected by the same lock.
+        # Small in-process caches, populated together in
+        # _build_asset_id_to_ticker_mapping and locked with
+        # '_market_cache_lock', kept specifically so two latency-sensitive
+        # paths never do APDB network I/O:
+        #   - (ticker, market_index) -> market_slug, read by the hot per-tick
+        #     WS callback (_order_book_update_callback).
+        #   - asset_id -> negRisk, read by order placement
+        #     (_resolve_market_for_order) — negRisk is the *only* field
+        #     PolyRestAPI.build_order reads off the market object it's given.
+        self._ticker_market_index_to_slug: dict[tuple[str, int], str] = {}
+        self._asset_id_to_neg_risk: dict[str, bool] = {}
 
         self._orderbook_depth = int(os.environ.get("POLYMARKET_ORDERBOOK_DEPTH", 10))
 
@@ -203,17 +246,13 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._market_cache_refresh_interval = int(
             os.environ.get("POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL", 300)
         )
-        self._market_api_limit = 100  # Gamma /events clamps page size to 100
-        self._max_seen_markets = 10100  # Typical polymarket size
 
-        # Make sure we have markets ready to serve
-        self._update_markets_cache(
-            invalidate_cache=False
-        )  # load from cache or fetch fresh
+        # Make sure asset_id routing is ready before we start receiving market data
+        self._build_asset_id_to_ticker_mapping()
 
         # Start background tasks
         self.market_data.run(main_thread=False)
-        self.start_update_markets_cache_thread()
+        self.start_asset_id_mapping_refresh_thread()
 
         self._correlation_id_checker = CorrelationIDChecker()
         self._log_file = os.environ.get(
@@ -241,11 +280,9 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         logging.info("PolymarketDispatcher initialized on %s:%d", host, port)
         logging.info(
-            "Market cache refresh interval set to %d seconds",
+            "Asset-id mapping refresh interval set to %d seconds",
             self._market_cache_refresh_interval,
         )
-        logging.info("Market API limit set to %d", self._market_api_limit)
-        logging.info("Max seen markets initialized to %d", self._max_seen_markets)
 
     @runAsThread
     def async_write_log(self, message: str):
@@ -258,127 +295,64 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     #######################################
 
     @runAsThread
-    def start_update_markets_cache_thread(self):
+    def start_asset_id_mapping_refresh_thread(self):
         """
-        Periodically refresh the cache of all markets.
+        Periodically rebuild the asset_id -> (ticker, market_index) mapping
+        (and the market-slug cache) from APDB, so newly crawled/updated
+        markets become routable without restarting the dispatcher.
         :return:
         """
         while True:
             # Sleep first, to defer the first refresh and allow the initial load to complete
             time.sleep(self._market_cache_refresh_interval)
-            self._update_markets_cache(invalidate_cache=True)
+            self._build_asset_id_to_ticker_mapping()
 
-    # Note: The intended logic is that when the program boots, we already have a cache of markets
-    # loaded from disk (if available) or freshly fetched from the API. Subsequent calls to this function with invalidate_cache=True
-    # will force a refresh from the API. The invalidation call would be coming from the background thread.
-    def _update_markets_cache(self, invalidate_cache: bool = False):
-        """Updates markets cache; logs errors"""
-        uuid_of_func = "_update_markets_cache.internal"
-
-        if invalidate_cache:
-            print_with_name("Invalidating Polymarket markets cache.")
-            _CACHE.invalidate_key(
-                _CACHE.generate_key(
-                    func_uuid=uuid_of_func,
-                )
-            )
-        else:
-            print_with_name(
-                "Loading Polymarket markets cache from disk or fetching fresh if not available."
-            )
-
-        @_CACHE.cache_decorator(
-            func_uuid=uuid_of_func,
-            expiration=60 * 60 * 3,  # 3 hours
-            should_cache_function=lambda x: len(x.keys()) > 0,
-        )
-        def fetch_all_markets_cached():
-            scoped_all_markets_cache = {}
-            progress = tqdm.tqdm(
-                total=self._max_seen_markets,
-                desc="Refreshing Polymarket markets cache",
-                unit="markets",
-                dynamic_ncols=True,
-            )
-            try:
-                # NOTE: Gamma's offset pagination is hard-capped at offset 2100,
-                # so the old offset loop silently truncated the cache to the ~2100
-                # newest-by-id open events (almost all of them today's ephemeral
-                # crypto up/down markets), dropping ~80% of open markets. We crawl
-                # via an endDate cursor instead, which reaches the full set.
-                for page in self.rest_api.iter_open_events(
-                        page_limit=self._market_api_limit
-                ):
-                    scoped_all_markets_cache.update(
-                        {market.ticker: market for market in page}
-                    )
-                    progress.update(len(page))
-                    progress.set_postfix(
-                        {"Unique Markets": len(scoped_all_markets_cache)}
-                    )
-                    progress.refresh()
-
-                progress.close()
-                progress.refresh()
-                time.sleep(1)  # tqdm refresh
-                logging.info(
-                    "Refreshed all markets cache with %d markets.",
-                    len(scoped_all_markets_cache),
-                )
-                self._max_seen_markets = max(
-                    self._max_seen_markets, len(scoped_all_markets_cache)
-                )
-            except Exception as e:
-                logging.error("Error refreshing all markets cache: %s", e)
-
-            return scoped_all_markets_cache
-
-        markets_cached = fetch_all_markets_cached()
-
-        if os.environ.get("POLYMARKET_MEMORY_PRUNING", "false").lower() == "true":
-            for key, value in tqdm.tqdm(
-                    markets_cached.items(),
-                    desc="Pruning events data in cache",
-                    unit="events",
-                    dynamic_ncols=True,
-            ):
-                markets_cached[key] = traverse_and_slim(value)
-
-        _poly_cache.unload_cache()
-        gc.collect()
-
-        with self._market_cache_lock:
-            self._all_markets_cache.update(markets_cached)
-
-        self._build_asset_id_to_ticker_mapping()
-
-    # ALREADY LOCKED WITH `_market_cache_lock` DO NOT use it inside with `_market_cache_lock` block
     def _build_asset_id_to_ticker_mapping(self):
         """
-        Build a mapping of asset_id to ticker for a quick lookup when receiving market data updates.
-        This should be called after the markets cache is updated.
+        Build a mapping of asset_id to ticker (plus the small ticker/market_index
+        -> slug and asset_id -> negRisk caches) for quick lookup when receiving
+        market data updates and placing orders.
+
+        Pulls the current event set from APDB — which owns the Polymarket
+        Gamma crawl and refreshes it on its own interval — page by page,
+        rather than iterating an in-process event cache. Only the tiny
+        derived mappings are retained afterward; full event bodies are not
+        kept.
+
+        On an APDB failure this logs and leaves the existing mappings in
+        place untouched, same as a failed refresh always has here.
         :return:
         """
         dict_asset_id_to_ticker = {}
-        with self._market_cache_lock:
-            for ticker, event in tqdm.tqdm(
-                    self._all_markets_cache.items(),
+        dict_ticker_index_to_slug = {}
+        dict_asset_id_to_neg_risk = {}
+        try:
+            for event in tqdm.tqdm(
+                    self._apdb.iter_all_events(),
                     desc="Building asset_id to ticker mapping",
-                    unit="markets",
+                    unit="events",
                     dynamic_ncols=True,
             ):
                 markets = event.markets
                 for index in range(len(markets)):
+                    dict_ticker_index_to_slug[(event.ticker, index)] = markets[index].slug
                     clobs: list[str] = markets[index].clobTokenIds
+                    # noinspection all
                     if clobs is None:
                         # logging.warning("Market %s has no clobTokenIds, skipping.", markets[index].slug)
                         continue
                     for clob_id in clobs:
                         # Store ticker and market index for later use in market data updates
-                        dict_asset_id_to_ticker[clob_id] = (ticker, index)
+                        dict_asset_id_to_ticker[clob_id] = (event.ticker, index)
+                        dict_asset_id_to_neg_risk[clob_id] = event.negRisk
+        except APDBError as e:
+            logging.error("Failed to refresh asset_id -> ticker mapping from APDB: %s", e)
+            return
 
         with self._market_cache_lock:
             self._asset_id_to_ticker.update(dict_asset_id_to_ticker)
+            self._ticker_market_index_to_slug.update(dict_ticker_index_to_slug)
+            self._asset_id_to_neg_risk.update(dict_asset_id_to_neg_risk)
 
     #######################################
     # Callbacks
@@ -587,10 +561,27 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             #                 asset_id)
             return
 
+        # Read from the in-process slug cache, NOT APDB — this callback fires
+        # per WS tick and must never do network I/O on this path. The cache
+        # is populated by _build_asset_id_to_ticker_mapping and can only be
+        # missing an entry if a refresh is in flight for a brand-new market;
+        # in that rare case we skip this update rather than crash the WS
+        # thread (the next tick will very likely have the slug cached).
+        with self._market_cache_lock:
+            market_slug = self._ticker_market_index_to_slug.get((ticker, market_index))
+        if market_slug is None:
+            logging.warning(
+                "No cached slug for ticker=%s market_index=%s (asset_id=%s); skipping market data update.",
+                ticker,
+                market_index,
+                asset_id,
+            )
+            return
+
         p2_obj = self.send_market_data_with_p2_encoding(
             market_data=update,
             ticker=ticker,
-            market_slug=self._all_markets_cache[ticker].markets[market_index].slug,
+            market_slug=market_slug,
             asset_id=asset_id,
         )
 
@@ -805,6 +796,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         print(f"  Draining Shards: {len(draining_shards)}")
         print(f"  Total Assets: {total_assets}")
         print(f"  Average Load: {avg_load:.1f} assets per shard")
+        # noinspection all
         print(f"  Capacity Utilization: {utilization:.1f}%")
         print("=" * 65 + "\n")
 
@@ -913,20 +905,27 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     def _warm_clob_caches_for_subscribed_asset(self, clob_id: str) -> None:
         """
         Pre-populate py-clob-client-v2's per-token caches (tick_size, neg_risk,
-        condition_id) from data already present in _all_markets_cache. This avoids
+        condition_id) from data already fetched from APDB. This avoids
         the GET /tick-size HTTP round-trip that would otherwise fire on the first
         build_order for this token (see PolyRestAPI.warm_clob_caches_for_token).
 
-        Best-effort: if the market is not yet in cache, or the tick_size field is
-        missing, we silently skip — the order build path will fall back to its
-        normal (slower) HTTP fetch.
+        Best-effort: if the market is not yet known, the tick_size field is
+        missing, or APDB can't be reached, we silently skip — the order build
+        path will fall back to its normal (slower) HTTP fetch.
         """
         with self._market_cache_lock:
             ticker_market_index = self._asset_id_to_ticker.get(clob_id)
-            if ticker_market_index is None:
-                return
-            ticker, market_index = ticker_market_index
-            event = self._all_markets_cache.get(ticker)
+        if ticker_market_index is None:
+            return
+        ticker, market_index = ticker_market_index
+
+        try:
+            event = self._apdb.get_event(ticker)
+        except APDBError as e:
+            print_with_name(
+                "warm_clob_caches_for_token: failed to fetch event {} from APDB: {}".format(ticker, e)
+            )
+            return
 
         if event is None or not event.markets or market_index >= len(event.markets):
             return
@@ -1020,7 +1019,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         sock = args_obj.sock
         self.add_socket(sock)
         ticker = args_obj.args[0]
-        market = self._all_markets_cache.get(ticker, None)
+        try:
+            market = self._apdb.get_event(ticker)
+        except APDBError as e:
+            raise PolyMarketDispatcherError(
+                f"Failed to fetch market '{ticker}' from APDB for subscription: {e}"
+            )
         if market is None:
             raise PolyMarketDispatcherError(
                 f"Market with ticker '{ticker}' not found for subscription."
@@ -1030,6 +1034,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         failed = []
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
+            # noinspection all
             if clobs is None:
                 logging.warning(
                     "Market %s has no clobTokenIds, skipping subscription for this submarket.",
@@ -1064,7 +1069,12 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         sock = args_obj.sock
         ticker = args_obj.args[0]
-        market = self._all_markets_cache.get(ticker, None)
+        try:
+            market = self._apdb.get_event(ticker)
+        except APDBError as e:
+            raise PolyMarketDispatcherError(
+                f"Failed to fetch market '{ticker}' from APDB for unsubscription: {e}"
+            )
         if market is None:
             raise PolyMarketDispatcherError(
                 f"Market with ticker '{ticker}' not found for unsubscription."
@@ -1074,6 +1084,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         failed = []
         for market_index in range(len(market.markets)):
             clobs: list[str] = market.markets[market_index].clobTokenIds
+            # noinspection all
             if clobs is None:
                 logging.warning(
                     "Market %s has no clobTokenIds, skipping unsubscription for this submarket.",
@@ -1138,8 +1149,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :return:
         """
         _ = args_obj
-        markets = self._all_markets_cache
-        return [market.to_dict() for market in markets.values()]
+        try:
+            return [event.to_dict() for event in self._apdb.iter_all_events()]
+        except APDBError as e:
+            raise PolyMarketDispatcherError(f"Failed to fetch markets from APDB: {e}")
 
     def _handle_fetch_all_markets_ticker(self, args_obj: ArgsObject):
         """
@@ -1150,7 +1163,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :return:
         """
         _ = args_obj
-        markets = self._all_markets_cache
 
         offset = 0
         limit = 100
@@ -1160,7 +1172,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         elif len(args_obj.args) > 0:
             limit = int(args_obj.args[0])
 
-        items = list(markets.keys())
+        try:
+            items = self._apdb.all_tickers()
+        except APDBError as e:
+            raise PolyMarketDispatcherError(f"Failed to fetch tickers from APDB: {e}")
         max_items = len(items)
 
         max_limit = min(limit, max_items)
@@ -1182,7 +1197,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             raise InvalidArgumentError(
                 "Ticker argument is required for fetch_market_by_ticker."
             )
-        market = self._all_markets_cache.get(ticker, None)
+        try:
+            market = self._apdb.get_event(ticker)
+        except APDBError as e:
+            raise PolyMarketDispatcherError(f"Failed to fetch market '{ticker}' from APDB: {e}")
         if market is None:
             raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
         return market.to_dict()
@@ -1197,11 +1215,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         Returns only the tickers of matching markets.
         :return:
         """
-        items = list(self._all_markets_cache.keys())
         try:
-            items.remove(None)
-        except ValueError:
-            pass
+            items = self._apdb.all_tickers()
+        except APDBError as e:
+            raise PolyMarketDispatcherError(f"Failed to fetch tickers from APDB: {e}")
+        # APDB guarantees no empty/null ticker keys, but a defensive filter
+        # is cheap insurance against the exact historical bug (see commit
+        # 2619a0d) that motivated the None-key guard this replaces.
+        items = [t for t in items if t]
 
         sorted_markets = sorted(
             items,
@@ -1266,6 +1287,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         for market in event.markets:
             if market.clobTokenIds and clob_id in market.clobTokenIds:
                 outcome_index = market.clobTokenIds.index(clob_id)
+                # noinspection all
                 if market.outcomes and isinstance(market.outcomes, list):
                     outcome = market.outcomes[outcome_index]
                 else:
@@ -1354,9 +1376,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 "Ticker argument is required for get_price_to_beat."
             )
 
-        # Look up the market in the cache to get metadata
-        with self._market_cache_lock:
-            market_event = self._all_markets_cache.get(ticker, None)
+        # Look up the market via APDB to get metadata
+        try:
+            market_event = self._apdb.get_event(ticker)
+        except APDBError as e:
+            raise PolyMarketDispatcherError(f"Failed to fetch market '{ticker}' from APDB: {e}")
 
         if market_event is None:
             raise PolyMarketDispatcherError(f"Market with ticker '{ticker}' not found.")
@@ -1543,6 +1567,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 return "daily"
 
             # Log warning for unclassified durations
+            # noinspection all
             logging.warning(
                 f"Could not determine variant for duration of {duration_minutes:.1f} minutes"
             )
@@ -1598,37 +1623,76 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
     def _resolve_market_from_token_id(self, token_id: str) -> PolymarketEvent:
         """
-        Resolves a token_id (asset_id / clob_id) to its parent PolymarketEvent using the
-        dispatcher's internal caches. The lookup path is:
+        Resolves a token_id (asset_id / clob_id) to its parent PolymarketEvent. The
+        lookup path is:
             token_id -> _asset_id_to_ticker[token_id] -> (ticker, market_index)
-                     -> _all_markets_cache[ticker] -> PolymarketEvent
+                     -> APDB.get_event(ticker) -> PolymarketEvent
 
         This is required because the REST API's place_order method needs a full PolymarketEvent
         object (for negRisk and other market metadata), but clients only send a token_id.
-        Both caches are protected by _market_cache_lock.
+        _asset_id_to_ticker is protected by _market_cache_lock; the event itself is
+        fetched fresh from APDB on every call rather than cached in-process.
 
         :param token_id: The asset_id / clob_id identifying a specific market outcome.
         :return: The PolymarketEvent object associated with this token_id.
         :raises InvalidArgumentError: If the token_id is not found in the asset-to-ticker mapping.
-        :raises PolyMarketDispatcherError: If the resolved ticker is not found in the markets cache.
+        :raises PolyMarketDispatcherError: If the resolved ticker is not found via APDB.
         """
         with self._market_cache_lock:
             ticker_market_index = self._asset_id_to_ticker.get(token_id, None)
         if ticker_market_index is None:
             raise InvalidArgumentError(
                 f"token_id '{token_id}' not found in asset-to-ticker mapping. "
-                f"The market may not exist or the cache may not have refreshed yet."
+                f"The market may not exist or the mapping may not have refreshed yet."
             )
         ticker, _ = ticker_market_index
 
-        with self._market_cache_lock:
-            market = self._all_markets_cache.get(ticker, None)
+        try:
+            market = self._apdb.get_event(ticker)
+        except APDBError as e:
+            raise PolyMarketDispatcherError(
+                f"Failed to fetch market '{ticker}' resolved from token_id '{token_id}' from APDB: {e}"
+            )
         if market is None:
             raise PolyMarketDispatcherError(
                 f"Market with ticker '{ticker}' resolved from token_id '{token_id}' "
-                f"was not found in markets cache."
+                f"was not found via APDB."
             )
         return market
+
+    def _resolve_market_for_order(self, token_id: str) -> PolymarketEvent:
+        """
+        Resolves a token_id to a PolymarketEvent for order building, without
+        the APDB round trip _resolve_market_from_token_id costs.
+
+        PolyRestAPI.build_order (called by place_order and
+        place_multiple_orders) reads exactly one field off the `market`
+        object it's given: `.negRisk`. Order placement sits behind a tight
+        latency budget (tests/test_polymarket_cache.py asserts <50ms for
+        placing 2 orders), so this path uses the in-memory
+        `_asset_id_to_neg_risk` cache — populated alongside
+        `_asset_id_to_ticker` in `_build_asset_id_to_ticker_mapping` — and
+        returns a minimal PolymarketEvent stub with only `negRisk` set
+        rather than a fully populated event. This is safe specifically
+        because build_order never reads anything else off `market`, and the
+        only other place a placed order's `market` argument is retained
+        (PolyRestAPI._order_cache, keyed by order_id) is never read back
+        anywhere in this codebase — verify both of those still hold before
+        relying on this shortcut elsewhere.
+
+        Falls back to the full APDB-backed _resolve_market_from_token_id on
+        a cache miss (e.g. a market resolved to a ticker moments before the
+        mapping refresh populated negRisk for it), so correctness never
+        depends on cache freshness — only the fast path does.
+
+        :param token_id: The asset_id / clob_id identifying a specific market outcome.
+        :return: A PolymarketEvent with at least `.negRisk` populated correctly.
+        """
+        with self._market_cache_lock:
+            neg_risk = self._asset_id_to_neg_risk.get(token_id, _NEG_RISK_UNSET)
+        if neg_risk is not _NEG_RISK_UNSET:
+            return PolymarketEvent(negRisk=neg_risk)
+        return self._resolve_market_from_token_id(token_id)
 
     def _handle_place_order(self, args_obj: ArgsObject):
         """
@@ -1665,7 +1729,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if side is None:
             raise InvalidArgumentError("'side' is required for place_order.")
 
-        market = self._resolve_market_from_token_id(token_id)
+        market = self._resolve_market_for_order(token_id)
         tick_size = self.market_data.get_tick_size(asset_id=token_id)
 
         if self._configs["Block Order Execution"]:
@@ -1748,7 +1812,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 raise InvalidArgumentError("Each order must have a 'side' field.")
             _tick("_handle_place_multiple_orders", "after_check_side")
 
-            market = self._resolve_market_from_token_id(token_id)
+            market = self._resolve_market_for_order(token_id)
             _tick("_handle_place_multiple_orders", "after_resolve_market")
             tick_size = self.market_data.get_tick_size(asset_id=token_id)
             _tick("_handle_place_multiple_orders", "after_get_tick_size")
