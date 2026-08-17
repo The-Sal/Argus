@@ -52,6 +52,7 @@ class GenericSatelliteSys:
         :raises UnableToInstall: If installation fails.
         :return: None
         """
+        raise NotImplementedError("This method should be implemented by subclasses.")
 
     def update(self):
         """
@@ -59,24 +60,29 @@ class GenericSatelliteSys:
         :raises UnableToUpdate: If update fails.
         :return: None
         """
+        raise NotImplementedError("This method should be implemented by subclasses.")
 
     def start_sidecar(self):
         """
         Start the satellite system. Raise an exception if start fails.
         :return: None
         """
+        raise NotImplementedError("This method should be implemented by subclasses.")
 
     def stop_sidecar(self):
         """
         Stop the satellite system. Raise an exception if stop fails.
         :return: None
         """
+        raise NotImplementedError("This method should be implemented by subclasses.")
 
     def is_running(self):
         """
         Returns True if the satellite system is running, False otherwise.
         :return:
         """
+        raise NotImplementedError("This method should be implemented by subclasses.")
+
     @staticmethod
     def target_triple() -> str:
         system = platform.system()
@@ -283,29 +289,35 @@ class ArgusPolymarketDB(GenericSatelliteSys):
         _ = wrapper.start_proxy_and_return_bind('POLYMARKET')
 
         fd = open("/tmp/argus_polymarket_db.log", "w")
-        print('Logging to /tmp/argus_polymarket_db.log')
-        self._subproc = subprocess.Popen([
-            self.install_path,
-        ],  start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=fd,
-            stderr=fd,
-            close_fds=True
-        )
-        time_waited = 0
         read_fd = open("/tmp/argus_polymarket_db.log", "r")
-        while True:
-            try:
-                self.get_version_number()
-                break
-            except (OSError, ConnectionRefusedError):
-                time.sleep(0.1)
-                print(f'Waiting for APDB to start... {time_waited:.1f}s', end='\r')
-                print("[APDB LOG]", read_fd.read(), end='')
-                sys.stdout.flush()
-                time_waited += 0.1
-                if self._subproc.poll() is not None:
-                    raise UnableToStartSidecar("APDB failed to start. Please check the log file for more details: /tmp/argus_polymarket_db.log")
+        try:
+            print('Logging to /tmp/argus_polymarket_db.log')
+            # noinspection all
+            self._subproc = subprocess.Popen([
+                self.install_path,
+            ], start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=fd,
+                stderr=fd,
+                close_fds=True
+            )
+            time_waited = 0
+            while True:
+                try:
+                    self.get_version_number()
+                    break
+                except (OSError, ConnectionRefusedError):
+                    time.sleep(0.1)
+                    print(f'Waiting for APDB to start... {time_waited:.1f}s', end='\r')
+                    print("[APDB LOG]", read_fd.read(), end='')
+                    sys.stdout.flush()
+                    time_waited += 0.1
+                    if self._subproc.poll() is not None:
+                        raise UnableToStartSidecar(
+                            "APDB failed to start. Please check the log file for more details: /tmp/argus_polymarket_db.log")
+        finally:
+            fd.close()
+            read_fd.close()
 
     def stop_sidecar(self):
         subprocess.Popen(['killall', 'APDB', 'argus-polymarket-db'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).wait()
@@ -317,7 +329,7 @@ class ArgusPolymarketDB(GenericSatelliteSys):
         :return:
         """
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect("/tmp/argus_polymarket_db.sock")
+        s.connect(os.environ.get("APDB_BIND_ADDRESS", "/tmp/argus_polymarket_db.sock"))
         msg = {"op": "db_info"}
         s.sendall(json.dumps(msg).encode("utf-8") + b"\n")
         response_raw = s.recv(1024).decode("utf-8")
