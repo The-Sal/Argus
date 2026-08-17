@@ -12,6 +12,8 @@ import time
 import socket
 import platform
 import subprocess
+import traceback
+
 from argus.wireproxy import wrapper
 from utils3 import Container, networking
 
@@ -180,32 +182,53 @@ class ArgusPolymarketDB(GenericSatelliteSys):
         self.install_path = os.path.join(get_sidecar_path(), "APDB")
 
 
-    def install(self):
+    def install_from_source(self):
         with Container():
-            session = networking.Session()
-            triple = self.target_triple()
-            url = f"{self.addr}/{triple}_argus-polymarket-db"
-            print("Downloading APDB from:", url)
-            session.downloadFile(
-                url,
-                "apdb",
-                lambda x: print("\rDownloading APDB: {:.2f}%".format(x*100), end="\r")
-            )
-            subprocess.check_call(['chmod', '+x', 'apdb'])
-            file = self.platform_normal(subprocess.check_output(['file', 'apdb']).decode().strip())
-            arch = platform.architecture()
-            for arch_str in arch:
-                if self.platform_normal(arch_str) not in file:
-                    raise UnableToInstall(f"Downloaded APDB binary architecture mismatch: {file} vs {arch}")
+            print('Installing APDB from source... This may take a while.')
+            subprocess.check_call(['git', 'clone', 'https://github.com/The-Sal/argus-polymarket-db'])
+            os.chdir('argus-polymarket-db')
+            subprocess.check_call(['cargo', 'build', '--release'])
 
-            print('Correct Architecture Found:', ' '.join(arch))
-            print('Running final tests...')
             try:
-                subprocess.check_call(['./apdb', '--version'])
+                subprocess.check_call(['./target/release/argus-polymarket-db', '--version'])
             except subprocess.CalledProcessError as e:
                 raise UnableToInstall("APDB binary is not executable. Error: {}".format(e))
 
-            subprocess.check_call(['cp', 'apdb', self.install_path])
+            subprocess.check_call(['cp', 'target/release/argus-polymarket-db', self.install_path])
+
+
+    def install(self):
+        try:
+            with Container():
+                session = networking.Session()
+                triple = self.target_triple()
+                url = f"{self.addr}/{triple}_argus-polymarket-db"
+                print("Downloading APDB from:", url)
+                session.downloadFile(
+                    url,
+                    "apdb",
+                    lambda x: print("\rDownloading APDB: {:.2f}%".format(x * 100), end="\r")
+                )
+                file = self.platform_normal(subprocess.check_output(['file', 'apdb']).decode().strip())
+                arch = platform.architecture()
+                for arch_str in arch:
+                    if self.platform_normal(arch_str) not in file:
+                        raise UnableToInstall(f"Downloaded APDB binary architecture mismatch: {file} vs {arch}")
+
+                subprocess.check_call(['chmod', '+x', 'apdb'])
+                print('Correct Architecture Found:', ' '.join(arch))
+                print('Running final tests...')
+                try:
+                    subprocess.check_call(['./apdb', '--version'])
+                except subprocess.CalledProcessError as e:
+                    raise UnableToInstall("APDB binary is not executable. Error: {}".format(e))
+
+                subprocess.check_call(['cp', 'apdb', self.install_path])
+        except Exception as e:
+            print("The following error occurred while installing APDB:", e)
+            traceback.print_exc()
+            print("Attempting to install APDB from source...")
+            self.install_from_source()
 
     def check_installed(self) -> bool:
         return os.path.exists(self.install_path)
@@ -322,8 +345,9 @@ class ArgusPolymarketDB(GenericSatelliteSys):
 
 if __name__ == '__main__':
     apdb = ArgusPolymarketDB()
+    # apdb.install_from_source()
     apdb.install()
-    apdb.stop_sidecar()
-    apdb.start_sidecar()
-    print(apdb.is_running())
-    print(apdb.get_version_number())
+    # apdb.stop_sidecar()
+    # apdb.start_sidecar()
+    # print(apdb.is_running())
+    # print(apdb.get_version_number())

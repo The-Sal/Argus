@@ -12,3 +12,4 @@ examples/ADX_data
 *.pkl*
 *.toon
 *.enc.se
+polymarket_events*
