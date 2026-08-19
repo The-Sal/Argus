@@ -19,7 +19,7 @@ from utils3 import Container, networking
 
 _addrs_and_hashes = {
     'WpDaemon': 'https://github.com/The-Sal/WpDaemon/releases/download/v1.0.2/builds.zip', 
-    'APDB': 'https://github.com/The-Sal/argus-polymarket-db/releases/download/v1.4.1'
+    'APDB': 'https://github.com/The-Sal/argus-polymarket-db/releases/download/v2.0.1'
 }
 
 
@@ -204,6 +204,7 @@ class ArgusPolymarketDB(GenericSatelliteSys):
 
 
     def install(self):
+        self.stop_sidecar()
         try:
             with Container():
                 session = networking.Session()
@@ -340,7 +341,6 @@ class ArgusPolymarketDB(GenericSatelliteSys):
         except (json.JSONDecodeError, KeyError) as e:
             raise Exception(f"Failed to parse response from APDB: {response_raw}") from e
 
-
     def is_running(self):
         """
         Checks if the unix domain socket is reachable
@@ -352,14 +352,26 @@ class ArgusPolymarketDB(GenericSatelliteSys):
         except (OSError, ConnectionRefusedError):
             return False
 
-
+    def is_latest(self):
+        """
+        Ensure that the running version of APDB is the pinned version for this release of Argus.
+        :return:
+        """
+        version = subprocess.check_output([self.install_path, '--version']).decode().strip().split(" ")[-1]
+        expected_version = "Argus Polymarket Database {}".format(_addrs_and_hashes['APDB'].split('/')[-1]).split(" ")[-1]
+        if version != expected_version:
+            print("APDB version mismatch. Expected:", expected_version, "Actual:", version)
+            os.remove(self.install_path)
+            print("Reinstalling APDB...")
+            self.install()
 
 
 if __name__ == '__main__':
     apdb = ArgusPolymarketDB()
     # apdb.install_from_source()
-    apdb.install()
+    # apdb.install()
     # apdb.stop_sidecar()
     # apdb.start_sidecar()
     # print(apdb.is_running())
     # print(apdb.get_version_number())
+    apdb.is_latest()
