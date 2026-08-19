@@ -192,6 +192,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         if not self.argus_pm_db.check_installed():
             logging.info('Installing Argus Polymarket Database...')
             self.argus_pm_db.install()
+            
+        self.argus_pm_db.is_latest()
 
         if not self.argus_pm_db.is_running():
             self.argus_pm_db.start_sidecar()
