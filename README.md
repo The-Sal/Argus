@@ -10,10 +10,10 @@ Argus connects to major financial data providers (Interactive Brokers, Capital.c
 
 ### Core Design Principles
 
-1. **Server-Client Architecture** - Dispatchers run as servers, clients connect via TCP/UDS
+1. **Server-Client Architecture** – Dispatchers run as servers, clients connect via TCP/UDS
 2. **Dispatcher Paradigm** – Most modules follow a unified dispatcher pattern for consistency
 3. **Protocol 2 Normalization** – Standardized binary protocol across all dispatcher-based modules
-4. **Multi-Client Support** - Single data stream multiplexed to multiple consuming processes
+4. **Multi-Client Support** – Single data stream multiplexed to multiple consuming processes
 5. **Language Agnostic** – Clients can be written in any language with socket support
 
 ## Architecture
@@ -394,6 +394,7 @@ with NASDAQDataDownloader(headless=True) as downloader:
 - **argus-swift**: An experimental fork of Argus that's written in Swift (macOS/Linux only). It is far behind the main branch. Available [here](https://github.com/The-Sal/Argus/tree/argus-swift).
 - **WpDaemon**: A sidecar daemon that manages WireProxy processes, it works as a drop-in replacement for the internal WireProxyServer. Available [here](https://github.com/the-sal/WpDaemon).
 - **argus-polymarket**: A Rust SDK for the Polymarket Dispatcher, available [here](https://github.com/the-sal/argus-polymarket).
+- **Argus Polymarket Database (APDB)**: A sidecar databases for storing Polymarket data effcicently. It's automatically installed and is a hard dependancy of this project.  Available [here](https://github.com/the-sal/argus-polymarket-db).
 
 ## Support
 For questions, issues, or feature requests:
