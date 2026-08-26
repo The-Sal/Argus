@@ -1,9 +1,8 @@
-from __future__ import annotations
-
-from datetime import datetime, timezone
 from decimal import Decimal
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterator, List, Optional
+
 
 
 # --- market metadata (from orderBookDetails) ---------------------------------

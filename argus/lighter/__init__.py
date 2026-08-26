@@ -1,6 +1,6 @@
 import time
-from typing import Dict, List, Optional
 from utils3.networking import Session
+from typing import Dict, List, Optional
 from argus.lighter import _classes as _cls
 
 _ep = {
