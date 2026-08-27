@@ -1,10 +1,14 @@
 """Utilities for the Argus package."""
 import os
+import socket
+import logging
 import inspect
 import platform
+import threading
 import traceback
 import subprocess
 from utils3 import assertTypes
+from collections import OrderedDict
 
 if platform.system() == "Darwin":
     # macOS specific Function
@@ -125,9 +129,6 @@ class Introspective:
                 traceback.print_exc()
                 print(f"Error calling function/method: {e}")
 
-
-
-
     def call_method(self):
         # List all public methods of the current instance
         methods = {name: func for name, func in inspect.getmembers(self, predicate=inspect.ismethod)
@@ -209,7 +210,6 @@ class Introspective:
         except Exception as e:
             print(f"Error calling method: {e}")
 
-
 def throw_fuss(msg: str, boarder="=", notify=True, title="Argus IBKR Alert") -> None:
     """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
     try:
@@ -233,3 +233,231 @@ def throw_fuss(msg: str, boarder="=", notify=True, title="Argus IBKR Alert") -> 
             title=title,
             message=msg,
         )
+
+
+########################################
+# Trading Dispatcher Plumbing
+#
+# Shared by every Argus trading dispatcher (Polymarket, HyperLiquid, Lighter,
+# and future exchanges). None of the classes below know anything about a
+# specific exchange's wire format — they only deal in generic sockets,
+# channel ids, and correlation ids.
+########################################
+
+class CorrelationIDError(Exception):
+    """Base class for correlation-id validation errors raised by CorrelationIDChecker."""
+    pass
+
+
+class CorrelationIDLengthTooLongError(CorrelationIDError):
+    pass
+
+
+class CorrelationIDAlreadySeenError(CorrelationIDError):
+    pass
+
+
+class RoutingHelper:
+    """
+    Helper class to manage routing of market data and order subscriptions for a
+    trading dispatcher. Exchange-agnostic: works purely in terms of sockets and
+    string channel ids (e.g. a CLOB token id, a perpetual's market id, etc).
+    You must override the subscription_expired method to handle subscription expiration logic.
+    Features:
+        1. Market Data Routing Table: channel_id -> list of sockets subscribed to that channel
+        2. Order Subscriptions: socket -> list of channel_ids the socket is subscribed to
+        3. Thread-safe operations using a lock
+        4. Methods to add/remove sockets and manage subscriptions
+        5. Properties to access the current state of sockets and subscriptions
+        6. Logging for subscription management actions
+    """
+
+    def __init__(self):
+        self._sockets: set[socket.socket] = set()
+        self._market_data_routing_table: dict[str, list[socket.socket]] = {}  # channel_id -> list[socket.socket]
+        self._order_subscriptions: dict[socket.socket, list[str]] = {}  # socket.socket -> list[channel_id]
+        self._lock = threading.Lock()
+        # Per-client sendall lock — prevents byte interleaving when multiple
+        # WS shard threads broadcast to the same client socket.  Per-socket
+        # granularity means a slow client A never blocks sends to client B.
+        # Lazily populated by add_socket and `send_lock_for`; cleaned up by remove_socket.
+        self._sendall_locks: dict[socket.socket, threading.Lock] = {}
+
+    def send_lock_for(self, sock: socket.socket) -> threading.Lock:
+        """
+        Return the per-socket sendall lock, creating it on first access.
+        Callers MUST hold this lock around every sock.sendall() into `sock`
+        from any thread that may run concurrently with another sender.
+        """
+        with self._lock:
+            lock = self._sendall_locks.get(sock)
+            if lock is None:
+                lock = threading.Lock()
+                self._sendall_locks[sock] = lock
+            return lock
+
+    def add_socket(self, sock: socket.socket):
+        with self._lock:
+            self._sockets.add(sock)
+            if sock not in self._sendall_locks:
+                self._sendall_locks[sock] = threading.Lock()
+
+    def remove_socket(self, sock: socket.socket):
+        """
+        Remove a socket and clean up its subscriptions.
+        :param sock: The socket to remove.
+        :return:
+        """
+        with self._lock:
+            self._sockets.discard(sock)
+            self._sendall_locks.pop(sock, None)
+            subscribed_channel_ids = self._order_subscriptions.pop(sock, [])
+            for channel_id in subscribed_channel_ids:
+                if channel_id in self._market_data_routing_table:
+                    # Remove the socket from the routing table
+                    self._market_data_routing_table[channel_id].remove(sock)
+                    # If no more sockets are subscribed to this channel_id, remove the entry
+                    if not self._market_data_routing_table[channel_id]:
+                        del self._market_data_routing_table[channel_id]
+                        self.subscription_expired(channel_id)
+
+    # THIS METHOD TO BE OVERRIDDEN
+    def subscription_expired(self, channel_id):
+        """
+        This method should be implemented to handle subscription expiration logic.
+        What happens when a subscription expires? – Probably tell Ws to stop sending updates.
+        :param channel_id:
+        :return:
+        """
+        raise NotImplementedError("Subscription expiration handling not implemented.")
+
+    def add_socket_to_subscription(self, sock: socket.socket, channel_id: str):
+        """Adds socket to market data and order subscriptions"""
+        with self._lock:
+            if channel_id not in self._market_data_routing_table:
+                self._market_data_routing_table[channel_id] = []
+            if sock not in self._market_data_routing_table[channel_id]:
+                self._market_data_routing_table[channel_id].append(sock)
+
+            if sock not in self._order_subscriptions:
+                self._order_subscriptions[sock] = []
+            if channel_id not in self._order_subscriptions[sock]:
+                self._order_subscriptions[sock].append(channel_id)
+
+    def remove_socket_from_subscription(self, sock: socket.socket, channel_id: str):
+        """Removes socket from market data and order subscriptions"""
+        with self._lock:
+            if channel_id in self._market_data_routing_table:
+                if sock in self._market_data_routing_table[channel_id]:
+                    self._market_data_routing_table[channel_id].remove(sock)
+                    if not self._market_data_routing_table[channel_id]:
+                        del self._market_data_routing_table[channel_id]
+                        self.subscription_expired(channel_id)
+                        logging.info('Market data subscription for channel_id %s has expired', channel_id)
+                    else:
+                        logging.info('Removed socket from market data subscription for channel_id %s', channel_id)
+                else:
+                    logging.warning('Tried to remove socket not subscribed to market data for channel_id %s', channel_id)
+            else:
+                logging.warning('Tried to remove socket from non-existent market data subscription for channel_id %s',
+                                channel_id)
+
+            if sock in self._order_subscriptions:
+                if channel_id in self._order_subscriptions[sock]:
+                    self._order_subscriptions[sock].remove(channel_id)
+                    if not self._order_subscriptions[sock]:
+                        del self._order_subscriptions[sock]
+                        logging.info('Order subscriptions for socket has expired after removing channel_id %s', channel_id)
+                else:
+                    logging.warning('Tried to remove channel_id %s from `order_subscriptions` but not found for socket.',
+                                    channel_id)
+            else:
+                logging.warning('Tried to remove socket from `order_subscriptions` but socket not found.')
+
+    @property
+    def sockets(self):
+        with self._lock:
+            return list(self._sockets)
+
+    @property
+    def market_data_routing_table(self):
+        with self._lock:
+            return dict(self._market_data_routing_table)
+
+    @property
+    def order_subscriptions(self):
+        with self._lock:
+            return dict(self._order_subscriptions)
+
+
+class ArgsObject:
+    """
+    A simple class to hold arguments for handler functions.
+    The order of 'args' is important as handler functions expect
+    specific args in a certain order.
+    """
+
+    def __init__(self, sock: socket.socket, args):
+        """
+        The first argument is always the socket.
+        The order of 'args' is important as handler functions expect specific args in a certain order.
+        :param sock:
+        :param args:
+        """
+        self.sock = sock
+        self.args = args
+
+
+class CorrelationIDChecker:
+    """
+    A simple class to check if we've already seen this correlation ID before and raise an error if we have.
+    Correlation IDs must be unique for each request and should not be reused. This is to prevent client-side
+    matching engines from getting confused. This class is thread-safe and uses a lock to ensure that multiple threads
+    can check correlation IDs without running into race conditions. Automatically trims the dict of seen correlation
+    IDs if it exceeds a certain size to prevent memory issues.
+
+    Shared by every Argus trading dispatcher (Polymarket, HyperLiquid, Lighter, ...) that needs
+    request/response correlation-id de-duplication.
+    """
+
+    def __init__(self):
+        self.seen_correlation_ids: OrderedDict[str, None] = OrderedDict()
+        self._lock = threading.Lock()
+
+        self._max_seen_ids = int(os.environ.get('MAX_SEEN_CORRELATION_IDS', 100_000))
+        # ^^^^^^^^ ~roughly 7MB if each ID is uuid4
+
+        self._max_id_length = int(os.environ.get('MAX_CORRELATION_ID_LENGTH', 40))
+        # ^^^^^^ slightly above uuid4 length, ideally leave alone unless you have a reason to change it
+        # uuid4's has 2^122 possible values, so the chance of a collision is astronomically low. Leaving
+        # arbitrarily high limits will bloat the memory usage of this class.
+
+    @assertTypes([str], auto_convert=True, class_method=True)
+    def check_correlation_id(self, correlation_id: str):
+        if len(correlation_id) > self._max_id_length:
+            raise CorrelationIDLengthTooLongError(
+                f"Correlation ID {correlation_id} is too long. Maximum length is {self._max_id_length} characters."
+            )
+        with self._lock:
+            if correlation_id in self.seen_correlation_ids:  # O(1)
+                raise CorrelationIDAlreadySeenError(
+                    f"Correlation ID {correlation_id} has already been seen. Correlation IDs must be unique."
+                )
+            self.seen_correlation_ids[correlation_id] = None
+
+            if len(self.seen_correlation_ids) > self._max_seen_ids:
+                self._trim_seen_ids_locked()
+
+    def _trim_seen_ids_locked(self):
+        """
+        Trims the oldest 50% of seen correlation IDs to free up memory.
+        Must be called while self._lock is already held.
+        """
+        num_to_remove = len(self.seen_correlation_ids) // 2
+        for _ in range(num_to_remove):
+            self.seen_correlation_ids.popitem(last=False)  # O(1) — pops from front (oldest)
+
+    def clear_seen_ids(self):
+        """Clears all seen correlation IDs. Use with caution as this can lead to accepting duplicate IDs."""
+        with self._lock:
+            self.seen_correlation_ids.clear()

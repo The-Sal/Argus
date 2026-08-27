@@ -1,120 +1,164 @@
-
 """
 Hyperliquid – This module will implement the full Dispatcher + Trading API.
 This module is still under development and is being built as Phase 1.0 of Argus v2.
 Track the PR for hyperliquid [here](https://github.com/The-Sal/Argus/pull/96)
 """
-
-import os
-from tqdm import tqdm
-from typing import List, Optional
-from utils3.networking import Session
+from argus._argus_utils import ArgsObject
+from argus import __version__ as argus_version
+from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
+from argus.perpetuals.hyper.rest import HyperLiquidRest
+from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
 
-_ep = {
-    'info': 'https://api.hyperliquid.xyz/info'
-}
+__version__ = [1, 0, 0, 0]
+pi = PrintInterface('HyperLiquid')
 
+class HyperLiquidDispatcher(BaseDispatcher):
+    """
+    Hyperliquid (Hl) dispatcher.
 
-class HyperLiquidRest:
-    def __init__(self, wallet_address: str, private_key: str):
-        self.wallet_address = wallet_address
-        self.private_key = private_key
-        self.session = Session()
-        self.session.headers = {
-            'Content-Type': 'application/json',
+    This class orchestrates the entire surface of the Hyperliquid API.
+    Important notes of how this dispatcher differs from PolymarketDispatcher (its closest analog pre-v2)
+    This class enforces correlation IDs for all requests. A request without a correlation ID will be rejected;
+    moreover, the correlation IDs are checked with _corr_checker to ensure they are unique. This is enforced
+    from the base class BaseDispatcher. See BaseDispatcher for more details.
+
+    This dispatcher is part of the Argus v2 architecture and is designed to work with the Phase 1.2 "Homogenous Trading API Specification".
+    You can either run this dispatcher as a standalone or use it as an exchange within the upcoming Perpetuals Multi-Exchange
+    Dispatcher.
+
+    This dispatcher is independently versioned on top of Argus's own internal versioning system. The "products_version"
+    function returns the version of the components of the dispatcher. This includes the following:
+    – Argus Core version (argus/__init__.py; __version__)
+    – Every sidecar version (relevant to the dispatcher, e.g., you will not get an APDB version here)
+    – The Hyperliquid Dispatcher Version (hyper/__init__.py; __version__)
+
+    For compatibility systems should pin the hyperliquid dispatcher version rather than the argus version. Versioning
+    within Hyperliquid works as so:
+    Version is defined as 4 integers: [INT, INT, INT, INT]
+    [0] = API Breaking Change
+    [1] = New Functionality
+    [2] = Behavioral Changes
+    [3] = Bug Fixes
+
+    The general paradigm of how data flows will be identical to PolymarketDispatcher as well as the protocols and their
+    quirks. Hl Dispatcher will use the same P1+P2 protocols as PolymarketDispatcher with system messages, request-response,
+    and market data all over one stream. P1 of Hl will also inherit the auto-compress and 9999 max byte limits. Unlike
+    the PolymarketDispatcher, which had some non-paginated functions (for large data sets), Hl will only expose
+    paginated functions for large data sets.
+
+    The inbound underlying JSON structure of Hl follows polymarket:
+    {
+        "action": "<command_name>",
+        "data": { /* command-specific arguments */ },
+        "correlation_id": "<uuid>" // enforced.
+    }
+    The outbound JSON structure of Hl follows polymarket:
+    {
+      "action": "<command_name>",
+      "data": { /* response data or null */ },
+      "error": "<error message or null>",
+      "compressed": <bool>, // true when data is auto-compressed (see polymarket docs for details)
+      "correlation_id": "<uuid>" // None if the request errors before packet was processed, or a pushed response
+    }
+
+    """
+
+    def __init__(self, wallet_address: str, private_key: str, host: str = "localhost", port: int = 9972):
+        super().__init__(
+            host=host,
+            port=port,
+            routing_table={
+                # Meta Functions
+                'products_version': self._products_version,
+                # Information Functions
+                'get_dexs': self._get_dexs,
+                'get_perpetuals_for_dex': self._get_perpetual_for_dex,
+                'get_funding_rates_for_all_perpetuals': self._get_funding_rates_for_all_perps,
+
+                # 'perpetual_info': self._perp_info,
+
+                # Account Info
+                
+                # 'get_account_info': self._get_account_info,
+                # 'get_account_balance': self._get_account_balance,
+                # 'get_account_positions': self._get_account_positions
+
+                # Trading Functions (TBD)
+            }
+        )
+        self.rest = HyperLiquidRest(wallet_address, private_key)
+        self._all_perps = self.rest.get_all_perpetuals()
+
+    ########################################
+    # INTERNAL SERVER FUNCTIONS & Callbacks
+    ########################################
+
+    def subscription_expired(self, channel_id):
+        """
+        This function is called when a subscription expires.
+        :param channel_id: The ID of the expired subscription
+        """
+        pass
+
+    ########################################
+    # Dispatcher Functions
+    ########################################
+    @staticmethod
+    def _products_version(args: ArgsObject) -> dict:
+        """
+        Returns the version of the dispatcher and its components.
+        """
+        _ = args
+        return {
+            'argus': argus_version,
+            'hyperliquid_dispatcher': __version__,
+            'sidecars': {}
         }
 
-    def _post(self, body: dict):
-        return self.session.post(url=_ep['info'], json=body).json()
+    def _get_dexs(self, args: ArgsObject) -> dict:
+        _ = args
+        all_dexes = self.rest.get_dexs()
+        dexes_as_dicts = map(lambda dex: dex.as_dict, all_dexes)
+        return {'dexes': list(dexes_as_dicts)}
 
-    # --- dexes -----------------------------------------------------------
+    def _get_perpetual_for_dex(self, args: ArgsObject) -> dict:
+        dex_id = args.args.get('dex_name')
+        if dex_id is None:
+            raise _shared_ers.MissingArgumentError("Missing argument: 'dex_name'")
+        perpetuals = self.rest.get_perpetuals_for_dex(dex_id)
+        perpetuals_as_dicts = map(lambda perp: perp.as_dict, perpetuals)
+        return {'perpetuals': list(perpetuals_as_dicts)}
 
-    def get_dexs(self) -> List[_cls.PerpDexConfig]:
-        """All builder-deployed (HIP-3) perp dexes. Does not include the default dex,
-        which is always represented by dex="" and has no PerpDexConfig of its own."""
-        response: list = self._post({'type': 'perpDexs'})
-        return [_cls.PerpDexConfig.from_dict(dex) for dex in response if dex is not None]
+    def _get_funding_rates_for_all_perps(self, args: ArgsObject) -> dict:
+        """
+        Returns a sorted list of funding rates for all perps.
+        :param args: Expects arguments:
+            'offset': int (default: 0)
+            'limit': int (default: 1000)
+        :return:
+        """
 
-    # --- universe / metadata ----------------------------------------------
+        funding_rate_sorted = self._all_perps.sorted_by_funding_rate()
+        offset = args.args.get('offset', 0)
+        limit = args.args.get('limit', min(1000, len(funding_rate_sorted)))
 
-    def get_meta(self, dex: str = "") -> _cls.UniverseConfig:
-        """Perpetuals metadata (universe + margin tables) for a single dex, without market data."""
-        body = {'type': 'meta', 'dex': dex}
-        return _cls.UniverseConfig.from_dict(self._post(body))
+        if offset >= len(funding_rate_sorted):
+            return {'funding_rates': []}
 
-    def get_perpetuals_for_dex(self, dex: str = "") -> _cls.PerpDexSnapshot:
-        """Universe + live market data (funding, mark price, open interest, ...) for one dex."""
-        body = {'type': 'metaAndAssetCtxs', 'dex': dex}
-        response: list = self._post(body)
-        return _cls.PerpDexSnapshot.from_response(dex, response)
-
-    def get_all_perpetuals(self) -> _cls.PerpetualsIndex:
-        """All perpetuals across the default dex and every HIP-3 dex, as one sortable/filterable index."""
-        dex_names = [""] + [dex.name for dex in self.get_dexs()]
-        snapshots = [
-            self.get_perpetuals_for_dex(dex_name)
-            for dex_name in tqdm(dex_names, desc='Fetching perpetuals for each dex')
-        ]
-        return _cls.PerpetualsIndex.from_snapshots(snapshots)
-
-    # --- funding rates -----------------------------------------------------
-
-    def get_funding_history(
-        self, coin: str, start_time_ms: int, end_time_ms: Optional[int] = None
-    ) -> List[_cls.FundingHistoryEntry]:
-        body = {'type': 'fundingHistory', 'coin': coin, 'startTime': start_time_ms}
-        if end_time_ms is not None:
-            body['endTime'] = end_time_ms
-        response: list = self._post(body)
-        return [_cls.FundingHistoryEntry.from_dict(entry) for entry in response]
-
-    def get_predicted_fundings(self) -> List[_cls.PredictedFunding]:
-        """Predicted next funding rates for each coin, across Hyperliquid and external CEXs.
-        Only supported for the default (first) perp dex."""
-        response: list = self._post({'type': 'predictedFundings'})
-        return [_cls.PredictedFunding.from_pair(pair) for pair in response]
-
-    # --- misc dex / coin info ----------------------------------------------
-
-    def get_perps_at_open_interest_cap(self, dex: str = "") -> List[str]:
-        return self._post({'type': 'perpsAtOpenInterestCap', 'dex': dex})
-
-    def get_perp_dex_limits(self, dex: str) -> _cls.PerpDexLimits:
-        """`dex` must be a non-empty, builder-deployed (HIP-3) dex name."""
-        return _cls.PerpDexLimits.from_dict(self._post({'type': 'perpDexLimits', 'dex': dex}))
-
-    def get_perp_dex_status(self, dex: str = "") -> _cls.PerpDexStatus:
-        return _cls.PerpDexStatus.from_dict(self._post({'type': 'perpDexStatus', 'dex': dex}))
-
-    def get_perp_deploy_auction_status(self) -> _cls.PerpDeployAuctionStatus:
-        return _cls.PerpDeployAuctionStatus.from_dict(self._post({'type': 'perpDeployAuctionStatus'}))
-
-    def get_perp_annotation(self, coin: str) -> Optional[_cls.PerpAnnotation]:
-        """Returns None for coins with no annotation (e.g. most default-dex coins)."""
-        return _cls.PerpAnnotation.from_dict(self._post({'type': 'perpAnnotation', 'coin': coin}))
-
-    def get_perp_categories(self) -> List[_cls.PerpCategory]:
-        response: list = self._post({'type': 'perpCategories'})
-        return [_cls.PerpCategory.from_pair(pair) for pair in response]
-
-    def get_perp_concise_annotations(self) -> List[_cls.PerpConciseAnnotation]:
-        response: list = self._post({'type': 'perpConciseAnnotations'})
-        return [_cls.PerpConciseAnnotation.from_pair(pair) for pair in response]
+        max_index = offset + limit
+        max_reachable = min(len(funding_rate_sorted), max_index)
+        return {'funding_rates': funding_rate_sorted[offset: max_reachable]}
 
 
 if __name__ == '__main__':
     from dotenv import load_dotenv
-    load_dotenv("/Users/Salman/Projects/Imperium/Argus/.env")
-    rest = HyperLiquidRest(wallet_address=os.environ['HYPERLIQUID_WALLET_ADDRESS'], private_key=os.environ['HYPERLIQUID_PRIVATE_KEY'])
+    import os
+    if not load_dotenv():
+        print("Error loading .env file")
+    dispatcher = HyperLiquidDispatcher(
+        wallet_address=os.environ['HYPERLIQUID_WALLET_ADDRESS'],
+        private_key=os.environ['HYPERLIQUID_PRIVATE_KEY']
+    )
+    dispatcher.run_server()
 
-    index = rest.get_all_perpetuals()
-    print('There are', len(index), 'perpetuals available across', len({p.dex for p in index}), 'dex(es).')
-
-    print('\nTop 5 by funding rate:')
-    for p in index.highest_funding(5):
-        print(f'  {p.dex or "hyperliquid":<12} {p.name:<12} funding={p.funding_rate!s:<14} mark={p.mark_price}')
-
-    print('\nBottom 5 by funding rate:')
-    for p in index.lowest_funding(5):
-        print(f'  {p.dex or "hyperliquid":<12} {p.name:<12} funding={p.funding_rate!s:<14} mark={p.mark_price}')

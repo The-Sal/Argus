@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple
 
 
-
-
 # --- simple type aliases for readability -----------------------------------
 
 Address = str   # 0x-prefixed hex address, kept as str rather than validated/checksummed

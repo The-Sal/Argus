@@ -41,7 +41,6 @@ from utils3.networking.sockets import Server
 from argus import __version__ as ARGUS_VERSION
 from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus.satellite_sys import ArgusPolymarketDB
-from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
 from argus.polymarket.apdb_client import APDBClient, APDBError
@@ -49,14 +48,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
+from argus._argus_utils import (
+    Introspective,
+    throw_fuss,
+    RoutingHelper,
+    ArgsObject,
+    CorrelationIDChecker,
+)
 from argus.polymarket._classes import (
     PolyMarketDispatcherError,
     InvalidArgumentError,
-    RoutingHelper,
-    ArgsObject,
     P2ConvertClass,
     print_with_name,
-    CorrelationIDChecker,
     OrderExecutionDisabledError,
 )
 
