@@ -1,8 +1,15 @@
+
+"""
+Hyperliquid – This module will implement the full Dispatcher + Trading API.
+This module is still under development and is being built as Phase 1.0 of Argus v2.
+Track the PR for hyperliquid [here](https://github.com/The-Sal/Argus/pull/96)
+"""
+
 import os
 from tqdm import tqdm
 from typing import List, Optional
 from utils3.networking import Session
-from argus.hyper import _classes as _cls
+from argus.perpetuals.hyper import _classes as _cls
 
 _ep = {
     'info': 'https://api.hyperliquid.xyz/info'

@@ -1,7 +1,12 @@
+
+"""
+Phase 1.0 of Argus v2.0, track the PR https://github.com/The-Sal/Argus/pull/96
+"""
+
 import time
 from utils3.networking import Session
 from typing import Dict, List, Optional
-from argus.lighter import _classes as _cls
+from argus.perpetuals.lighter import _classes as _cls
 
 _ep = {
     'base': 'https://mainnet.zklighter.elliot.ai',
