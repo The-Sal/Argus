@@ -12,7 +12,6 @@ Protocol:
     - P1 (control): ~NNNN|<json-payload>
     Unlike Polymarket, every Hyperliquid request MUST include a "correlation_id".
 """
-import os
 import sys
 import time
 import uuid
