@@ -897,15 +897,15 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     ########################################
     # Subscription
     ########################################
-    def subscription_expired(self, clob_id):
+    def subscription_expired(self, channel_id):
         """
         Handle subscription expiration logic.
-        :param clob_id:
+        :param channel_id:
         :return:
         """
-        if clob_id == self.rtds_magic_asset_id:
+        if channel_id == self.rtds_magic_asset_id:
             return
-        self.market_data.unsubscribe_from_asset_id(clob_id)
+        self.market_data.unsubscribe_from_asset_id(channel_id)
 
     def _warm_clob_caches_for_subscribed_asset(self, clob_id: str) -> None:
         """
