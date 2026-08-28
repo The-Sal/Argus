@@ -83,7 +83,25 @@ class BaseDispatcher(Introspective, RoutingHelper):
         # is not implemented.
 
         try:
-            for packet in protocol.decode_multiple_packets(data):
+            packets = protocol.decode_multiple_packets(data)
+        except ValueError:
+            client.sendall(cls.OutboundMessage(
+                action="error",
+                data=None,
+                correlation_id=None,
+                error="Unable to decode message. Ensure payload was encoded with Protocol 1"
+            ).convert_to_protocol_1())
+            traceback.print_exc()
+            return
+
+        # Each packet gets its own try/except so that (a) one bad/erroring packet in a batch doesn't
+        # prevent the rest of the batch from being processed, and (b) every packet we can attribute a
+        # correlation_id to always gets a response -- including packets whose handler raised (e.g.
+        # ers.MissingArgumentError, ers.InvalidFunctionError) -- rather than the caller hanging until
+        # its socket read times out.
+        for packet in packets:
+            corr_id = None
+            try:
                 js_load = json.loads(packet)
                 function_name = js_load.get("action")
                 args = ArgsObject(
@@ -101,14 +119,14 @@ class BaseDispatcher(Introspective, RoutingHelper):
                     data=response,
                     correlation_id=corr_id
                 ).convert_to_protocol_1())
-        except ValueError:
-            client.sendall(cls.OutboundMessage(
-                action="error",
-                data=None,
-                correlation_id=None,
-                error="Unable to decode message. Ensure payload was encoded with Protocol 1"
-            ).convert_to_protocol_1())
-            traceback.print_exc()
+            except Exception as e:
+                traceback.print_exc()
+                client.sendall(cls.OutboundMessage(
+                    action="error",
+                    data=None,
+                    error=str(e),
+                    correlation_id=corr_id
+                ).convert_to_protocol_1())
 
     def _on_disconnect(self, client, address):
         self.remove_socket(client)

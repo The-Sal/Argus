@@ -75,8 +75,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
                 'get_dexs': self._get_dexs,
                 'get_perpetuals_for_dex': self._get_perpetual_for_dex,
                 'get_funding_rates_for_all_perpetuals': self._get_funding_rates_for_all_perps,
-
-                # 'perpetual_info': self._perp_info,
+                'perpetual_info': self._perp_info,
 
                 # Account Info
                 
@@ -170,6 +169,42 @@ class HyperLiquidDispatcher(BaseDispatcher):
         max_index = offset + limit
         max_reachable = min(len(funding_rate_sorted), max_index)
         return {'funding_rates': [perp.to_dict() for perp in funding_rate_sorted[offset: max_reachable]]}
+
+    def _perp_info(self, args: ArgsObject) -> dict:
+        """
+        Returns aggregated informational metadata for a single coin/perpetual. Hyperliquid has no
+        single combined endpoint for this, so it is assembled from four separate info requests:
+        `perpAnnotation` (per-coin), and `perpCategories` / `perpConciseAnnotations` / `predictedFundings`
+        (bulk, all-coins, filtered down to the requested coin here). Each section is independently
+        optional and is returned as null when the coin has no data for it -- in practice, annotation/
+        category/concise_annotation are only populated for HIP-3 (builder-deployed) dex coins (e.g.
+        "xyz:AAPL"), while predicted_funding is only populated for default-dex coins (e.g. "BTC"), per
+        Hyperliquid's docs.
+
+        This does NOT return live market data (mark price, funding rate, open interest, ...); use
+        'get_perpetuals_for_dex' or 'get_funding_rates_for_all_perpetuals' for that. This does NOT
+        return account/position data.
+
+        :param args: Expects arguments:
+            'coin': str (required) -- e.g. "BTC" for the default dex, or "xyz:AAPL" for a HIP-3 dex asset.
+        :return:
+        """
+        coin = args.args.get('coin')
+        if coin is None:
+            raise _shared_ers.MissingArgumentError("Missing argument: 'coin'")
+
+        annotation = self.rest.get_perp_annotation(coin)
+        category_entry = next((c for c in self.rest.get_perp_categories() if c.coin == coin), None)
+        concise_entry = next((c for c in self.rest.get_perp_concise_annotations() if c.coin == coin), None)
+        predicted_entry = next((p for p in self.rest.get_predicted_fundings() if p.coin == coin), None)
+
+        return {
+            'coin': coin,
+            'annotation': annotation.to_dict() if annotation is not None else None,
+            'category': category_entry.category if category_entry is not None else None,
+            'concise_annotation': concise_entry.to_pair()[1] if concise_entry is not None else None,
+            'predicted_funding': [v.to_pair() for v in predicted_entry.venues] if predicted_entry is not None else None,
+        }
 
 
 if __name__ == '__main__':

@@ -132,6 +132,12 @@ class HyperArgusClient:
             raise Exception(f"get_funding_rates_for_all_perpetuals failed: {resp['error']}")
         return list((resp.get('data') or {}).get('funding_rates') or []), dt
 
+    def perpetual_info(self, coin: str, timeout: int = 30) -> Tuple[dict, float]:
+        resp, dt = self.send_request('perpetual_info', {'coin': coin}, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"perpetual_info failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
 
 # =============================================================================
 # Gauntlet (live "test mode" that exercises every known read-only action)
@@ -219,6 +225,41 @@ def _gauntlet_get_perpetuals_hip3_dex(client: 'HyperArgusClient', timeout: float
     return dt, f"dex='{dex_name}' -> {len(perps)} perp(s)"
 
 
+def _validate_perp_info(info: dict, coin: str, context: str) -> None:
+    _check(isinstance(info, dict), f"{context}: response is not an object")
+    _check(info.get('coin') == coin, f"{context}: 'coin' = {info.get('coin')!r} does not match requested {coin!r}")
+
+    annotation = info.get('annotation')
+    _check(annotation is None or isinstance(annotation, dict), f"{context}: 'annotation' is not null/object")
+    if isinstance(annotation, dict):
+        for field in ('category', 'description'):
+            _check(field in annotation, f"{context}: annotation missing '{field}'")
+
+    category = info.get('category')
+    _check(category is None or isinstance(category, str), f"{context}: 'category' is not null/string")
+
+    concise = info.get('concise_annotation')
+    _check(concise is None or isinstance(concise, dict), f"{context}: 'concise_annotation' is not null/object")
+    if isinstance(concise, dict):
+        _check('category' in concise, f"{context}: concise_annotation missing 'category'")
+        _check(isinstance(concise.get('keywords'), list), f"{context}: concise_annotation 'keywords' is not a list")
+
+    predicted = info.get('predicted_funding')
+    _check(predicted is None or isinstance(predicted, list), f"{context}: 'predicted_funding' is not null/list")
+    if isinstance(predicted, list):
+        for entry in predicted:
+            _check(isinstance(entry, list) and len(entry) == 2, f"{context}: predicted_funding entry malformed: {entry!r}")
+
+
+def _gauntlet_get_perpetual_info(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, _ = client.get_perpetuals_for_dex("", offset=0, timeout=timeout)
+    _check(len(perps) > 0, "expected at least one perpetual on the default dex to test perpetual_info with")
+    coin = perps[0]['asset']['name']
+    info, dt = client.perpetual_info(coin, timeout=timeout)
+    _validate_perp_info(info, coin, f"perpetual_info('{coin}')")
+    return dt, f"coin='{coin}' -> annotation={info.get('annotation') is not None} category={info.get('category')!r} predicted_funding={info.get('predicted_funding') is not None}"
+
+
 def _gauntlet_get_funding_rates(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
     perps, dt = client.get_funding_rates_for_all_perpetuals(offset=0, timeout=timeout)
     _check(isinstance(perps, list), "'funding_rates' is not a list")
@@ -238,6 +279,7 @@ GAUNTLET_CHECKS: List[Tuple[str, Callable[['HyperArgusClient', float], Tuple[flo
     ("get_perpetuals_for_dex (default dex)", _gauntlet_get_perpetuals_default_dex),
     ("get_perpetuals_for_dex (HIP-3 dex)", _gauntlet_get_perpetuals_hip3_dex),
     ("get_funding_rates_for_all_perpetuals", _gauntlet_get_funding_rates),
+    ("perpetual_info", _gauntlet_get_perpetual_info),
 ]
 
 
@@ -336,6 +378,41 @@ def _perp_fields(perp: dict) -> Dict[str, Any]:
     }
 
 
+def format_perp_info(info: dict) -> str:
+    output = []
+    output.append("\n" + "=" * 60)
+    output.append(f"PERPETUAL INFO: {info.get('coin')}")
+    output.append("=" * 60)
+
+    annotation = info.get('annotation')
+    if annotation:
+        output.append(f"  Category:     {annotation.get('category')}")
+        output.append(f"  Description:  {annotation.get('description')}")
+    else:
+        output.append("  Annotation:   (none)")
+
+    if info.get('category') is not None:
+        output.append(f"  Category tag: {info.get('category')}")
+
+    concise = info.get('concise_annotation')
+    if concise:
+        output.append(f"  Keywords:     {', '.join(concise.get('keywords') or [])}")
+
+    predicted = info.get('predicted_funding')
+    if predicted:
+        output.append("  Predicted funding by venue:")
+        for venue, data in predicted:
+            if data is None:
+                output.append(f"    {venue:<12} (none)")
+            else:
+                output.append(f"    {venue:<12} rate={data.get('fundingRate')} next={data.get('nextFundingTime')}")
+    else:
+        output.append("  Predicted funding: (none)")
+
+    output.append("=" * 60)
+    return "\n".join(output)
+
+
 def format_perpetuals(perps: List[dict], limit: Optional[int] = None) -> str:
     output = []
     output.append(f"\n{'DEX':<10} {'NAME':<12} {'MARK PX':<14} {'FUNDING/HR':<12} {'FUNDING APR':<14} {'OI (USD)':<16} {'24H VOL':<16}")
@@ -370,6 +447,7 @@ def print_help():
     print("  dexs                       - List HIP-3 (builder-deployed) perp dexes")
     print("  perps [dex_name] [offset] [limit] - List perpetuals for a dex (default: \"\" main dex, offset 0, limit set by server)")
     print("  funding [N]                - Show top N perpetuals by funding rate (default: 20)")
+    print("  info <coin>                - Show annotation/category/keywords/predicted funding for one coin")
     print("  test | gauntlet            - Call every known read-only action and validate the responses")
     print("  clear                      - Clear screen")
     print("  help                       - Show this help")
@@ -379,6 +457,8 @@ def print_help():
     print("  perps xyz                  # perpetuals for the 'xyz' HIP-3 dex")
     print("  perps xyz 0 20             # first 20 perpetuals for the 'xyz' dex")
     print("  funding 10                 # top 10 perpetuals by hourly funding rate")
+    print("  info BTC                   # info for the default-dex BTC perpetual")
+    print("  info xyz:AAPL              # info for a HIP-3 dex perpetual")
     print()
 
 
@@ -436,6 +516,19 @@ def interactive_loop(client: HyperArgusClient):
                     print(format_perpetuals(perps, limit=limit))
                 except Exception as e:
                     print(f"✗ Failed to fetch funding rates: {e}")
+            elif query.lower().startswith('info'):
+                parts = query.split()[1:]
+                if not parts:
+                    print("Usage: info <coin>")
+                else:
+                    coin = parts[0].strip()
+                    try:
+                        print(f"Fetching info for '{coin}'...")
+                        info, dt = client.perpetual_info(coin)
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_perp_info(info))
+                    except Exception as e:
+                        print(f"✗ Failed to fetch perpetual info: {e}")
             elif query.lower() in ('test', 'gauntlet'):
                 run_gauntlet(client)
             else:

@@ -700,6 +700,9 @@ class PerpAnnotation:
             return None
         return cls(category=data["category"], description=data["description"])
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {"category": self.category, "description": self.description}
+
 
 @dataclass
 class PerpCategory:
@@ -713,6 +716,9 @@ class PerpCategory:
         coin, category = pair
         return cls(coin=coin, category=category)
 
+    def to_pair(self) -> List[Any]:
+        return [self.coin, self.category]
+
 
 @dataclass
 class PerpConciseAnnotation:
@@ -724,6 +730,9 @@ class PerpConciseAnnotation:
     def from_pair(cls, pair: Sequence[Any]) -> "PerpConciseAnnotation":
         coin, data = pair
         return cls(coin=coin, category=data["category"], keywords=list(data.get("keywords", [])))
+
+    def to_pair(self) -> List[Any]:
+        return [self.coin, {"category": self.category, "keywords": list(self.keywords)}]
 
 
 if __name__ == "__main__":
