@@ -464,6 +464,13 @@ class Perpetual:
     def is_delisted(self) -> bool:
         return bool(self.asset.isDelisted)
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "dex": self.dex,
+            "asset": self.asset.to_dict(),
+            "context": self.context.to_dict(),
+        }
+
 
 @dataclass
 class PerpDexSnapshot:

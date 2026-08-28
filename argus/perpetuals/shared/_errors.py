@@ -12,3 +12,6 @@ class CorrelationIDError(DispatcherError):
 
 class MissingArgumentError(DispatcherError):
     pass
+
+class PacketTooLargeError(DispatcherError):
+    pass

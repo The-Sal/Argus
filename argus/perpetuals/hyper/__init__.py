@@ -119,36 +119,57 @@ class HyperLiquidDispatcher(BaseDispatcher):
     def _get_dexs(self, args: ArgsObject) -> dict:
         _ = args
         all_dexes = self.rest.get_dexs()
-        dexes_as_dicts = map(lambda dex: dex.as_dict, all_dexes)
+        dexes_as_dicts = map(lambda dex: dex.to_dict(), all_dexes)
         return {'dexes': list(dexes_as_dicts)}
 
     def _get_perpetual_for_dex(self, args: ArgsObject) -> dict:
+        """
+        Returns a paginated list of perpetuals for a given dex.
+        :param args: Expects arguments:
+            'dex_name': str (required)
+            'offset': int (default: 0)
+            'limit': int (default: 100)
+        :return:
+        """
         dex_id = args.args.get('dex_name')
         if dex_id is None:
             raise _shared_ers.MissingArgumentError("Missing argument: 'dex_name'")
-        perpetuals = self.rest.get_perpetuals_for_dex(dex_id)
-        perpetuals_as_dicts = map(lambda perp: perp.as_dict, perpetuals)
-        return {'perpetuals': list(perpetuals_as_dicts)}
+        perpetuals = self.rest.get_perpetuals_for_dex(dex_id).perpetuals
+
+        offset = args.args.get('offset', 0)
+        limit = args.args.get('limit', min(100, len(perpetuals)))
+
+        if offset >= len(perpetuals):
+            return {'perpetuals': []}
+
+        max_index = offset + limit
+        max_reachable = min(len(perpetuals), max_index)
+        return {'perpetuals': [perp.to_dict() for perp in perpetuals[offset: max_reachable]]}
 
     def _get_funding_rates_for_all_perps(self, args: ArgsObject) -> dict:
         """
         Returns a sorted list of funding rates for all perps.
         :param args: Expects arguments:
             'offset': int (default: 0)
-            'limit': int (default: 1000)
+            'limit': int (default: DEFAULT_VALUE)
         :return:
         """
 
+        DEFAULT_VALUE = 20
+
         funding_rate_sorted = self._all_perps.sorted_by_funding_rate()
         offset = args.args.get('offset', 0)
-        limit = args.args.get('limit', min(1000, len(funding_rate_sorted)))
+        limit = args.args.get('limit', min(DEFAULT_VALUE, len(funding_rate_sorted)))
+        if limit > DEFAULT_VALUE:
+            pi.prt(f"Limit increased from {DEFAULT_VALUE} to {limit}")
+
 
         if offset >= len(funding_rate_sorted):
             return {'funding_rates': []}
 
         max_index = offset + limit
         max_reachable = min(len(funding_rate_sorted), max_index)
-        return {'funding_rates': funding_rate_sorted[offset: max_reachable]}
+        return {'funding_rates': [perp.to_dict() for perp in funding_rate_sorted[offset: max_reachable]]}
 
 
 if __name__ == '__main__':

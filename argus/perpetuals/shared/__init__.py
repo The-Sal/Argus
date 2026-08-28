@@ -1,10 +1,14 @@
 import json
 import socket
+import traceback
 from argus import protocol
 from typing import Callable, Any
 from utils3.networking.sockets import Server
 from argus.perpetuals.shared import _classes as cls, _errors as ers
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
+
+
+
 
 class PrintInterface:
     """
@@ -16,7 +20,7 @@ class PrintInterface:
         self.nf = Notification()
 
     def prt(self, *args, **kwargs):
-        print(f"[{self.name}] ", *args, **kwargs)
+        print(f"[{self.name}]", *args, **kwargs)
 
     def notify(self, *args):
         msg = " ".join(args)
@@ -91,7 +95,6 @@ class BaseDispatcher(Introspective, RoutingHelper):
                     raise ers.CorrelationIDError("Correlation ID is required for all requests")
 
                 self._corr_id_check.check_correlation_id(corr_id)
-
                 response = self.route_request(function_name, args)
                 client.sendall(cls.OutboundMessage(
                     action="response",
@@ -105,6 +108,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
                 correlation_id=None,
                 error="Unable to decode message. Ensure payload was encoded with Protocol 1"
             ).convert_to_protocol_1())
+            traceback.print_exc()
 
     def _on_disconnect(self, client, address):
         self.remove_socket(client)
@@ -120,10 +124,11 @@ class BaseDispatcher(Introspective, RoutingHelper):
         :arg args: ArgsObject = argument object and the socket
         :return:
         """
-
         func = self.routing_table.get(function)
         if func is None:
             raise ers.InvalidFunctionError(f"Function {function} is not valid")
+
+        _p.prt("Routing: {} with args: {}".format(function, args.args))
 
         # noinspection all
         response = func(args)
