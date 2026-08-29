@@ -11,7 +11,8 @@ import copy
 import logging
 from dotenv import load_dotenv
 from websocket import WebSocketApp
-from argus.wireproxy.__main__ import send_server_command, ensure_daemon_running, WireProxyManagement
+from argus.wireproxy import WireProxyManagement
+from argus.wireproxy.__main__ import send_server_command, ensure_daemon_running
 
 if not load_dotenv():
     print('WARNING: .env was not loaded, wireproxy REQUIRED env vars may be missing!')
