@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 from utils3 import assertTypes
 from collections import OrderedDict
 
-
 if platform.system() == "Darwin":
     # macOS specific Function
     def system_notification(title: str, message: str) -> None:
@@ -27,6 +26,7 @@ if platform.system() == "Darwin":
         subprocess.check_call([
             'imessage-cli', '--message', "{}\n{}".format(title, message), number
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
 
     # Alternative implementation with more sound options:
     @assertTypes([str, str, str], auto_convert=True)
@@ -44,7 +44,10 @@ if platform.system() == "Darwin":
             f'display notification "{message}" with title "{title}" sound name "{sound_name}"'
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 else:
-    print('[_argus_utils] Note: You are currently on {}, this platform is probably supported but system notifications will not work.'.format(platform.system()))
+    print(
+        '[_argus_utils] Note: You are currently on {}, this platform is probably supported but system notifications will not work.'.format(
+            platform.system()))
+
 
     def system_notification(title: str, message: str) -> None:
         print('WARNING: SYSTEM NOTIFICATIONS ARE ONLY SUPPORTED ON macOS SYSTEMS.')
@@ -56,9 +59,11 @@ else:
         print('WARNING: IMESSAGE NOTIFICATIONS ARE ONLY SUPPORTED ON macOS SYSTEMS.')
         print('iMessage Notification to', number, ':', title, '-', message)
 
+
     def macos_notification_with_custom_sound(title: str, message: str, sound_name: str = "default") -> None:
         """Placeholder for non-macOS systems."""
         print(f"macOS notification with sound not supported on this platform: {title} - {message}")
+
 
 class Notification:
     """Dispatcher for notifications."""
@@ -87,6 +92,7 @@ class Notification:
                 iMessage_notification(title, message, self.number)
         else:
             print(f"Notification: {title} - {message}")
+
 
 class Introspective:
     """Class with method to call its own methods interactively."""
@@ -180,7 +186,8 @@ class Introspective:
                 if type_hint:
                     print(f"Type hint detected for '{name}': {type_hint}")
                 else:
-                    type_hint = input(f"No type hint found. What type should I cast '{name}' to? (int, float, str, bool): ").strip()
+                    type_hint = input(
+                        f"No type hint found. What type should I cast '{name}' to? (int, float, str, bool): ").strip()
 
                 # Type casting
                 try:
@@ -211,6 +218,7 @@ class Introspective:
                 print(f"Failed to call method: {e2}")
         except Exception as e:
             print(f"Error calling method: {e}")
+
 
 def throw_fuss(msg: str, boarder="=", notify=True, title="Argus IBKR Alert") -> None:
     """A helper function to make a large-print fuss to the user good for critical errors. This function FORCES notifications."""
@@ -359,7 +367,8 @@ class RoutingHelper:
                     else:
                         logging.info('Removed socket from market data subscription for channel_id %s', channel_id)
                 else:
-                    logging.warning('Tried to remove socket not subscribed to market data for channel_id %s', channel_id)
+                    logging.warning('Tried to remove socket not subscribed to market data for channel_id %s',
+                                    channel_id)
             else:
                 logging.warning('Tried to remove socket from non-existent market data subscription for channel_id %s',
                                 channel_id)
@@ -369,10 +378,12 @@ class RoutingHelper:
                     self._order_subscriptions[sock].remove(channel_id)
                     if not self._order_subscriptions[sock]:
                         del self._order_subscriptions[sock]
-                        logging.info('Order subscriptions for socket has expired after removing channel_id %s', channel_id)
+                        logging.info('Order subscriptions for socket has expired after removing channel_id %s',
+                                     channel_id)
                 else:
-                    logging.warning('Tried to remove channel_id %s from `order_subscriptions` but not found for socket.',
-                                    channel_id)
+                    logging.warning(
+                        'Tried to remove channel_id %s from `order_subscriptions` but not found for socket.',
+                        channel_id)
             else:
                 logging.warning('Tried to remove socket from `order_subscriptions` but socket not found.')
 
@@ -467,11 +478,13 @@ class CorrelationIDChecker:
 
 _LOADED_ALREADY = False
 
+
 class EnvLoader:
     """
     Module to integrate SDist from https://github.com/the-sal/SDist to securely load .env files by decrypting them
     just-in-time to load then deleting the encrypted file.
     """
+
     def __init__(self):
         try:
             self.sdist_path = self.load_sdist_path()
@@ -483,8 +496,9 @@ class EnvLoader:
             self._active = True
 
         if platform.system() != "Darwin" and self._active:
-            print("[SecureEnvLoader] Warning: An .env.enc.se file was found, but SDist's decrypt-se requires macOS secure enclave. This functionality will"
-                  "not work on Linux. Defaulting to loading .env, ensure .env is present. Delete the .env.enc.se file to supress this warning.")
+            print(
+                "[SecureEnvLoader] Warning: An .env.enc.se file was found, but SDist's decrypt-se requires macOS secure enclave. This functionality will"
+                "not work on Linux. Defaulting to loading .env, ensure .env is present. Delete the .env.enc.se file to supress this warning.")
             self._active = False
 
     @staticmethod
@@ -497,10 +511,9 @@ class EnvLoader:
     def decrypt_env(self):
         """
         Decrypt the .env file using SDist.
-        If there is an error does not raise an exception.
         :return:
         """
-        subprocess.Popen([
+        subprocess.check_call([
             self.sdist_path,
             "-c",
             "-p",
@@ -511,8 +524,11 @@ class EnvLoader:
             "-a",
             ".env.enc.se",
             ".env"
-        ]).wait()
+        ])
 
+    # NOTE: There is no need for this function to be called
+    # because decryption is not a destructive action,
+    # so after loading once decrypted, you can just delete the .env file
     def encrypt_env(self):
         """
         Encrypt the .env file using SDist.
@@ -535,7 +551,7 @@ class EnvLoader:
         try:
             os.remove(".env")
         except FileNotFoundError:
-            pass
+            raise FileNotFoundError("State was corrupted, after encryption failed to remove .env")
 
     def load_env(self):
         """
@@ -551,6 +567,8 @@ class EnvLoader:
                 self.decrypt_env()
             load_dotenv()
             if self._active:
-                self.encrypt_env()
+                try:
+                    os.remove(".env")
+                except FileNotFoundError:
+                    raise FileNotFoundError("After decryption failed to remove .env, the state of the system was corrupted")
             _LOADED_ALREADY = True
-
