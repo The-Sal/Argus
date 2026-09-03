@@ -1,14 +1,16 @@
 """Utilities for the Argus package."""
 import os
 import socket
-import logging
 import inspect
+import logging
 import platform
 import threading
 import traceback
 import subprocess
+from dotenv import load_dotenv
 from utils3 import assertTypes
 from collections import OrderedDict
+
 
 if platform.system() == "Darwin":
     # macOS specific Function
@@ -461,3 +463,94 @@ class CorrelationIDChecker:
         """Clears all seen correlation IDs. Use with caution as this can lead to accepting duplicate IDs."""
         with self._lock:
             self.seen_correlation_ids.clear()
+
+
+_LOADED_ALREADY = False
+
+class EnvLoader:
+    """
+    Module to integrate SDist from https://github.com/the-sal/SDist to securely load .env files by decrypting them
+    just-in-time to load then deleting the encrypted file.
+    """
+    def __init__(self):
+        try:
+            self.sdist_path = self.load_sdist_path()
+        except FileNotFoundError:
+            self.sdist_path = None
+        self._active = False
+        if os.path.exists(".env.enc.se"):
+            print('[SecureEnvLoader] Found .env.enc.se, will decrypt when loading env')
+            self._active = True
+
+        if platform.system() != "Darwin" and self._active:
+            print("[SecureEnvLoader] Warning: An .env.enc.se file was found, but SDist's decrypt-se requires macOS secure enclave. This functionality will"
+                  "not work on Linux. Defaulting to loading .env, ensure .env is present. Delete the .env.enc.se file to supress this warning.")
+            self._active = False
+
+    @staticmethod
+    def load_sdist_path():
+        response = subprocess.check_output(["which", "sdist"]).decode("utf-8").strip()
+        if not os.path.exists(response):
+            raise FileNotFoundError("SDist not found, response:", response)
+        return response
+
+    def decrypt_env(self):
+        """
+        Decrypt the .env file using SDist.
+        If there is an error does not raise an exception.
+        :return:
+        """
+        subprocess.Popen([
+            self.sdist_path,
+            "-c",
+            "-p",
+            "NONE",
+            "--args-only",
+            "-f",
+            "decrypt-se",
+            "-a",
+            ".env.enc.se",
+            ".env"
+        ]).wait()
+
+    def encrypt_env(self):
+        """
+        Encrypt the .env file using SDist.
+        raises an exception if there is an error
+        :return:
+        """
+        subprocess.check_call([
+            self.sdist_path,
+            "-c",
+            "-p",
+            "NONE",
+            "--args-only",
+            "-f",
+            "encrypt-se",
+            "-a",
+            ".env",
+            ".env.enc.se",
+            "?"
+        ])
+        try:
+            os.remove(".env")
+        except FileNotFoundError:
+            pass
+
+    def load_env(self):
+        """
+        Load the .env file using SDist if encryped, otherwise load from the normal dotenv method (.env)
+        Many places within the codebase load the .env file at their own pace,
+        this method ensures the .env is only decrypted and loaded once to avoid
+        repeatedly decrypting and loading the file.
+        :return:
+        """
+        global _LOADED_ALREADY
+        if not _LOADED_ALREADY:
+            if self._active:
+                self.decrypt_env()
+            load_dotenv()
+            if self._active:
+                self.encrypt_env()
+            _LOADED_ALREADY = True
+

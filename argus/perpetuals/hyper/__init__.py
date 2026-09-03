@@ -65,26 +65,26 @@ class HyperLiquidDispatcher(BaseDispatcher):
     """
 
     def __init__(self, wallet_address: str, private_key: str, host: str = "localhost", port: int = 9972):
+
+        routing_table = {
+            # Meta Functions
+            'products_version': self._products_version,
+            # Information Functions
+            'get_dexs': self._get_dexs,
+            'get_perpetuals_for_dex': self._get_perpetual_for_dex,
+            'get_funding_rates_for_all_perpetuals': self._get_funding_rates_for_all_perps,
+            'perpetual_info': self._perp_info,
+            # Account Info      
+            # 'get_account_info': self._get_account_info,
+            # 'get_account_balance': self._get_account_balance,
+            # 'get_account_positions': self._get_account_positions
+            # Trading Functions (TBD)
+        }
+        
         super().__init__(
             host=host,
             port=port,
-            routing_table={
-                # Meta Functions
-                'products_version': self._products_version,
-                # Information Functions
-                'get_dexs': self._get_dexs,
-                'get_perpetuals_for_dex': self._get_perpetual_for_dex,
-                'get_funding_rates_for_all_perpetuals': self._get_funding_rates_for_all_perps,
-                'perpetual_info': self._perp_info,
-
-                # Account Info
-                
-                # 'get_account_info': self._get_account_info,
-                # 'get_account_balance': self._get_account_balance,
-                # 'get_account_positions': self._get_account_positions
-
-                # Trading Functions (TBD)
-            }
+            routing_table=routing_table
         )
         self.rest = HyperLiquidRest(wallet_address, private_key)
         self._all_perps = self.rest.get_all_perpetuals()

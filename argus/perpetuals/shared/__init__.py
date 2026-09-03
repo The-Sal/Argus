@@ -3,6 +3,7 @@ import socket
 import traceback
 from argus import protocol
 from typing import Callable, Any
+from collections.abc import Mapping
 from utils3.networking.sockets import Server
 from argus.perpetuals.shared import _classes as cls, _errors as ers
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
@@ -52,7 +53,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
 
     """
     def __init__(self, host: str, port: int,
-                 routing_table: dict[str, Callable[[str, ArgsObject], Any]]):
+                 routing_table: Mapping[str, Callable[[ArgsObject], Any]]):
         super().__init__()
         RoutingHelper.__init__(self)
         self._dispatcher_server = Server(
