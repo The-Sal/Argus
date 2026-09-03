@@ -3,10 +3,10 @@ Hyperliquid – This module will implement the full Dispatcher + Trading API.
 This module is still under development and is being built as Phase 1.0 of Argus v2.
 Track the PR for hyperliquid [here](https://github.com/The-Sal/Argus/pull/96)
 """
-from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
 from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
+from argus._argus_utils import ArgsObject, load_dotenv
 from argus.perpetuals.hyper.rest import HyperLiquidRest
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
 
@@ -208,7 +208,6 @@ class HyperLiquidDispatcher(BaseDispatcher):
 
 
 if __name__ == '__main__':
-    from dotenv import load_dotenv
     import os
     if not load_dotenv():
         print("Error loading .env file")

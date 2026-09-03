@@ -254,7 +254,7 @@ class ArgusPolymarketDB(GenericSatelliteSys):
         written to the .env file, APDB will attempt a direct connection to Polymarket.
         :return:
         """
-        from dotenv import load_dotenv
+        from argus._argus_utils import load_dotenv
         load_dotenv()
         BIND_ADDRESS = wrapper.start_proxy_and_return_bind('POLYMARKET')
         if BIND_ADDRESS is None:

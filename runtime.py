@@ -16,11 +16,8 @@ import argus
 import logging
 import platform
 import argparse
-from dotenv import load_dotenv
+from argus._argus_utils import load_dotenv
 
-
-if not load_dotenv():
-    print("Warning: .env was not loaded")
 
 choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance']
 
@@ -44,6 +41,10 @@ def main(argv=None):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+
+    if args.target is not None:
+        if not load_dotenv():
+            print("Warning: .env was not loaded")
 
     if args.target == 'ib.forecast':
         from argus.ib.forecast import FXCDispatcher

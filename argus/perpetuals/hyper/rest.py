@@ -107,7 +107,7 @@ class HyperLiquidRest:
 
 
 if __name__ == '__main__':
-    from dotenv import load_dotenv
+    from argus._argus_utils import load_dotenv
     load_dotenv()
     rest = HyperLiquidRest(wallet_address=os.environ['HYPERLIQUID_WALLET_ADDRESS'], private_key=os.environ['HYPERLIQUID_PRIVATE_KEY'])
 

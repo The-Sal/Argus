@@ -3,8 +3,8 @@
 import os
 import logging
 from typing import Any
-from dotenv import load_dotenv
 from types import SimpleNamespace
+from argus._argus_utils import load_dotenv
 
 class SlimmedPolymarketEvent(SimpleNamespace):
     """A slimmed-down version of PolymarketEvent with a to_dict method."""
@@ -55,7 +55,7 @@ READ_ATTRIBUTES_SET = set(ALL_READ_ATTRIBUTES)
 PRIMITIVE_TYPES = (str, int, float, bool)
 
 if load_dotenv():
-    protected_atts_from_env = set(os.getenv('POLYMARKET_PROTECTED_ATTRIBUTES', '').split(','))
+    protected_atts_from_env = {a for a in os.getenv('POLYMARKET_PROTECTED_ATTRIBUTES', '').split(',') if a}
     if protected_atts_from_env:
         logging.info(f"[_mem_slim] Adding protected attributes from environment: {protected_atts_from_env}")
         READ_ATTRIBUTES_SET.update(protected_atts_from_env)
@@ -110,6 +110,7 @@ def traverse_and_slim(event) -> Any:
                 
                 # Skip None values only if they're NOT in our allowed set
                 # Attributes in READ_ATTRIBUTES_SET must always be preserved, even if None
+                # noinspection all
                 if value is None and attr not in READ_ATTRIBUTES_SET:
                     continue
                 
@@ -117,6 +118,7 @@ def traverse_and_slim(event) -> Any:
                 slimmed_value = recursively_slim(value)
                 
                 # For lists and dicts, only set if they're not empty
+                # noinspection all
                 if isinstance(value, (list, dict)) and not slimmed_value:
                     continue
                 

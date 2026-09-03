@@ -7,9 +7,9 @@ import platform
 import threading
 import traceback
 import subprocess
-from dotenv import load_dotenv
 from utils3 import assertTypes
 from collections import OrderedDict
+from dotenv import load_dotenv as _dotenv_load_dotenv
 
 if platform.system() == "Darwin":
     # macOS specific Function
@@ -477,7 +477,7 @@ class CorrelationIDChecker:
 
 
 _LOADED_ALREADY = False
-
+_LOAD_RESULT = None
 
 class EnvLoader:
     """
@@ -491,9 +491,13 @@ class EnvLoader:
         except FileNotFoundError:
             self.sdist_path = None
         self._active = False
-        if os.path.exists(".env.enc.se"):
+
+        if os.path.exists(".env.enc.se") and self.sdist_path is not None:
             print('[SecureEnvLoader] Found .env.enc.se, will decrypt when loading env')
             self._active = True
+        elif os.path.exists(".env.enc.se") and self.sdist_path is None:
+            print('[SecureEnvLoader] Found .env.enc.se, but SDist not found, will not decrypt')
+            self._active = False
 
         if platform.system() != "Darwin" and self._active:
             print(
@@ -553,22 +557,38 @@ class EnvLoader:
         except FileNotFoundError:
             raise FileNotFoundError("State was corrupted, after encryption failed to remove .env")
 
-    def load_env(self):
+    def load_env(self) -> bool:
         """
         Load the .env file using SDist if encryped, otherwise load from the normal dotenv method (.env)
         Many places within the codebase load the .env file at their own pace,
         this method ensures the .env is only decrypted and loaded once to avoid
         repeatedly decrypting and loading the file.
-        :return:
+        :return: True if a .env file was found and loaded, False otherwise. Cached across calls since
+                 the actual load only ever happens once per process.
         """
-        global _LOADED_ALREADY
+        global _LOADED_ALREADY, _LOAD_RESULT
         if not _LOADED_ALREADY:
             if self._active:
                 self.decrypt_env()
-            load_dotenv()
+                # decrypt_env() always writes to CWD, so load from there explicitly rather than
+                # letting find_dotenv() search upward from this module's own directory.
+                _LOAD_RESULT = _dotenv_load_dotenv(dotenv_path=".env")
+            else:
+                _LOAD_RESULT = _dotenv_load_dotenv()
             if self._active:
                 try:
                     os.remove(".env")
                 except FileNotFoundError:
                     raise FileNotFoundError("After decryption failed to remove .env, the state of the system was corrupted")
             _LOADED_ALREADY = True
+        return _LOAD_RESULT
+
+_ENV_VAR_LOADER = EnvLoader()
+
+
+def load_dotenv() -> bool:
+    """
+    Load the .env file using SDist if encryped, otherwise load from the normal dotenv method (.env)
+    :return: True if a .env file was found and loaded, False otherwise.
+    """
+    return _ENV_VAR_LOADER.load_env()
