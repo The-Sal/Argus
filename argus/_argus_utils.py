@@ -27,7 +27,6 @@ if platform.system() == "Darwin":
             'imessage-cli', '--message', "{}\n{}".format(title, message), number
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-
     # Alternative implementation with more sound options:
     @assertTypes([str, str, str], auto_convert=True)
     def macos_notification_with_custom_sound(title: str, message: str, sound_name: str = "default") -> None:
@@ -44,9 +43,8 @@ if platform.system() == "Darwin":
             f'display notification "{message}" with title "{title}" sound name "{sound_name}"'
         ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 else:
-    print(
-        '[_argus_utils] Note: You are currently on {}, this platform is probably supported but system notifications will not work.'.format(
-            platform.system()))
+    print('[_argus_utils] Note: You are currently on {}, '
+          'this platform is probably supported but system notifications will not work.'.format(platform.system()))
 
 
     def system_notification(title: str, message: str) -> None:
@@ -479,6 +477,7 @@ class CorrelationIDChecker:
 _LOADED_ALREADY = False
 _LOAD_RESULT = None
 
+
 class EnvLoader:
     """
     Module to integrate SDist from https://github.com/the-sal/SDist to securely load .env files by decrypting them
@@ -579,9 +578,11 @@ class EnvLoader:
                 try:
                     os.remove(".env")
                 except FileNotFoundError:
-                    raise FileNotFoundError("After decryption failed to remove .env, the state of the system was corrupted")
+                    raise FileNotFoundError(
+                        "After decryption failed to remove .env, the state of the system was corrupted")
             _LOADED_ALREADY = True
         return _LOAD_RESULT
+
 
 _ENV_VAR_LOADER = EnvLoader()
 
@@ -592,3 +593,85 @@ def load_dotenv() -> bool:
     :return: True if a .env file was found and loaded, False otherwise.
     """
     return _ENV_VAR_LOADER.load_env()
+
+
+def check_env_compatibility():
+    """
+    This fn is mainly designed for Linux (it works on macOS too) to check if the shell
+    environment is compatible with Argus. It checks for all the POSIX-Y subprocesses Argus uses.
+    The list below _should_ be extensive.
+
+    Checks happen in two tiers:
+    - hard_procs: used on Argus's happy path with no fallback. Missing one raises.
+    - soft_procs: only used on non-happy paths (e.g. install-from-source fallbacks,
+      platform-specific extras). Missing one just prints a warning.
+
+    :return: Dict mapping each resolved subprocess name to its absolute path. Soft procs
+        that could not be resolved are omitted (a warning is printed for each of those).
+    """
+    hard_procs = [
+        "mv",
+        "cp",
+        "tar",
+        "unzip",
+        "killall",
+        "clear",
+        "uname",
+        "file",
+        "chmod",
+    ]
+
+    soft_procs = [
+        "tree",
+        "cargo",
+        "curl",
+        "git",
+        "ping"
+    ]
+
+    if platform.system() == "Darwin":
+        hard_procs += ["osascript"]
+        soft_procs += ["sdist", "imessage-cli"]
+        # imessage-cli is only used for sending iMessage notifications. This system will be depreciated
+        # in a future version of Argus. and imessage-cli will be removed from here. imessage-cli
+        # is a very old dep from ib-era. Before v3 this will be dropped.
+
+    try:
+        subprocess.check_output(["which", "which"], stderr=subprocess.DEVNULL)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        raise FileNotFoundError(
+            "'which' command not found on this system. Argus requires POSIX 'which' "
+            "to resolve the subprocesses it depends on.")
+
+    def resolve(_proc):
+        try:
+            path_ = subprocess.check_output(["which", _proc], stderr=subprocess.DEVNULL).decode("utf-8").strip()
+        except subprocess.CalledProcessError:
+            path_ = None
+        return path_ if path_ and os.path.exists(path_) else None
+
+    resolved_paths = {}
+    missing_hard = []
+    for proc in hard_procs:
+        path = resolve(proc)
+        if path is None:
+            missing_hard.append(proc)
+        else:
+            resolved_paths[proc] = path
+            print('[env-compatibility] OK Found:', proc, 'at', path)
+
+    if missing_hard:
+        raise FileNotFoundError(
+            "The following required subprocess(es) could not be resolved via 'which': {}. "
+            "These are used on Argus's happy path and have no fallback.".format(", ".join(missing_hard)))
+
+    for proc in soft_procs:
+        path = resolve(proc)
+        if path is None:
+            print("[check_env_compatibility] Warning: '{}' could not be resolved, "
+                  "features depending on it may not work.".format(proc))
+        else:
+            print('[env-compatibility] OK Found:', proc, 'at', path)
+            resolved_paths[proc] = path
+
+    return resolved_paths

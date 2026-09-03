@@ -16,7 +16,7 @@ import argus
 import logging
 import platform
 import argparse
-from argus._argus_utils import load_dotenv
+from argus import secure_load_dotenv, check_env_compatibility
 
 
 choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance']
@@ -43,8 +43,9 @@ def main(argv=None):
     )
 
     if args.target is not None:
-        if not load_dotenv():
+        if not secure_load_dotenv():
             print("Warning: .env was not loaded")
+        check_env_compatibility()
 
     if args.target == 'ib.forecast':
         from argus.ib.forecast import FXCDispatcher

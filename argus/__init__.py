@@ -14,4 +14,4 @@ __version__ = '2.0.0 (phase 1.0)'
 
 # Warning: Kept for compatibility with a cache mechanism; do not remove
 # noinspection PyUnresolvedReferences
-from argus._argus_utils import throw_fuss
+from argus._argus_utils import throw_fuss, load_dotenv as secure_load_dotenv, check_env_compatibility
