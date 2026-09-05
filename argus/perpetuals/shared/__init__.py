@@ -156,7 +156,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
     ########################################
     # PUBLIC FUNCTIONS
     ########################################
-    def interactive_ui(self):
+    def interactive_mode(self):
         self._interactive_ui({})
 
     def run_server(self):

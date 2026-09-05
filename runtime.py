@@ -19,7 +19,7 @@ import argparse
 from argus import secure_load_dotenv, check_env_compatibility
 
 
-choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance']
+choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid']
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
@@ -109,6 +109,16 @@ def main(argv=None):
         dispatcher = BinanceMKTDispatcher(**binance_kwargs)
         dispatcher.interactive_mode()
         print("Exiting Binance dispatcher")
+    elif args.target == "hyperliquid":
+        from argus.perpetuals.hyper import HyperLiquidDispatcher
+        hyper_kwargs = {}
+        if args.host:
+            hyper_kwargs['host'] = args.host
+        if args.port is not None:
+            hyper_kwargs['port'] = args.port
+        dispatcher = HyperLiquidDispatcher(**hyper_kwargs)
+        dispatcher.interactive_mode()
+        print("Exiting HyperLiquid dispatcher")
     else:
         parser.error('Unknown target')
 

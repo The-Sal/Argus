@@ -658,7 +658,7 @@ def check_env_compatibility():
             missing_hard.append(proc)
         else:
             resolved_paths[proc] = path
-            print('[env-compatibility] OK Found:', proc, 'at', path)
+            # print('[env-compatibility] OK Found:', proc, 'at', path)
 
     if missing_hard:
         raise FileNotFoundError(
@@ -671,7 +671,7 @@ def check_env_compatibility():
             print("[check_env_compatibility] Warning: '{}' could not be resolved, "
                   "features depending on it may not work.".format(proc))
         else:
-            print('[env-compatibility] OK Found:', proc, 'at', path)
+            # print('[env-compatibility] OK Found:', proc, 'at', path)
             resolved_paths[proc] = path
 
     return resolved_paths

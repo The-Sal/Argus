@@ -1,17 +1,20 @@
 """
-Hyperliquid – This module will implement the full Dispatcher + Trading API.
+Hyperliquid – This module will implement the full Dispatcher and Trading API.
 This module is still under development and is being built as Phase 1.0 of Argus v2.
 Track the PR for hyperliquid [here](https://github.com/The-Sal/Argus/pull/96)
 """
+import os
+from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
 from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
-from argus._argus_utils import ArgsObject, load_dotenv
 from argus.perpetuals.hyper.rest import HyperLiquidRest
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
 
+
 __version__ = [1, 0, 0, 0]
 pi = PrintInterface('HyperLiquid')
+
 
 class HyperLiquidDispatcher(BaseDispatcher):
     """
@@ -64,7 +67,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
 
     """
 
-    def __init__(self, wallet_address: str, private_key: str, host: str = "localhost", port: int = 9972):
+    def __init__(self, wallet_address=None, private_key=None, host: str = "localhost", port: int = 9972):
 
         routing_table = {
             # Meta Functions
@@ -80,12 +83,18 @@ class HyperLiquidDispatcher(BaseDispatcher):
             # 'get_account_positions': self._get_account_positions
             # Trading Functions (TBD)
         }
-        
+
         super().__init__(
             host=host,
             port=port,
             routing_table=routing_table
         )
+
+        if wallet_address is None:
+            wallet_address = os.environ["HYPERLIQUID_WALLET_ADDRESS"]
+        if private_key is None:
+            private_key = os.environ["HYPERLIQUID_PRIVATE_KEY"]
+
         self.rest = HyperLiquidRest(wallet_address, private_key)
         self._all_perps = self.rest.get_all_perpetuals()
 
@@ -162,7 +171,6 @@ class HyperLiquidDispatcher(BaseDispatcher):
         if limit > DEFAULT_VALUE:
             pi.prt(f"Limit increased from {DEFAULT_VALUE} to {limit}")
 
-
         if offset >= len(funding_rate_sorted):
             return {'funding_rates': []}
 
@@ -205,15 +213,3 @@ class HyperLiquidDispatcher(BaseDispatcher):
             'concise_annotation': concise_entry.to_pair()[1] if concise_entry is not None else None,
             'predicted_funding': [v.to_pair() for v in predicted_entry.venues] if predicted_entry is not None else None,
         }
-
-
-if __name__ == '__main__':
-    import os
-    if not load_dotenv():
-        print("Error loading .env file")
-    dispatcher = HyperLiquidDispatcher(
-        wallet_address=os.environ['HYPERLIQUID_WALLET_ADDRESS'],
-        private_key=os.environ['HYPERLIQUID_PRIVATE_KEY']
-    )
-    dispatcher.run_server()
-
