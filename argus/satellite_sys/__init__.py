@@ -19,7 +19,7 @@ from utils3 import Container, networking
 
 _addrs_and_hashes = {
     'WpDaemon': 'https://github.com/The-Sal/WpDaemon/releases/download/v1.0.2/builds.zip', 
-    'APDB': 'https://github.com/The-Sal/argus-polymarket-db/releases/download/v2.0.1'
+    'APDB': 'https://github.com/The-Sal/argus-polymarket-db/releases/download/v2.1.1'
 }
 
 
