@@ -8,6 +8,7 @@ dependencies = [
     "httpx[socks]>=0.28.1",
     "numpy>=2.4.6",
     "pandas>=3.0.3",
+    "pandas-stubs~=3.0.3",
     "py-clob-client-v2>=1.0.1",
     "python-dotenv~=1.2.2",
     "python-socks~=2.8.0",
