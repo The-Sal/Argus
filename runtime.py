@@ -19,7 +19,7 @@ import argparse
 from argus import secure_load_dotenv, check_env_compatibility
 
 
-choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid']
+choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid', 'lighter']
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
@@ -117,8 +117,20 @@ def main(argv=None):
         if args.port is not None:
             hyper_kwargs['port'] = args.port
         dispatcher = HyperLiquidDispatcher(**hyper_kwargs)
+        dispatcher.run()
         dispatcher.interactive_mode()
         print("Exiting HyperLiquid dispatcher")
+    elif args.target == "lighter":
+        from argus.perpetuals.lighter import LighterDispatcher
+        lighter_kwargs = {}
+        if args.host:
+            lighter_kwargs['host'] = args.host
+        if args.port is not None:
+            lighter_kwargs['port'] = args.port
+        dispatcher = LighterDispatcher(**lighter_kwargs)
+        dispatcher.run()
+        dispatcher.interactive_mode()
+        print("Exiting Lighter dispatcher")
     else:
         parser.error('Unknown target')
 

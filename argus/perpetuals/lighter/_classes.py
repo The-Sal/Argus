@@ -238,6 +238,13 @@ class Perpetual:
     def from_dict(cls, data: Dict[str, Any]) -> "Perpetual":
         return cls(market=Market.from_dict(data), context=MarketContext.from_dict(data))
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "market": self.market.to_dict(),
+            "context": self.context.to_dict(),
+            "funding_rate": str(self.funding_rate) if self.funding_rate is not None else None,
+        }
+
     @property
     def name(self) -> str:
         return self.market.symbol

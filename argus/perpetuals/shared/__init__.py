@@ -1,6 +1,7 @@
 import json
 import socket
 import traceback
+from utils3 import runAsThread
 from argus import protocol
 from typing import Callable, Any
 from collections.abc import Mapping
@@ -162,3 +163,10 @@ class BaseDispatcher(Introspective, RoutingHelper):
     def run_server(self):
         _p.prt("Starting dispatcher server on host: {}, port: {}".format(self._dispatcher_server.host, self._dispatcher_server.port))
         self._dispatcher_server.start()
+
+    @runAsThread
+    def run(self):
+        """Starts the dispatcher server on a background thread. Use this (rather than
+        run_server directly) when the caller also wants to run interactive_mode(), since
+        run_server() blocks forever accepting connections."""
+        self.run_server()

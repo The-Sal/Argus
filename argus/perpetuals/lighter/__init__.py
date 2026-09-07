@@ -1,106 +1,184 @@
-
 """
-Phase 1.0 of Argus v2.0, track the PR https://github.com/The-Sal/Argus/pull/96
+Lighter (zkLighter) – Phase 1.0 of Argus v2, mirroring the HyperLiquid dispatcher
+where Lighter's architecture actually matches it. Track the PR https://github.com/The-Sal/Argus/pull/96
+
+Unlike Hyperliquid, Lighter has no HIP-3-style builder-deployed dexes -- it is a single
+unified exchange (one account/margin system) with every market listed flat under that
+one venue. Anywhere HyperLiquidDispatcher takes a dex_name / assembles per-dex data
+(get_dexs, the dex_name param on get_perpetuals_for_dex, the 4-call perp_info), there is
+no Lighter analog, so those are intentionally absent here rather than stubbed out. See
+docs/Hyperliquid_and_Lighter_HYPE_Trading_API_Report.md section 7 for details.
 """
-
-import time
-from utils3.networking import Session
-from typing import Dict, List, Optional
-from argus.perpetuals.lighter import _classes as _cls
-
-_ep = {
-    'base': 'https://mainnet.zklighter.elliot.ai',
-}
+from argus._argus_utils import ArgsObject
+from argus import __version__ as argus_version
+from argus.perpetuals.lighter.rest import LighterRest
+from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
 
 
-class LighterRest:
-    """Public market-data client for the Lighter exchange REST API.
+__version__ = [1, 0, 0, 0]
+pi = PrintInterface('Lighter')
 
-    All endpoints used here are public (no API key / signing needed) -- they
-    only cover market metadata, prices, and funding, not order placement.
+
+class LighterDispatcher(BaseDispatcher):
+    """
+    Lighter dispatcher.
+
+    This class orchestrates the read-only market-data surface of the Lighter exchange.
+    It is the Lighter analog of HyperLiquidDispatcher (argus/perpetuals/hyper/__init__.py)
+    and shares its base class, protocol, and versioning scheme -- see that class's
+    docstring for the general Argus v2 perpetuals-dispatcher design (P1 protocol,
+    enforced correlation IDs, "products_version" component versioning).
+
+    All endpoints exposed here are backed by Lighter's public REST API (no signing
+    required). Account/trading functions are not yet implemented, matching HyperLiquid's
+    current state.
     """
 
-    def __init__(self, base_url: str = _ep['base']):
-        self.base_url = base_url
-        self.session = Session()
-        self.session.headers = {
-            'Content-Type': 'application/json',
+    def __init__(self, host: str = "localhost", port: int = 9974):
+
+        routing_table = {
+            # Meta Functions
+            'products_version': self._products_version,
+            # Information Functions
+            'get_markets': self._get_markets,
+            'get_funding_rates_for_all_perpetuals': self._get_funding_rates_for_all_perps,
+            'market_info': self._market_info,
+            'get_funding_history': self._get_funding_history,
+            # Account Info
+            # 'get_account_info': self._get_account_info,
+            # 'get_account_balance': self._get_account_balance,
+            # 'get_account_positions': self._get_account_positions
+            # Trading Functions (TBD)
         }
 
-    def _get(self, path: str, params: Optional[dict] = None) -> dict:
-        return self.session.get(url=f'{self.base_url}{path}', params=params).json()
+        super().__init__(
+            host=host,
+            port=port,
+            routing_table=routing_table
+        )
 
-    # --- markets -------------------------------------------------------------
+        self.rest = LighterRest()
+        self._all_perps = self.rest.get_all_perpetuals()
 
-    def get_markets(self) -> List[_cls.Perpetual]:
-        """All perpetual markets' metadata + live data (mark price, index price, 24h stats, ...)."""
-        response = self._get('/api/v1/orderBookDetails', params={'filter': 'perp'})
-        markets = [_cls.Perpetual.from_dict(m) for m in response['order_book_details']]
-        assert all(p.market.is_perp for p in markets), 'orderBookDetails?filter=perp returned a non-perp market'
-        return markets
+    ########################################
+    # INTERNAL SERVER FUNCTIONS & Callbacks
+    ########################################
 
-    # --- funding rates ---------------------------------------------------------
+    def subscription_expired(self, channel_id):
+        """
+        This function is called when a subscription expires.
+        :param channel_id: The ID of the expired subscription
+        """
+        pass
 
-    def get_funding_rates(self) -> List[_cls.FundingRateEntry]:
-        """Current funding rate for every market, on Lighter and the external CEXs
-        (binance, bybit, hyperliquid) it benchmarks against."""
-        response = self._get('/api/v1/funding-rates')
-        return [_cls.FundingRateEntry.from_dict(e) for e in response['funding_rates']]
-
-    def get_cross_exchange_fundings(self) -> List[_cls.CrossExchangeFunding]:
-        """`get_funding_rates()`, grouped by market so each market's rates across
-        exchanges can be compared side by side."""
-        by_market: Dict[int, _cls.CrossExchangeFunding] = {}
-        for entry in self.get_funding_rates():
-            group = by_market.setdefault(
-                entry.market_id, _cls.CrossExchangeFunding(market_id=entry.market_id, symbol=entry.symbol)
-            )
-            group.rates.append(entry)
-        return list(by_market.values())
-
-    def get_funding_history(
-        self,
-        market_id: int,
-        start_timestamp: int,
-        end_timestamp: Optional[int] = None,
-        resolution: str = '1h',
-        count_back: int = 0,
-    ) -> List[_cls.FundingHistoryEntry]:
-        """Historical funding for one market, in [start_timestamp, end_timestamp] (unix
-        seconds). `end_timestamp` defaults to now. `resolution` is "1h" or "1d"; at most
-        750 entries are returned per call. `count_back=0` returns everything in range."""
-        params = {
-            'market_id': market_id,
-            'resolution': resolution,
-            'start_timestamp': start_timestamp,
-            'end_timestamp': end_timestamp if end_timestamp is not None else int(time.time()),
-            'count_back': count_back,
+    ########################################
+    # Dispatcher Functions
+    ########################################
+    @staticmethod
+    def _products_version(args: ArgsObject) -> dict:
+        """
+        Returns the version of the dispatcher and its components.
+        """
+        _ = args
+        return {
+            'argus': argus_version,
+            'lighter_dispatcher': __version__,
+            'sidecars': {}
         }
-        response = self._get('/api/v1/fundings', params=params)
-        return [_cls.FundingHistoryEntry.from_dict(market_id, e) for e in response['fundings']]
 
-    # --- combined convenience ---------------------------------------------------
+    def _get_markets(self, args: ArgsObject) -> dict:
+        """
+        Returns a paginated list of all perpetual markets. Unlike HyperLiquid's
+        get_perpetuals_for_dex, this takes no venue parameter -- Lighter has a single
+        unified market list, not per-dex universes.
+        :param args: Expects arguments:
+            'offset': int (default: 0)
+            'limit': int (default: 100)
+        :return:
+        """
+        DEFAULT_VALUE = 10
 
-    def get_all_perpetuals(self) -> _cls.PerpetualsIndex:
-        """All perpetual markets with Lighter's current funding rate attached,
-        as one sortable/filterable index."""
-        perpetuals = self.get_markets()
-        lighter_rates = {e.market_id: e.rate for e in self.get_funding_rates() if e.exchange == 'lighter'}
-        for p in perpetuals:
-            p.funding_rate = lighter_rates.get(p.market_id)
-        return _cls.PerpetualsIndex(perpetuals)
+        perpetuals = self._all_perps.perpetuals
 
+        offset = args.args.get('offset', 0)
+        limit = args.args.get('limit', min(DEFAULT_VALUE, len(perpetuals)))
 
-if __name__ == '__main__':
-    rest = LighterRest()
+        if offset >= len(perpetuals):
+            return {'perpetuals': []}
 
-    index = rest.get_all_perpetuals()
-    print(f'There are {len(index)} perpetual markets on Lighter ({len(index.excluding_inactive())} active).')
+        max_index = offset + limit
+        max_reachable = min(len(perpetuals), max_index)
+        return {'perpetuals': [perp.to_dict() for perp in perpetuals[offset: max_reachable]]}
 
-    print('\nTop 5 by funding rate:')
-    for p in index.highest_funding(5):
-        print(f'  {p.name:<10} funding={p.funding_rate!s:<14} mark={p.mark_price}')
+    def _get_funding_rates_for_all_perps(self, args: ArgsObject) -> dict:
+        """
+        Returns a sorted list of funding rates for all perps.
+        :param args: Expects arguments:
+            'offset': int (default: 0)
+            'limit': int (default: DEFAULT_VALUE)
+        :return:
+        """
 
-    print('\nBottom 5 by funding rate:')
-    for p in index.lowest_funding(5):
-        print(f'  {p.name:<10} funding={p.funding_rate!s:<14} mark={p.mark_price}')
+        DEFAULT_VALUE = 20
+
+        funding_rate_sorted = self._all_perps.sorted_by_funding_rate()
+        offset = args.args.get('offset', 0)
+        limit = args.args.get('limit', min(DEFAULT_VALUE, len(funding_rate_sorted)))
+        if limit > DEFAULT_VALUE:
+            pi.prt(f"Limit increased from {DEFAULT_VALUE} to {limit}")
+
+        if offset >= len(funding_rate_sorted):
+            return {'funding_rates': []}
+
+        max_index = offset + limit
+        max_reachable = min(len(funding_rate_sorted), max_index)
+        return {'funding_rates': [perp.to_dict() for perp in funding_rate_sorted[offset: max_reachable]]}
+
+    def _market_info(self, args: ArgsObject) -> dict:
+        """
+        Returns metadata + live data for a single market. Unlike HyperLiquid's
+        perpetual_info (which assembles 4 separate annotation/category endpoints),
+        Lighter has no per-asset annotation/category system -- this is a direct lookup
+        into the market list already fetched via get_all_perpetuals.
+
+        :param args: Expects arguments (exactly one of):
+            'symbol': str -- e.g. "BTC"
+            'market_id': int
+        :return:
+        """
+        symbol = args.args.get('symbol')
+        market_id = args.args.get('market_id')
+        if symbol is None and market_id is None:
+            raise _shared_ers.MissingArgumentError("Missing argument: 'symbol' or 'market_id'")
+
+        if symbol is not None:
+            perp = self._all_perps.get(symbol)
+        else:
+            perp = next((p for p in self._all_perps if p.market_id == market_id), None)
+
+        return {'perpetual': perp.to_dict() if perp is not None else None}
+
+    def _get_funding_history(self, args: ArgsObject) -> dict:
+        """
+        Returns historical funding for a single market.
+        :param args: Expects arguments:
+            'market_id': int (required)
+            'start_timestamp': int (required, unix seconds)
+            'end_timestamp': int (default: now)
+            'resolution': str (default: "1h")
+        :return:
+        """
+        market_id = args.args.get('market_id')
+        start_timestamp = args.args.get('start_timestamp')
+        if market_id is None:
+            raise _shared_ers.MissingArgumentError("Missing argument: 'market_id'")
+        if start_timestamp is None:
+            raise _shared_ers.MissingArgumentError("Missing argument: 'start_timestamp'")
+
+        history = self.rest.get_funding_history(
+            market_id=market_id,
+            start_timestamp=start_timestamp,
+            end_timestamp=args.args.get('end_timestamp'),
+            resolution=args.args.get('resolution', '1h'),
+        )
+        return {'funding_history': [entry.to_dict() for entry in history]}
