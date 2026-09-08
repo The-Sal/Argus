@@ -2,16 +2,14 @@ import time
 from utils3.networking import Session
 from typing import Dict, List, Optional
 from argus.perpetuals.lighter import _classes as _cls
-from argus.cache_sys import DomainCache as _DomainCache, FastCache
-
-_LIGHTER_CACHE = _DomainCache('lighter', FastCache(cache_file="~/.argus/lighter_cache.pkl"))
+from argus.perpetuals.shared import BaseDispatcherCompatibleRest
 
 _ep = {
     'base': 'https://mainnet.zklighter.elliot.ai',
 }
 
 
-class LighterRest:
+class LighterRest(BaseDispatcherCompatibleRest):
     """Public market-data client for the Lighter exchange REST API.
 
     All endpoints used here are public (no API key / signing needed) -- they
@@ -19,6 +17,7 @@ class LighterRest:
     """
 
     def __init__(self, base_url: str = _ep['base']):
+        super().__init__()
         self.base_url = base_url
         self.session = Session()
         self.session.headers = {
@@ -79,11 +78,6 @@ class LighterRest:
 
     # --- combined convenience ---------------------------------------------------
 
-    @_LIGHTER_CACHE.cache_decorator(
-        func_uuid="lighter_rest_get_all_perpetuals",
-        expiration=60*60*24,
-        should_cache_function=lambda x: len(x) > 0  # Only cache if we got a non-empty list of perpetuals
-    )
     def get_all_perpetuals(self) -> _cls.PerpetualsIndex:
         """All perpetual markets with Lighter's current funding rate attached,
         as one sortable/filterable index."""

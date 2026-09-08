@@ -1,15 +1,17 @@
+import copy
 import json
+import time
 import socket
+import threading
 import traceback
-from utils3 import runAsThread
 from argus import protocol
+from utils3 import runAsThread
 from typing import Callable, Any
 from collections.abc import Mapping
 from utils3.networking.sockets import Server
+from datetime import datetime, timedelta, UTC
 from argus.perpetuals.shared import _classes as cls, _errors as ers
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
-
-
 
 
 class PrintInterface:
@@ -17,6 +19,7 @@ class PrintInterface:
     A class that wraps logging + printing + other forms
     of communication into one class
     """
+
     def __init__(self, name):
         self.name = name
         self.nf = Notification()
@@ -41,20 +44,115 @@ class PrintInterface:
 
 _p = PrintInterface("BaseDispatcher")
 
+
+class LockedState:
+    def __init__(self, value):
+        self._value = value
+        self.lock = threading.Lock()
+
+    @property
+    def value(self):
+        """
+        Do not use inside context managers.
+        :return:
+        """
+        self.lock.acquire()
+        value = self._value
+        self.lock.release()
+        return value
+
+    @value.setter
+    def value(self, value):
+        self.lock.acquire()
+        self._value = value
+        self.lock.release()
+
+    def __bool__(self):
+        return self.value
+
+    def __copy__(self):
+        """
+        Remove reference to this object.
+        :return:
+        """
+        return copy.copy(self.value)
+
+    def __deepcopy__(self, memo):
+        """
+        remove reference to this object.
+        :return:
+        """
+        return copy.copy(self.value)
+
+
+class BaseDispatcherCompatibleRest:
+    """
+    A class REST clients should inherit from and subclass it's methods.
+    These are the methods that are going to be used by the BaseDispatcher for
+    some of its builtin functionality.
+    """
+
+    def __init__(self):
+        pass
+
+    def get_all_perpetuals(self):
+        """
+        This function should return a list of all perpetuals
+        :return:
+        """
+        raise NotImplementedError("get_all_perpetuals() not implemented.")
+
+
 class BaseDispatcher(Introspective, RoutingHelper):
     """
-    A base class designed for Argus v2's Perpetual Dispatchers.This dispatcher inherits almost all of Polymarket's inbound
+    A base class designed for Argus v2's Perpetual Dispatchers. This dispatcher inherits almost all of PolymarketDispatcher's inbound
     and outbound message shapes. It uses Introspective, RoutingHelper, CorrelationIDChecker, Server (utils3.networking.sockets.Server),
     etc... to provide the foundation for a trading-enabled dispatcher. The common data shapes for this dispatcher
     can be found in shared/_classes.py & shared/_errors.py
+
+    This base class supports runtime.py's .interactive_mode() [to Introspective._interactive_ui]
+    that defaults to no custom functions. Subclasses should override this function to provide custom functionality.
+    See PolymarketDispatcher for an example of how to do this.
 
     The server enforces correlation IDs for all requests. A request without a correlation ID will be rejected;
     The server uses P1 protocol to encode the messages. It uses the same shape as Polymarket's P1 messages with
     the same fields for in-out.
 
+    This base class also provides common utilities for perpetuals such as refreshing perpetual lists on the subclass's
+    behalf. To enable this feature (and other to come), subclasses should pass in a BaseDispatcherCompatibleRest instance
+    to the constructor. None of these utilities are enabled by default and must be enabled by the subclasses by calling the
+    respective utility functions. (e.g. _refresh_perpetuals() to refresh the perpetual list every UTC hour). Ensure
+    the REST client passed in conforms semantically with the BaseDispatcherCompatibleRest interface. Everything is
+    already pre-threaded with @runAsThread. If you call a utility function without passing in a BaseDispatcherCompatibleRest
+    instance, a RuntimeError will be raised. A NotImplementedError will be raised if the REST client does not implement
+    the functions required by the BaseDispatcherCompatibleRest interface and used by the utility function.
+
+    Additionally, utilities can impact routing the behavior can be controlled by the configurations dict passed
+    into the constructor. E.g., disable_routing_on_prep_cache_failure=True to disable routing temporarily if the
+    refresh_perpetuals() utility fails to refresh the perpetual list. See the source code for more details.
+    Utilities can also set the system into a terminal state (e.g., disable routing) if they fail to complete after a
+    certain number of retries. This is to ensure the dispatcher is not left providing bad data to clients.
+
+    The state of the base class is managed by self._state with each value being of type LockedState. Subclasses
+    should not modify self._state directly. Internally, they are all thread-safe. You can access the state of the
+    base dispatcher, however, through the self.state property. This property returns a copy of the state. Note
+    that the returned copy is run through deepcopy where __deepcopy__ on LockedState strips itself and returns
+    only the value without a reference to the LockedState object.
+
+    To keep type inference while still passing the rest instance, the BaseDispatcher deliberately does not use
+    self.rest rather uses self.common_rest. This allows the subclass to bind self.rest to the concrete type of the
+    rest client and pass it to the superclass constructor. For guidance on this pattern, see:
+    argus/perpetuals/hyper/__init__.py: HyperLiquidDispatcher
+
+
+
     """
+
     def __init__(self, host: str, port: int,
-                 routing_table: Mapping[str, Callable[[ArgsObject], Any]]):
+                 routing_table: Mapping[str, Callable[[ArgsObject], Any]],
+                 pi: "PrintInterface" = _p,
+                 common_rest: BaseDispatcherCompatibleRest = None,
+                 configurations: dict = None):
         super().__init__()
         RoutingHelper.__init__(self)
         self._dispatcher_server = Server(
@@ -66,6 +164,65 @@ class BaseDispatcher(Introspective, RoutingHelper):
 
         self._corr_id_check = CorrelationIDChecker()
         self.routing_table = routing_table
+        self.pi = pi
+        self.common_rest: BaseDispatcherCompatibleRest = common_rest
+        self._state = {
+            "enable_routing": LockedState(True)
+        }
+        if configurations is None:
+            configurations = {}
+
+        self._max_retry_range_rest = configurations.get("max_retry_range_rest", 10)
+        self._disable_routing_on_prep_cache_failure = configurations.get("disable_routing_on_prep_cache_failure", True)
+
+    ########################################
+    # Threads and utilities
+    ########################################
+    @runAsThread
+    def _refresh_perpetuals(self):
+        """
+        Every UTC hour, refresh the perpetual list.
+        :return:
+        """
+        if self.common_rest is None:
+            raise RuntimeError("Cannot refresh perpetuals: self.common_rest is None. "
+                               "Subclasses must set self.common_rest to a BaseDispatcherCompatibleRest "
+                               "instance before calling _refresh_perpetuals().")
+        while True:
+            next_utc_hour_in = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            time_to_wait = (next_utc_hour_in - datetime.now(UTC)).total_seconds()
+            self.pi.prt(f"Next perpetual refresh in {time_to_wait} seconds (at {next_utc_hour_in})")
+            time.sleep(max(time_to_wait - 0.5, 0))
+            self.pi.prt("Polling till time boundary is reached for perpetual refresh.")
+            while True:
+                if datetime.now(UTC) >= next_utc_hour_in:
+                    self.pi.prt("Refreshing perpetual list.")
+                    refreshed = False
+                    for i in range(self._max_retry_range_rest):
+                        try:
+                            self._all_perps = self.common_rest.get_all_perpetuals()
+                            self._state["enable_routing"].value = True
+                            refreshed = True
+                            break
+                        except Exception as e:
+                            msg = f"Failed to refresh perpetual list. Err={e}. Retrying ({i + 1}/{self._max_retry_range_rest})..."
+                            if self._disable_routing_on_prep_cache_failure:
+                                msg += " Disabling routing temporarily."
+                                self._state["enable_routing"].value = False
+
+                            if self._state["enable_routing"]:
+                                title = "Perpetual Refresh Error (Routing Enabled)"
+                            else:
+                                title = "Perpetual Refresh Error (Routing Disabled)"
+
+                            self.pi.throw_fuss(msg, title=title, notify=True)
+                            traceback.print_exc()
+
+                    if not refreshed:
+                        self._state["enable_routing"].value = False
+                        raise RuntimeError("Failed to refresh perpetual list after {} retries. Disabling routing.".format(self._max_retry_range_rest))
+
+                time.sleep(0.01)
 
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks
@@ -144,6 +301,11 @@ class BaseDispatcher(Introspective, RoutingHelper):
         :arg args: ArgsObject = argument object and the socket
         :return:
         """
+        if not self._state["enable_routing"]:
+            raise ers.RoutingDisabledError(
+                "Routing is currently disabled. Function '{}' was not routed.".format(function)
+            )
+
         func = self.routing_table.get(function)
         if func is None:
             raise ers.InvalidFunctionError(f"Function {function} is not valid")
@@ -161,7 +323,8 @@ class BaseDispatcher(Introspective, RoutingHelper):
         self._interactive_ui({})
 
     def run_server(self):
-        _p.prt("Starting dispatcher server on host: {}, port: {}".format(self._dispatcher_server.host, self._dispatcher_server.port))
+        _p.prt("Starting dispatcher server on host: {}, port: {}".format(self._dispatcher_server.host,
+                                                                         self._dispatcher_server.port))
         self._dispatcher_server.start()
 
     @runAsThread
@@ -170,3 +333,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
         run_server directly) when the caller also wants to run interactive_mode(), since
         run_server() blocks forever accepting connections."""
         self.run_server()
+
+    @property
+    def state(self):
+        return copy.deepcopy(self._state)

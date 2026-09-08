@@ -84,19 +84,22 @@ class HyperLiquidDispatcher(BaseDispatcher):
             # Trading Functions (TBD)
         }
 
-        super().__init__(
-            host=host,
-            port=port,
-            routing_table=routing_table
-        )
-
         if wallet_address is None:
             wallet_address = os.environ["HYPERLIQUID_WALLET_ADDRESS"]
         if private_key is None:
             private_key = os.environ["HYPERLIQUID_PRIVATE_KEY"]
 
-        self.rest = HyperLiquidRest(wallet_address, private_key)
+        rest_client = HyperLiquidRest(wallet_address, private_key)
+        super().__init__(
+            host=host,
+            port=port,
+            routing_table=routing_table,
+            pi=pi,
+            common_rest=rest_client
+        )
+        self.rest = rest_client
         self._all_perps = self.rest.get_all_perpetuals()
+        self._refresh_perpetuals()
 
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks

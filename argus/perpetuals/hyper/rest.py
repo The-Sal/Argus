@@ -3,6 +3,7 @@ from tqdm import tqdm
 from typing import List, Optional
 from utils3.networking import Session
 from argus.perpetuals.hyper import _classes as _cls
+from argus.perpetuals.shared import BaseDispatcherCompatibleRest
 from argus.cache_sys import DomainCache as _DomainCache, FastCache
 
 
@@ -14,8 +15,9 @@ _ep = {
 }
 
 
-class HyperLiquidRest:
+class HyperLiquidRest(BaseDispatcherCompatibleRest):
     def __init__(self, wallet_address: str, private_key: str):
+        super().__init__()
         self.wallet_address = wallet_address
         self.private_key = private_key
         self.session = Session()
@@ -47,11 +49,7 @@ class HyperLiquidRest:
         response: list = self._post(body)
         return _cls.PerpDexSnapshot.from_response(dex, response)
 
-    @_HL_CACHE.cache_decorator(
-        func_uuid="hyperliquid_rest_get_all_perpetuals",
-        expiration=60*60*24,
-        should_cache_function=lambda x: len(x) > 0  # Only cache if we got a non-empty list of perpetuals
-    )
+
     def get_all_perpetuals(self) -> _cls.PerpetualsIndex:
         """All perpetuals across the default dex and every HIP-3 dex, as one sortable/filterable index."""
         dex_names = [""] + [dex.name for dex in self.get_dexs()]

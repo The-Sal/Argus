@@ -51,14 +51,17 @@ class LighterDispatcher(BaseDispatcher):
             # Trading Functions (TBD)
         }
 
+        rest_client = LighterRest()
         super().__init__(
             host=host,
             port=port,
-            routing_table=routing_table
+            routing_table=routing_table,
+            pi=pi,
+            common_rest=rest_client
         )
-
-        self.rest = LighterRest()
+        self.rest = rest_client
         self._all_perps = self.rest.get_all_perpetuals()
+        self._refresh_perpetuals()
 
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks

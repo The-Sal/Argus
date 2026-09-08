@@ -15,3 +15,6 @@ class MissingArgumentError(DispatcherError):
 
 class PacketTooLargeError(DispatcherError):
     pass
+
+class RoutingDisabledError(DispatcherError):
+    pass
