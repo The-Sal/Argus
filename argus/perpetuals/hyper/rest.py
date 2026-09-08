@@ -1,4 +1,5 @@
 import os
+import time
 from tqdm import tqdm
 from typing import List, Optional
 from utils3.networking import Session
@@ -26,7 +27,17 @@ class HyperLiquidRest(BaseDispatcherCompatibleRest):
         }
 
     def _post(self, body: dict):
-        return self.session.post(url=_ep['info'], json=body).json()
+        response = self.session.post(url=_ep['info'], json=body).json()
+        if response is None:
+            # Observed as a bare `null` body (HTTP 200) instead of an error status, most likely
+            # when a request is rejected for being rate-limited (each `info` call weighs 20
+            # against the 1200/minute per-IP budget). Raise here so every caller gets one clear
+            # error instead of an obscure unpack/iteration TypeError.
+            raise RuntimeError(
+                "HyperLiquid API returned no data for request type='{}' (dex={!r}); "
+                "this usually means the request was rate-limited.".format(body.get('type'), body.get('dex'))
+            )
+        return response
 
     # --- dexes -----------------------------------------------------------
 
@@ -53,10 +64,13 @@ class HyperLiquidRest(BaseDispatcherCompatibleRest):
     def get_all_perpetuals(self) -> _cls.PerpetualsIndex:
         """All perpetuals across the default dex and every HIP-3 dex, as one sortable/filterable index."""
         dex_names = [""] + [dex.name for dex in self.get_dexs()]
-        snapshots = [
-            self.get_perpetuals_for_dex(dex_name)
-            for dex_name in tqdm(dex_names, desc='Fetching perpetuals for each dex')
-        ]
+        snapshots = []
+        for i, dex_name in enumerate(tqdm(dex_names, desc='Fetching perpetuals for each dex')):
+            if i > 0:
+                # Space out per-dex requests so a full refresh doesn't burst all ~11 `metaAndAssetCtxs`
+                # calls (weight 20 each) back-to-back, which risks tripping HyperLiquid's per-IP rate limit.
+                time.sleep(0.2)
+            snapshots.append(self.get_perpetuals_for_dex(dex_name))
         return _cls.PerpetualsIndex.from_snapshots(snapshots)
 
     # --- funding rates -----------------------------------------------------

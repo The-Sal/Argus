@@ -92,6 +92,7 @@ class LockedState:
         so that this is safe.
         :return:
         """
+        _ = memo
         return copy.copy(self.value)
 
 
@@ -184,6 +185,8 @@ class BaseDispatcher(Introspective, RoutingHelper):
 
         self._max_retry_range_rest = configurations.get("max_retry_range_rest", 10)
         self._disable_routing_on_prep_cache_failure = configurations.get("disable_routing_on_prep_cache_failure", True)
+        self._retry_backoff_base_rest = configurations.get("retry_backoff_base_rest", 3.0)
+        self._retry_backoff_max_rest = configurations.get("retry_backoff_max_rest", 30.0)
 
     ########################################
     # Threads and utilities
@@ -228,9 +231,23 @@ class BaseDispatcher(Introspective, RoutingHelper):
                             self.pi.throw_fuss(msg, title=title, notify=True)
                             traceback.print_exc()
 
+                            if i < self._max_retry_range_rest - 1:
+                                # Back off before retrying. Retrying instantly turns one transient
+                                # failure (e.g. a rate limit) into a burst of full re-fetches that
+                                # keeps tripping the same limit, which is why routing could stay
+                                # disabled far longer than the underlying hiccup warranted.
+                                backoff = min(self._retry_backoff_base_rest * (2 ** i), self._retry_backoff_max_rest)
+                                time.sleep(backoff)
+
                     if not refreshed:
                         self._state["enable_routing"].value = False
                         raise RuntimeError("Failed to refresh perpetual list after {} retries. Disabling routing.".format(self._max_retry_range_rest))
+
+                    # Without this, `datetime.now(UTC) >= next_utc_hour_in` stays true for the
+                    # rest of the hour, so the inner loop would immediately refresh again (and
+                    # again) instead of returning to the outer loop to wait for the *next* UTC
+                    # hour -- hammering the REST API in a tight back-to-back loop.
+                    break
 
                 time.sleep(0.01)
 
@@ -320,7 +337,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
         if func is None:
             raise ers.InvalidFunctionError(f"Function {function} is not valid")
 
-        _p.prt("Routing: {} with args: {}".format(function, args.args))
+        _p.prt("[{}] Routing: {} with args: {}".format(datetime.now().strftime("%H:%M:%S:%f %d-%m-%Y"), function, args.args))
 
         # noinspection all
         response = func(args)
