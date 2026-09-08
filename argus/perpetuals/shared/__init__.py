@@ -46,6 +46,15 @@ _p = PrintInterface("BaseDispatcher")
 
 
 class LockedState:
+    """
+    `value` must be an immutable, non-referential type (bool, int, float, str,
+    None, or a tuple of such) -- nothing that can be mutated through a
+    reference (list, dict, set, or any other mutable object). __copy__ /
+    __deepcopy__ only shallow-copy `value`, so a mutable value would let
+    callers of BaseDispatcher.state mutate this object's live internal state
+    through the "copy" they were handed.
+    """
+
     def __init__(self, value):
         self._value = value
         self.lock = threading.Lock()
@@ -56,19 +65,16 @@ class LockedState:
         Do not use inside context managers.
         :return:
         """
-        self.lock.acquire()
-        value = self._value
-        self.lock.release()
-        return value
+        with self.lock:
+            return self._value
 
     @value.setter
     def value(self, value):
-        self.lock.acquire()
-        self._value = value
-        self.lock.release()
+        with self.lock:
+            self._value = value
 
     def __bool__(self):
-        return self.value
+        return bool(self.value)
 
     def __copy__(self):
         """
@@ -79,7 +85,11 @@ class LockedState:
 
     def __deepcopy__(self, memo):
         """
-        remove reference to this object.
+        Remove reference to this object.
+
+        This is only a shallow copy of `value`, not a true deep copy -- see
+        the class docstring for why `value` must be immutable/non-referential
+        so that this is safe.
         :return:
         """
         return copy.copy(self.value)
