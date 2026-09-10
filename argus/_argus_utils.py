@@ -474,6 +474,14 @@ class CorrelationIDChecker:
             self.seen_correlation_ids.clear()
 
 
+class SecurityError(Exception):
+    """Base class for security-related errors."""
+    pass
+
+class UnavailableInSecurityContext(SecurityError):
+    """Raised when a functionality is not available within a security context"""
+    pass
+
 _LOADED_ALREADY = False
 _LOAD_RESULT = None
 
@@ -583,8 +591,12 @@ class EnvLoader:
             _LOADED_ALREADY = True
         return _LOAD_RESULT
 
+    @property
+    def active(self) -> bool:
+        return self._active
 
-_ENV_VAR_LOADER = EnvLoader()
+
+SECURE_ENV_VAR_LOADER = EnvLoader()
 
 
 def load_dotenv() -> bool:
@@ -592,7 +604,7 @@ def load_dotenv() -> bool:
     Load the .env file using SDist if encryped, otherwise load from the normal dotenv method (.env)
     :return: True if a .env file was found and loaded, False otherwise.
     """
-    return _ENV_VAR_LOADER.load_env()
+    return SECURE_ENV_VAR_LOADER.load_env()
 
 
 def check_env_compatibility():

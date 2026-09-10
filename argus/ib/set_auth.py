@@ -1,15 +1,14 @@
 import os
 import time
 from selenium import webdriver
-from argus._argus_utils import load_dotenv
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from argus._argus_utils import load_dotenv, SECURE_ENV_VAR_LOADER, UnavailableInSecurityContext
 
 
-load_dotenv()
 def get_auth():
     url = 'https://www.interactivebrokers.co.uk/portal/?action=ACCT_MGMT_MAIN&loginType=1&clt=0&locale=en_US&RL=1#/dashboard'
     ops = Options()
@@ -92,6 +91,9 @@ def get_auth():
     return cookies
 
 def update_cookies(write_env=True):
+    if SECURE_ENV_VAR_LOADER.active:
+        raise UnavailableInSecurityContext("Cannot run this script when SECURE_ENV_VAR_LOADER is active. Please disable it and try again.")
+    load_dotenv()
     print("Getting auth...")
     cookies = get_auth()
     cookie_env = ' '.join([f"{cookie['name']}={cookie['value']};" for cookie in cookies])
