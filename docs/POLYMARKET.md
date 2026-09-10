@@ -853,4 +853,5 @@ sock.sendall(encode_packet(json.dumps(order_req).encode()))
 
 - `argus/polymarket/__init__.py`: Main dispatcher implementation
 - `argus/protocol.py`: P1 and P2 protocol implementations
-- `argus/polymarket/_classes.py`: Supporting classes (RoutingHelper, ArgsObject, etc.)
+- `argus/polymarket/_classes.py`: Polymarket-specific supporting classes (P2ConvertClass, error types, etc.)
+- `argus/_argus_utils.py`: Dispatcher plumbing shared across all Argus trading dispatchers (RoutingHelper, ArgsObject, CorrelationIDChecker)

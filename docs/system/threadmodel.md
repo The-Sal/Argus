@@ -105,7 +105,7 @@ The threading model is **NOT 1:1 threads per asset**. Instead:
 
 1. **Single WebSocket Connection**: One thread handles ALL assets through a multiplexed WebSocket
 2. **Shared Order Book State**: Protected by `_dict_lock` (`wss.py:289`)
-3. **Callback Broadcasting**: Market data callbacks route to subscribed clients via `RoutingHelper`
+3. **Callback Broadcasting**: Market data callbacks route to subscribed clients via `RoutingHelper` (`argus/_argus_utils.py`, shared by all Argus trading dispatchers)
 
 **Asset-Thread Relationship**:
 - Assets are tracked in internal dictionaries (no dedicated threads)
@@ -147,11 +147,11 @@ Total Client Threads = (1 connect thread) + (N message handling threads per clie
 | Lock Name            | Location                                   | Protects                                                         | Type               |
 |----------------------|--------------------------------------------|------------------------------------------------------------------|--------------------|
 | `_market_cache_lock` | `__init__.py:132`                          | `_all_markets_cache`, `_asset_id_to_ticker`                      | `threading.Lock()` |
-| `_lock` (inherited)  | `_classes.py:119`                          | `_sockets`, `_market_data_routing_table`, `_order_subscriptions` | `threading.Lock()` |
+| `_lock` (inherited)  | `RoutingHelper` (`argus/_argus_utils.py:283`) | `_sockets`, `_market_data_routing_table`, `_order_subscriptions` | `threading.Lock()` |
 | `_dict_lock`         | `wss.py:289`                               | `_asset_id_to_order_book`, `_asset_id_to_misc_info`              | `threading.Lock()` |
 | `_ping_pong_lock`    | `wss.py:38`                                | `_ping_pongs` counter tuple                                      | `threading.Lock()` |
 | `_pinging_lock`      | `wss.py:43`                                | Prevents concurrent ping threads                                 | `threading.Lock()` |
-| `_lock`              | `CorrelationIDChecker` (`_classes.py:248`) | `seen_correlation_ids` OrderedDict                               | `threading.Lock()` |
+| `_lock`              | `CorrelationIDChecker` (`argus/_argus_utils.py:429`) | `seen_correlation_ids` OrderedDict                               | `threading.Lock()` |
 
 ### Threading Events
 
@@ -221,7 +221,7 @@ _builtin_on_connect catches exception
     ↓
 self.on_disconnect(client, address) called
     ↓
-remove_socket(sock) [RoutingHelper._classes.py:125]
+remove_socket(sock) [RoutingHelper, argus/_argus_utils.py:309]
     ↓
 Remove from _sockets set
     ↓
@@ -229,7 +229,7 @@ Remove from _order_subscriptions dict
     ↓
 Remove from _market_data_routing_table
     ↓
-subscription_expired(clob_id) called
+subscription_expired(channel_id) called
     ↓
 market_data.unsubscribe_from_asset_id(asset_id)
 ```
@@ -372,7 +372,7 @@ Market Data Update (WebSocket Thread)
 **Mitigation**: Daemon threads exit with process; limited by client connection count
 
 ### 2. Lock Contention
-**Location**: `_classes.py:119` (RoutingHelper._lock)
+**Location**: `argus/_argus_utils.py:264` (RoutingHelper._lock)
 **Issue**: Single lock protects all routing operations
 **Impact**: Can become bottleneck with many concurrent subscriptions
 
@@ -410,7 +410,7 @@ if possible_future and not possible_future.done():
 ## Files Involved in Threading
 
 1. `argus/polymarket/__init__.py` - Main dispatcher, TCP server, order handling
-2. `argus/polymarket/_classes.py` - RoutingHelper, CorrelationIDChecker
+2. `argus/_argus_utils.py` - RoutingHelper, CorrelationIDChecker (shared across all Argus trading dispatchers, not Polymarket-specific)
 3. `argus/polymarket_direct/wss.py` - WebSocket connections, ping/pong
 4. `argus/polymarket_direct/rest.py` - REST API, order building
 5. `utils3/networking/sockets.py` - TCP server implementation

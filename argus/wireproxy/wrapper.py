@@ -9,8 +9,8 @@ import os
 import time
 import copy
 import logging
-from dotenv import load_dotenv
 from websocket import WebSocketApp
+from argus._argus_utils import load_dotenv
 from argus.wireproxy.__main__ import send_server_command, ensure_daemon_running
 
 if not load_dotenv():
