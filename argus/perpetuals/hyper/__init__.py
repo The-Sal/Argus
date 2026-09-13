@@ -4,10 +4,13 @@ This module is still under development and is being built as Phase 1.0 of Argus 
 Track the PR for hyperliquid [here](https://github.com/The-Sal/Argus/pull/96)
 """
 import os
+import traceback
 from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
+from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
+from argus.perpetuals.hyper import wss
 from argus.perpetuals.hyper.rest import HyperLiquidRest
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
 
@@ -77,7 +80,10 @@ class HyperLiquidDispatcher(BaseDispatcher):
             'get_perpetuals_for_dex': self._get_perpetual_for_dex,
             'get_funding_rates_for_all_perpetuals': self._get_funding_rates_for_all_perps,
             'perpetual_info': self._perp_info,
-            # Account Info      
+            # Market Data Streaming
+            'subscribe': self._handle_subscribe,
+            'unsubscribe': self._handle_unsubscribe,
+            # Account Info
             # 'get_account_info': self._get_account_info,
             # 'get_account_balance': self._get_account_balance,
             # 'get_account_positions': self._get_account_positions
@@ -101,16 +107,104 @@ class HyperLiquidDispatcher(BaseDispatcher):
         self._all_perps = self.rest.get_all_perpetuals()
         self._refresh_perpetuals()
 
+        self._orderbook_depth = int(os.environ.get("HYPERLIQUID_ORDERBOOK_DEPTH", 10))
+        self.market_data = wss.HyperLiquidMarketDataWss(
+            order_book_update_callback=self._order_book_update_callback
+        )
+        self.market_data.run(main_thread=False)
+
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks
     ########################################
 
     def subscription_expired(self, channel_id):
         """
-        This function is called when a subscription expires.
-        :param channel_id: The ID of the expired subscription
+        Called by RoutingHelper.remove_socket once the last client socket subscribed
+        to `channel_id` (a coin, e.g. "BTC") disconnects/unsubscribes. Mirrors
+        PolymarketDispatcher.subscription_expired: tears down the now-unused upstream
+        Hyperliquid websocket subscription so we don't keep streaming a book nobody
+        is listening to.
+        :param channel_id: The coin whose last subscriber just went away.
         """
-        pass
+        self.market_data.unsubscribe_from_coin(channel_id)
+
+    def _handle_subscribe(self, args: ArgsObject) -> dict:
+        """
+        Subscribe the calling client socket to live order book updates for one or
+        more coins. :param args: Expects `args.args` to be a list of coin strings
+        (e.g. ["BTC", "xyz:AAPL"]).
+        """
+        sock = args.sock
+        self.add_socket(sock)
+        subscribed = []
+        failed = []
+        for coin in args.args or []:
+            try:
+                self.add_socket_to_subscription(sock, coin)
+                self.market_data.subscribe_to_coin(coin)
+                subscribed.append(coin)
+            except Exception as e:
+                failed.append(coin)
+                pi.prt(f"Error subscribing to coin {coin}: {e}")
+                traceback.print_exc()
+        return {"subscribed": subscribed, "failed": failed}
+
+    def _handle_unsubscribe(self, args: ArgsObject) -> dict:
+        """
+        Unsubscribe the calling client socket from one or more coins. Does not tear
+        down the upstream Hyperliquid subscription directly -- that happens via
+        `subscription_expired` once no client socket is left subscribed to the coin.
+        """
+        sock = args.sock
+        unsubscribed = []
+        failed = []
+        for coin in args.args or []:
+            try:
+                self.remove_socket_from_subscription(sock, coin)
+                unsubscribed.append(coin)
+            except Exception as e:
+                failed.append(coin)
+                pi.prt(f"Error unsubscribing from coin {coin}: {e}")
+                traceback.print_exc()
+        return {"unsubscribed": unsubscribed, "failed": failed}
+
+    def _order_book_update_callback(self, update: dict):
+        """
+        Fan-out callback wired into `wss.HyperLiquidMarketDataWss` -- runs on the
+        websocket's own callback thread every time a coin's book changes. Mirrors
+        PolymarketDispatcher._order_book_update_callback: look up which client
+        sockets are subscribed to this coin, encode the book with the same P2 wire
+        format Polymarket uses (via HLP2ConvertClass), and push it to each of them.
+        """
+        asset_keys = [k for k in update.keys() if k != "timestamp"]
+        if len(asset_keys) != 1:
+            pi.prt(f"Unexpected order book update shape (expected exactly one coin key): {update.keys()}")
+            return
+        coin = asset_keys[0]
+
+        clients_to_send = list(self.market_data_routing_table.get(coin, []))
+        if not clients_to_send:
+            return
+
+        packet = transmit_mkt_data_with_protocol_2(
+            _cls.HLP2ConvertClass(
+                coin=coin,
+                market_data=update,
+                order_book_depth=self._orderbook_depth,
+            )
+        )
+
+        for sock in clients_to_send:
+            try:
+                with self.send_lock_for(sock):
+                    sock.sendall(packet)
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                self.remove_socket(sock)
+                pi.prt(f"Removed dead socket while sending order book update for coin {coin}: {e}")
+            except Exception as e:
+                pi.prt(f"Unexpected error sending order book update for coin {coin} to socket: {e}")
+                self.remove_socket(sock)
+                traceback.print_exc()
 
     ########################################
     # Dispatcher Functions
