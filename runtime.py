@@ -1,14 +1,14 @@
 #! /usr/bin/env python3
 """
 Argus runtime entrypoint.
-- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance
+- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance | hyperliquid | lighter
 - Optional --host/--port are accepted and forwarded only to dispatchers that support them.
   Dispatchers have their own defaults; if not provided, nothing is passed.
-- Supports: macOS, Linux, (almost anything UNIX-based or UNIX-like) does NOT support Windows.
+- Supports: macOS, Linux (tested on Debian) does NOT support Windows.
 - IB Dispatchers work on all platforms (Linux, macOS)
 - Push Notifications requires macOS due to the use of osascript to notify on machine-local notifications
 - Capital.com, Polymarket, Binance, TradingView (Chart+Quote), etc... work on all platforms.
-- DO NOT PASS AUTH CREDENTIALS VIA COMMAND LINE ARGS, use environment variables or .env file instead.
+- Use .env (or Environment Variables) to configure dispatcher behavior (see docs)
 - Automatically loads .env file if present in a working directory.
 """
 import sys
