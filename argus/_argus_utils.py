@@ -495,7 +495,8 @@ class EnvLoader:
     def __init__(self):
         try:
             self.sdist_path = self.load_sdist_path()
-        except FileNotFoundError:
+        except Exception as e:
+            _ = e
             self.sdist_path = None
         self._active = False
 
