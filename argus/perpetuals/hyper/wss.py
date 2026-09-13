@@ -13,7 +13,10 @@ Key protocol differences from Polymarket, confirmed against Hyperliquid's docs
     closes any connection that hasn't seen a message in 60s, so we ping well
     under that (default 20s).
   - Subscribe/unsubscribe: {"method": "subscribe"|"unsubscribe",
-    "subscription": {"type": "l2Book", "coin": "<coin>"}}.
+    "subscription": {"type": "l2Book", "coin": "<coin>", "fast": true}} plus a
+    companion {"type": "bbo", "coin": "<coin>"} subscription per coin. The
+    unsubscribe object must match the subscribe object, so `fast` is replayed
+    there too.
   - l2Book push: {"channel": "l2Book", "data": {"coin": "BTC",
     "levels": [[{"px","sz","n"}, ...bids], [{"px","sz","n"}, ...asks]], "time": ms}}.
     Bids/asks arrive pre-sorted (best first) directly from Hyperliquid -- there is
@@ -21,6 +24,14 @@ Key protocol differences from Polymarket, confirmed against Hyperliquid's docs
     l2Book push is a full snapshot for that coin, which makes the store far
     simpler than Polymarket's OrderBookStore (no bisect-insert delta application,
     no tick-size fetching, no best-bid-ask dedup path).
+  - bbo push: {"channel": "bbo", "data": {"coin": "BTC", "time": ms,
+    "bbo": [bid_level | null, ask_level | null]}}, each level {"px","sz","n"}.
+    Since Hyperliquid's June 2026 public-WebSocket throttling, a plain l2Book
+    subscription is only pushed every 2s (20 levels); `fast: true` gives 5 levels
+    every 0.5s, and `bbo` fires per block (~70ms) when the top of book changes.
+    The store therefore keeps the fast l2Book snapshot as its depth baseline and
+    overlays each bbo update onto the best level so top-of-book is real-time
+    between snapshots.
   - No sharding: Hyperliquid's documented per-IP limits are 10 connections but up
     to 1000 subscriptions and 2000 inbound msgs/minute -- the opposite shape of
     Polymarket (which caps out around 4 assets/connection in practice). Since
@@ -219,10 +230,11 @@ class HyperLiquidOrderBookStore:
     Pure book-state container, keyed by coin symbol (e.g. "BTC", "xyz:AAPL").
 
     Unlike Polymarket's OrderBookStore, Hyperliquid's l2Book push is always a full
-    snapshot (not a price_change delta stream), so there is no incremental-update
-    logic, no bisect-insert, no tick-size REST fetch, and no best-bid-ask dedup
-    path to port -- this store just replaces the book wholesale on every message
-    and fires the callback.
+    snapshot (not a price_change delta stream), so there is no delta application,
+    no bisect-insert, no tick-size REST fetch, and no best-bid-ask dedup path to
+    port -- this store replaces the book wholesale on every l2Book message. The
+    companion `bbo` channel is then overlaid onto the snapshot's best level (with
+    stale crossed levels dropped) so top-of-book stays fresh between snapshots.
     """
 
     def __init__(self, order_book_update_callback=None):
@@ -247,6 +259,8 @@ class HyperLiquidOrderBookStore:
         channel = content.get('channel')
         if channel == 'l2Book':
             self._handle_l2_book(content.get('data') or {})
+        elif channel == 'bbo':
+            self._handle_bbo(content.get('data') or {})
         elif channel == 'subscriptionResponse':
             logging.info('Hyperliquid WebSocket subscription ack: %s', content.get('data'))
         elif channel == 'error':
@@ -274,6 +288,47 @@ class HyperLiquidOrderBookStore:
                 coin: book,
                 'timestamp': data.get('time', int(time.time() * 1000)),
             })
+
+    def _handle_bbo(self, data: dict) -> None:
+        coin = data.get('coin')
+        bbo = data.get('bbo')
+        if not coin or not isinstance(bbo, list) or len(bbo) != 2:
+            logging.warning('Malformed bbo payload (missing coin/bbo): %s', data)
+            return
+
+        best_bid, best_ask = bbo
+        with self._dict_lock:
+            book = self._coin_to_order_book.get(coin)
+            if book is None:
+                book = {'bids': [], 'asks': []}
+                self._coin_to_order_book[coin] = book
+
+            book['bids'] = self._overlay_bbo_side(book.get('bids', []), best_bid, is_bid=True)
+            book['asks'] = self._overlay_bbo_side(book.get('asks', []), best_ask, is_bid=False)
+
+        if self._order_book_update_callback:
+            self._order_book_update_callback({
+                coin: book,
+                'timestamp': data.get('time', int(time.time() * 1000)),
+            })
+
+    @staticmethod
+    def _overlay_bbo_side(levels: list, best, is_bid: bool) -> list:
+        if best is None:
+            return []
+
+        best_px = best.get('px')
+        best_sz = best.get('sz')
+        if best_px is None or best_sz is None:
+            logging.warning('Malformed bbo level (missing px/sz): %s', best)
+            return levels
+
+        best_px_float = float(best_px)
+        if is_bid:
+            kept = [lvl for lvl in levels if float(lvl['price']) < best_px_float]
+        else:
+            kept = [lvl for lvl in levels if float(lvl['price']) > best_px_float]
+        return [{'price': best_px, 'size': best_sz}] + kept
 
     def order_book_for_coin(self, coin: str):
         return self._coin_to_order_book.get(coin, None)
@@ -366,13 +421,21 @@ class HyperLiquidMarketDataWss(HyperLiquidWSSBase):
     def _send_subscribe_op(self, coin: str) -> None:
         self._ws.send(json.dumps({
             "method": "subscribe",
-            "subscription": {"type": "l2Book", "coin": coin},
+            "subscription": {"type": "l2Book", "coin": coin, "fast": True},
+        }))
+        self._ws.send(json.dumps({
+            "method": "subscribe",
+            "subscription": {"type": "bbo", "coin": coin},
         }))
 
     def _send_unsubscribe_op(self, coin: str) -> None:
         self._ws.send(json.dumps({
             "method": "unsubscribe",
-            "subscription": {"type": "l2Book", "coin": coin},
+            "subscription": {"type": "l2Book", "coin": coin, "fast": True},
+        }))
+        self._ws.send(json.dumps({
+            "method": "unsubscribe",
+            "subscription": {"type": "bbo", "coin": coin},
         }))
 
     def run(self, main_thread=False):
