@@ -20,12 +20,12 @@ stays on `market_id` throughout.
 """
 import os
 import traceback
+from argus.perpetuals.lighter import wss
 from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
-from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.lighter import _classes as _cls
-from argus.perpetuals.lighter import wss
 from argus.perpetuals.lighter.rest import LighterRest
+from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
 
 

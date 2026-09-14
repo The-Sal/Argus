@@ -20,10 +20,10 @@ IMPORTANT — Account Update Delivery Requirement:
 """
 import os
 import json
-import pickle
 import time
 import tqdm
 import zlib
+import pickle
 import atexit
 import base64
 import socket

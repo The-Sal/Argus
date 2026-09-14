@@ -5,13 +5,13 @@ Track the PR for hyperliquid [here](https://github.com/The-Sal/Argus/pull/96)
 """
 import os
 import traceback
+from argus.perpetuals.hyper import wss
 from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
-from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
-from argus.perpetuals.hyper import wss
 from argus.perpetuals.hyper.rest import HyperLiquidRest
+from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
 
 
