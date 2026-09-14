@@ -11,12 +11,18 @@ Usage:
 Protocol:
     - P1 (control): ~NNNN|<json-payload>
     Every Lighter request MUST include a "correlation_id".
+    - P2 (async market-data push): ~<packet-length><symbol-length>|<symbol><csv-data>L
+    Pushed unsolicited once a client has `subscribe`d to one or more symbols (see
+    LighterDispatcher._order_book_update_callback / argus/perpetuals/lighter/wss.py).
+    Encoded with the same argus.protocol.transmit_mkt_data_with_protocol_2 wire
+    format Hyperliquid/Polymarket use, via LighterP2ConvertClass
+    (argus/perpetuals/lighter/_classes.py).
 
 Unlike Hyperliquid, Lighter has no HIP-3-style builder-deployed dexes -- there is a
 single unified market list (no dex_name param), and market_info is a single flat
-lookup rather than a multi-call annotation/category assembly. See
-docs/Hyperliquid_and_Lighter_HYPE_Trading_API_Report.md section 7.
+lookup rather than a multi-call annotation/category assembly.
 """
+import os
 import sys
 import time
 import uuid
@@ -24,6 +30,131 @@ import socket
 from typing import Any, Callable, Dict, List, Optional, Tuple
 sys.path.insert(0, __file__.replace('/tests/lighter_cli.py', ''))
 from argus import protocol
+
+# Must match LighterDispatcher's default (argus/perpetuals/lighter/__init__.py),
+# since the P2 packet's field count/order depends on it.
+ORDERBOOK_DEPTH = int(os.environ.get('LIGHTER_ORDERBOOK_DEPTH', 10))
+
+
+# =============================================================================
+# P2 Protocol Parser for Order Book Data
+# =============================================================================
+#
+# Standalone port of argus.protocol.Protocol2Parser, mirroring tests/hyper_cli.py's
+# own local P2PacketParser -- see that file for why (a fixed decoding_order doesn't
+# fit a variable order book depth).
+
+def build_p2_decoding_order(depth: int = ORDERBOOK_DEPTH) -> List[str]:
+    """Build the field decoding order for a P2 packet at a given order book depth."""
+    fields = []
+    for i in range(depth):
+        fields.append(f'bid_{i}_price')
+        fields.append(f'bid_{i}_size')
+    for i in range(depth):
+        fields.append(f'ask_{i}_price')
+        fields.append(f'ask_{i}_size')
+    fields.append('book_timestamp')
+    fields.append('server_timestamp')
+    return fields
+
+
+P2_DECODING_ORDER = build_p2_decoding_order()
+
+
+class P2PacketParser:
+    """
+    Parser for Protocol 2 market data packets from the Lighter dispatcher.
+    Format: ~<packet-length><symbol-length>|<symbol><market-data>L
+    """
+
+    def __init__(self, decoding_order: Optional[List[str]] = None):
+        self.decoding_order = decoding_order if decoding_order is not None else P2_DECODING_ORDER
+
+    def parse(self, packet_bytes: bytes) -> Dict[str, Any]:
+        if len(packet_bytes) < 11:
+            raise ValueError("Packet too short for Protocol 2 format")
+
+        pos = 0
+        if packet_bytes[pos] != ord('~'):
+            raise ValueError("Invalid header: missing start marker '~'")
+        pos += 1
+
+        packet_length = int(packet_bytes[pos:pos + 4].decode('ascii'))
+        pos += 4
+
+        expected_total_length = 5 + packet_length
+        if len(packet_bytes) != expected_total_length:
+            raise ValueError(
+                f"Packet length mismatch: expected {expected_total_length}, got {len(packet_bytes)}"
+            )
+
+        symbol_length = int(packet_bytes[pos:pos + 4].decode('ascii'))
+        pos += 4
+
+        if packet_bytes[pos] != ord('|'):
+            raise ValueError("Missing pipe separator after symbol length")
+        pos += 1
+
+        symbol = packet_bytes[pos:pos + symbol_length].decode('ascii')
+        pos += symbol_length
+
+        if packet_bytes[-1] != ord('L'):
+            raise ValueError("Invalid terminator: expected 'L'")
+
+        market_data_str = packet_bytes[pos:-1].decode('ascii')
+        values = self._parse_csv_values(market_data_str)
+
+        if len(values) != len(self.decoding_order):
+            raise ValueError(
+                f"Field count mismatch: expected {len(self.decoding_order)} values, got {len(values)}"
+            )
+
+        result: Dict[str, Any] = {'symbol': symbol}
+        for i, field_name in enumerate(self.decoding_order):
+            result[field_name] = values[i]
+        return result
+
+    @staticmethod
+    def _parse_csv_values(data_str: str) -> List[float]:
+        if not data_str:
+            raise ValueError("Empty market data")
+        return [float(v) for v in data_str.split(',')]
+
+    def parse_multiple(self, mixed_packets: bytes) -> List[Dict[str, Any]]:
+        packets = []
+        position = 0
+        while position < len(mixed_packets):
+            if mixed_packets[position] != ord('~'):
+                raise ValueError(f"Invalid packet start at position {position}")
+            packet_length = int(mixed_packets[position + 1:position + 5].decode('ascii'))
+            total_packet_length = 5 + packet_length
+            packet_bytes = mixed_packets[position:position + total_packet_length]
+            packets.append(self.parse(packet_bytes))
+            position += total_packet_length
+        return packets
+
+
+def format_orderbook(parsed_data: Dict[str, Any], depth: int = 5) -> str:
+    """Format order book data from a parsed P2 packet."""
+    output = [f"\n{'SIDE':<6} {'LEVEL':<6} {'PRICE':<14} {'SIZE':<15}", "-" * 45]
+
+    bids, asks = [], []
+    for i in range(depth):
+        price, size = parsed_data.get(f'bid_{i}_price', 0), parsed_data.get(f'bid_{i}_size', 0)
+        if price > 0 and size > 0:
+            bids.append((price, size))
+    for i in range(depth):
+        price, size = parsed_data.get(f'ask_{i}_price', 0), parsed_data.get(f'ask_{i}_size', 0)
+        if price > 0 and size > 0:
+            asks.append((price, size))
+
+    for i, (price, size) in enumerate(bids[:depth]):
+        output.append(f"{'BID':<6} {i:<6} {price:<14.4f} {size:<15.4f}")
+    output.append("-" * 45)
+    for i, (price, size) in enumerate(asks[:depth]):
+        output.append(f"{'ASK':<6} {i:<6} {price:<14.4f} {size:<15.4f}")
+
+    return "\n".join(output)
 
 
 # =============================================================================
@@ -37,6 +168,7 @@ class LighterArgusClient:
         self.host = host
         self.port = port
         self.socket: Optional[socket.socket] = None
+        self.p2_parser = P2PacketParser()
 
     def connect(self) -> None:
         try:
@@ -151,6 +283,49 @@ class LighterArgusClient:
         if resp.get('error'):
             raise Exception(f"get_funding_history failed: {resp['error']}")
         return list((resp.get('data') or {}).get('funding_history') or []), dt
+
+    def subscribe(self, symbols: List[str], timeout: int = 30) -> Tuple[dict, float]:
+        """Subscribe to live order book updates for one or more symbols (e.g. ['BTC'])."""
+        resp, dt = self.send_request('subscribe', symbols, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"subscribe failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def unsubscribe(self, symbols: List[str], timeout: int = 30) -> Tuple[dict, float]:
+        resp, dt = self.send_request('unsubscribe', symbols, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"unsubscribe failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def receive_p2_packets(self, timeout: float = 0.1) -> List[Dict[str, Any]]:
+        """
+        Drain whatever P2 (order book push) packets are currently sitting on the
+        socket, without blocking. `timeout` is accepted for API parity with
+        hyper_cli.py's client but unused here for the same reason: a non-blocking
+        recv() either returns available bytes immediately or raises BlockingIOError,
+        so the drain is inherently instantaneous.
+        """
+        if not self.socket:
+            raise ConnectionError("Not connected to server")
+
+        _ = timeout
+        data = b''
+        self.socket.setblocking(False)
+        try:
+            while True:
+                try:
+                    chunk = self.socket.recv(131072)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    raise ConnectionError("Server closed connection.")
+                data += chunk
+        finally:
+            self.socket.setblocking(True)
+
+        if not data:
+            return []
+        return self.p2_parser.parse_multiple(data)
 
 
 # =============================================================================
@@ -379,6 +554,80 @@ def format_perpetuals(perps: List[dict], limit: Optional[int] = None) -> str:
 
 
 # =============================================================================
+# Live market-data streaming (P2)
+# =============================================================================
+
+def subscribe_market_data_mode(client: LighterArgusClient, symbol: str):
+    """
+    Subscribe to a symbol's order book and display live updates + latency.
+    Press Ctrl+C to stop, unsubscribe, and show aggregate statistics.
+    Mirrors tests/hyper_cli.py's subscribe_market_data_mode.
+    """
+    latencies: List[float] = []
+    packet_count = 0
+    start_time = time.time()
+
+    print(f"\n📡 Subscribing to order book: {symbol}")
+    try:
+        result, rtt = client.subscribe([symbol])
+        print(f"✓ Subscribed successfully (RTT: {rtt*1000:.1f}ms)")
+        print(f"  Subscribed: {result.get('subscribed', [])}")
+        print(f"  Failed: {result.get('failed', [])}")
+    except Exception as e:
+        print(f"✗ Subscription failed: {e}")
+        return
+
+    print(f"\n📊 Monitoring order book... Press Ctrl+C to stop and view statistics.")
+    print(f"   Orderbook depth: {ORDERBOOK_DEPTH} levels")
+    print(f"\n{'PACKET':<8} {'LATENCY(ms)':<14} {'BEST BID':<14} {'BEST ASK':<14}")
+    print("-" * 60)
+
+    try:
+        while True:
+            packets = client.receive_p2_packets(timeout=0.1)
+            for packet_data in packets:
+                packet_count += 1
+                receive_time = time.time()
+
+                book_ts = packet_data.get('book_timestamp', 0)
+                if book_ts > 0:
+                    latency_ms = (receive_time * 1000) - book_ts
+                    latencies.append(latency_ms)
+                else:
+                    latency_ms = 0.0
+
+                best_bid = packet_data.get('bid_0_price', 0)
+                best_ask = packet_data.get('ask_0_price', 0)
+
+                print(f"{packet_count:<8} {latency_ms:<14.2f} {best_bid:<14.4f} {best_ask:<14.4f}")
+
+                if packet_count % 10 == 0:
+                    print(format_orderbook(packet_data, depth=3))
+                    print(f"\n{'PACKET':<8} {'LATENCY(ms)':<14} {'BEST BID':<14} {'BEST ASK':<14}")
+                    print("-" * 60)
+
+    except KeyboardInterrupt:
+        print(f"\n\n🛑 Stopped by user.")
+
+        try:
+            print(f"📡 Unsubscribing from: {symbol}")
+            client.unsubscribe([symbol])
+            print(f"✓ Unsubscribed successfully")
+        except Exception as e:
+            print(f"⚠ Unsubscribe warning: {e}")
+
+        duration = time.time() - start_time
+        print(f"\n📈 Session Summary:")
+        print(f"  Duration: {duration:.1f} seconds")
+        print(f"  Total packets: {packet_count}")
+        if duration > 0:
+            print(f"  Packets/sec: {packet_count/duration:.1f}")
+        if latencies:
+            print(f"  Avg latency: {sum(latencies)/len(latencies):.2f}ms")
+            print(f"  Min/Max latency: {min(latencies):.2f}ms / {max(latencies):.2f}ms")
+
+
+# =============================================================================
 # Interactive CLI
 # =============================================================================
 
@@ -397,6 +646,7 @@ def print_help():
     print("  funding [offset] [limit]   - Show markets by funding rate, highest first (default limit: 20)")
     print("  info <symbol>              - Show market metadata + live data for one symbol")
     print("  history <market_id> [days] - Show funding history for a market over the last N days (default: 1)")
+    print("  sub <symbol>               - Subscribe to live order book updates and stream them (Ctrl+C to stop)")
     print("  test | gauntlet            - Call every known read-only action and validate the responses")
     print("  clear                      - Clear screen")
     print("  help                       - Show this help")
@@ -408,6 +658,7 @@ def print_help():
     print("  funding 10 10              # next 10 markets by hourly funding rate")
     print("  info BTC                   # info for the BTC market")
     print("  history 0 7                # last 7 days of funding history for market_id 0")
+    print("  sub BTC                    # stream BTC's live order book")
     print()
 
 
@@ -489,6 +740,12 @@ def interactive_loop(client: LighterArgusClient):
                             print(f"  {entry.get('timestamp')}  rate={entry.get('rate')}  direction={entry.get('direction')}")
                     except Exception as e:
                         print(f"✗ Failed to fetch funding history: {e}")
+            elif query.lower().startswith('sub '):
+                symbol = query[4:].strip()
+                if not symbol:
+                    print("✗ Please provide a symbol. Usage: sub <symbol>")
+                else:
+                    subscribe_market_data_mode(client, symbol)
             elif query.lower() in ('test', 'gauntlet'):
                 run_gauntlet(client)
             else:

@@ -1,3 +1,4 @@
+import time
 from decimal import Decimal
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -411,3 +412,62 @@ class FundingHistoryEntry:
     @property
     def time(self) -> datetime:
         return datetime.fromtimestamp(self.timestamp, tz=timezone.utc)
+
+
+# --- websocket market-data wire encoding -------------------------------------
+
+class LighterP2ConvertClass:
+    """
+    Duck-typed adapter for `argus.protocol.transmit_mkt_data_with_protocol_2`,
+    direct port of `argus.perpetuals.hyper._classes.HLP2ConvertClass` -- see
+    that class's docstring for the general P2 wire-format contract, which is
+    identical here.
+
+    The one structural difference from Hyperliquid: Lighter's wss layer
+    (`argus.perpetuals.lighter.wss`) keys order book updates by integer
+    `market_id` (the wire-accurate key -- see that module's docstring), not by
+    the symbol string used on the wire/by clients. `symbol` and `market_id`
+    are therefore passed in separately: `market_id` to look the book up out of
+    `market_data`, `symbol` for the P2 packet's wire identity. The dispatcher
+    resolves symbol<->market_id once, at the boundary, before constructing this.
+
+    Expected input market_data shape (same as HLP2ConvertClass, keyed by market_id):
+    {
+        1: {
+            "bids": [{"price": "97500", "size": "1.5"}, ...],
+            "asks": [{"price": "97501", "size": "2.0"}, ...],
+        },
+        "timestamp": 1770251679393,
+    }
+    """
+
+    def __init__(self, symbol: str, market_id: int, market_data: Dict[str, Any], order_book_depth: int):
+        self._symbol = symbol
+        self.market_id = market_id
+        self.market_data = market_data
+        self.order_book_depth = order_book_depth
+
+    @property
+    def symbol(self) -> str:
+        return self._symbol
+
+    def transferable_2(self) -> bytes:
+        data_obj = self.market_data.get(self.market_id, {})
+        bids = data_obj.get('bids', [])[:self.order_book_depth]
+        asks = data_obj.get('asks', [])[:self.order_book_depth]
+
+        market_packet = ""
+        for i in range(self.order_book_depth):
+            if i < len(bids):
+                market_packet += f"{bids[i]['price']},{bids[i]['size']},"
+            else:
+                market_packet += "0,0,"
+
+        for i in range(self.order_book_depth):
+            if i < len(asks):
+                market_packet += f"{asks[i]['price']},{asks[i]['size']},"
+            else:
+                market_packet += "0,0,"
+
+        market_packet += f"{self.market_data.get('timestamp', '')},{time.time()}"
+        return market_packet.encode('ascii')

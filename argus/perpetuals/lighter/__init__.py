@@ -6,11 +6,25 @@ Unlike Hyperliquid, Lighter has no HIP-3-style builder-deployed dexes -- it is a
 unified exchange (one account/margin system) with every market listed flat under that
 one venue. Anywhere HyperLiquidDispatcher takes a dex_name / assembles per-dex data
 (get_dexs, the dex_name param on get_perpetuals_for_dex, the 4-call perp_info), there is
-no Lighter analog, so those are intentionally absent here rather than stubbed out. See
-docs/Hyperliquid_and_Lighter_HYPE_Trading_API_Report.md section 7 for details.
+no Lighter analog, so those are intentionally absent here rather than stubbed out.
+
+Market-data streaming (subscribe/unsubscribe, live order book over P2) mirrors
+HyperLiquidDispatcher's wiring -- see `argus/perpetuals/lighter/wss.py` for the
+websocket layer and `docs/perf/lighter-market-data-parity-plan.md` for the design
+this was built against. One divergence from Hyperliquid worth noting here: Hyperliquid's
+`coin` is both the client-facing subscribe key and the wire-level channel key, whereas
+Lighter's wss channels are keyed by integer `market_id`, not the symbol string clients
+subscribe with -- so `subscribe`/`unsubscribe`/`subscription_expired` below translate
+symbol -> market_id once, at this dispatcher boundary, and everything below `self.market_data`
+stays on `market_id` throughout.
 """
+import os
+import traceback
 from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
+from argus.protocol import transmit_mkt_data_with_protocol_2
+from argus.perpetuals.lighter import _classes as _cls
+from argus.perpetuals.lighter import wss
 from argus.perpetuals.lighter.rest import LighterRest
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
 
@@ -44,6 +58,9 @@ class LighterDispatcher(BaseDispatcher):
             'get_funding_rates_for_all_perpetuals': self._get_funding_rates_for_all_perps,
             'market_info': self._market_info,
             'get_funding_history': self._get_funding_history,
+            # Market Data Streaming
+            'subscribe': self._handle_subscribe,
+            'unsubscribe': self._handle_unsubscribe,
             # Account Info
             # 'get_account_info': self._get_account_info,
             # 'get_account_balance': self._get_account_balance,
@@ -63,16 +80,121 @@ class LighterDispatcher(BaseDispatcher):
         self._all_perps = self.rest.get_all_perpetuals()
         self._refresh_perpetuals()
 
+        self._orderbook_depth = int(os.environ.get("LIGHTER_ORDERBOOK_DEPTH", 10))
+        self.market_data = wss.LighterMarketDataWss(
+            order_book_update_callback=self._order_book_update_callback
+        )
+        self.market_data.run(main_thread=False)
+
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks
     ########################################
 
     def subscription_expired(self, channel_id):
         """
-        This function is called when a subscription expires.
-        :param channel_id: The ID of the expired subscription
+        Called by RoutingHelper.remove_socket once the last client socket subscribed
+        to `channel_id` (a symbol, e.g. "BTC") disconnects/unsubscribes. Mirrors
+        HyperLiquidDispatcher.subscription_expired: tears down the now-unused upstream
+        Lighter websocket subscription so we don't keep streaming a book nobody is
+        listening to. `channel_id` is the symbol (client-facing key); it is translated
+        to the wire-level `market_id` here, at the boundary -- see module docstring.
+        :param channel_id: The symbol whose last subscriber just went away.
         """
-        pass
+        perp = self._all_perps.get(channel_id)
+        if perp is None:
+            pi.prt(f"subscription_expired: unknown symbol '{channel_id}', cannot unsubscribe upstream")
+            return
+        self.market_data.unsubscribe_from_market(perp.market_id)
+
+    def _handle_subscribe(self, args: ArgsObject) -> dict:
+        """
+        Subscribe the calling client socket to live order book updates for one or
+        more symbols. :param args: Expects `args.args` to be a list of symbol strings
+        (e.g. ["BTC", "ETH"]).
+        """
+        sock = args.sock
+        self.add_socket(sock)
+        subscribed = []
+        failed = []
+        for symbol in args.args or []:
+            try:
+                perp = self._all_perps.get(symbol)
+                if perp is None:
+                    raise ValueError(f"Unknown symbol: {symbol}")
+                self.add_socket_to_subscription(sock, symbol)
+                self.market_data.subscribe_to_market(perp.market_id)
+                subscribed.append(symbol)
+            except Exception as e:
+                failed.append(symbol)
+                pi.prt(f"Error subscribing to symbol {symbol}: {e}")
+                traceback.print_exc()
+        return {"subscribed": subscribed, "failed": failed}
+
+    def _handle_unsubscribe(self, args: ArgsObject) -> dict:
+        """
+        Unsubscribe the calling client socket from one or more symbols. Does not tear
+        down the upstream Lighter subscription directly -- that happens via
+        `subscription_expired` once no client socket is left subscribed to the symbol.
+        """
+        sock = args.sock
+        unsubscribed = []
+        failed = []
+        for symbol in args.args or []:
+            try:
+                self.remove_socket_from_subscription(sock, symbol)
+                unsubscribed.append(symbol)
+            except Exception as e:
+                failed.append(symbol)
+                pi.prt(f"Error unsubscribing from symbol {symbol}: {e}")
+                traceback.print_exc()
+        return {"unsubscribed": unsubscribed, "failed": failed}
+
+    def _order_book_update_callback(self, update: dict):
+        """
+        Fan-out callback wired into `wss.LighterMarketDataWss` -- runs on the
+        websocket's own callback thread every time a market's book changes. Mirrors
+        HyperLiquidDispatcher._order_book_update_callback: look up which client
+        sockets are subscribed to this market's symbol, encode the book with the same
+        P2 wire format via LighterP2ConvertClass, and push it to each of them.
+        `update` is keyed by integer `market_id` (the wss layer's key); it is resolved
+        to a symbol here (the routing table's key) before fan-out.
+        """
+        market_id_keys = [k for k in update.keys() if k != "timestamp"]
+        if len(market_id_keys) != 1:
+            pi.prt(f"Unexpected order book update shape (expected exactly one market_id key): {update.keys()}")
+            return
+        market_id = market_id_keys[0]
+
+        perp = next((p for p in self._all_perps if p.market_id == market_id), None)
+        if perp is None:
+            pi.prt(f"Order book update for unknown market_id {market_id}; no symbol mapping, dropping.")
+            return
+        symbol = perp.name
+
+        clients_to_send = list(self.market_data_routing_table.get(symbol, []))
+        if not clients_to_send:
+            return
+
+        packet = transmit_mkt_data_with_protocol_2(
+            _cls.LighterP2ConvertClass(
+                symbol=symbol,
+                market_id=market_id,
+                market_data=update,
+                order_book_depth=self._orderbook_depth,
+            )
+        )
+
+        for sock in clients_to_send:
+            try:
+                with self.send_lock_for(sock):
+                    sock.sendall(packet)
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                self.remove_socket(sock)
+                pi.prt(f"Removed dead socket while sending order book update for symbol {symbol}: {e}")
+            except Exception as e:
+                pi.prt(f"Unexpected error sending order book update for symbol {symbol} to socket: {e}")
+                self.remove_socket(sock)
+                traceback.print_exc()
 
     ########################################
     # Dispatcher Functions
