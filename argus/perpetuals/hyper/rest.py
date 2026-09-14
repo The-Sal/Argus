@@ -26,13 +26,17 @@ class HyperLiquidRest(BaseDispatcherCompatibleRest):
             'Content-Type': 'application/json',
         }
 
-    def _post(self, body: dict):
+    def _post(self, body: dict, allow_null: bool = False):
         response = self.session.post(url=_ep['info'], json=body).json()
         if response is None:
-            # Observed as a bare `null` body (HTTP 200) instead of an error status, most likely
-            # when a request is rejected for being rate-limited (each `info` call weighs 20
-            # against the 1200/minute per-IP budget). Raise here so every caller gets one clear
-            # error instead of an obscure unpack/iteration TypeError.
+            # A bare `null` body (HTTP 200) usually means the request was rejected for being
+            # rate-limited (each `info` call weighs 20 against the 1200/minute per-IP budget),
+            # so raise by default rather than letting callers hit an obscure unpack/iteration
+            # TypeError. Some endpoints use `null` as a legitimate "no data" response though
+            # (e.g. `perpAnnotation` for default-dex coins like BTC); those callers opt in with
+            # `allow_null=True` and handle the `None` result.
+            if allow_null:
+                return None
             raise RuntimeError(
                 "HyperLiquid API returned no data for request type='{}' (dex={!r}); "
                 "this usually means the request was rate-limited.".format(body.get('type'), body.get('dex'))
@@ -107,7 +111,8 @@ class HyperLiquidRest(BaseDispatcherCompatibleRest):
 
     def get_perp_annotation(self, coin: str) -> Optional[_cls.PerpAnnotation]:
         """Returns None for coins with no annotation (e.g. most default-dex coins)."""
-        return _cls.PerpAnnotation.from_dict(self._post({'type': 'perpAnnotation', 'coin': coin}))
+        response = self._post({'type': 'perpAnnotation', 'coin': coin}, allow_null=True)
+        return _cls.PerpAnnotation.from_dict(response)
 
     def get_perp_categories(self) -> List[_cls.PerpCategory]:
         response: list = self._post({'type': 'perpCategories'})
