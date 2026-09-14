@@ -95,15 +95,21 @@ class Notification:
 class Introspective:
     """Class with method to call its own methods interactively."""
 
+    def clear(self) -> None:
+        """Clear the console output."""
+        subprocess.check_call(["clear"])
+
     def _interactive_ui(self, functions: dict):
         """
         An interactive UI to call methods of the class and other functions. Automatically
-        includes .call_methods as an option.
+        includes .clear and .call_method as options.
 
         :param functions: A dictionary of function names to functions.
             Example { 'func_name': ('this is func docstring', func_reference) }
         :return:
         """
+        if not any(func == self.clear for _, func in functions.values()):
+            functions['clear'] = ('Clear the console output', self.clear)
         functions['call_method'] = ('Interactively call a method of this class', self.call_method)
         functions['exit'] = ('Exit the interactive UI', lambda: None)
         while True:

@@ -31,7 +31,6 @@ import difflib
 import logging
 import threading
 import traceback
-import subprocess
 import dataclasses
 from collections import deque
 from datetime import datetime
@@ -2266,7 +2265,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 ),
                 "Clear console": (
                     "Clear the console output",
-                    lambda: subprocess.check_call(["clear"]),
+                    self.clear,
                 ),
                 "Clear correlation ids": (
                     "Clear all correlation IDs from the dispatcher cache",
