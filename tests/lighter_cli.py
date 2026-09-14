@@ -429,6 +429,100 @@ def _gauntlet_get_funding_history(client: 'LighterArgusClient', timeout: float) 
     return dt, f"market_id={market_id} -> {len(history)} entry(ies) in last 24h"
 
 
+# -----------------------------------------------------------------------------
+# Market-data streaming (P2) gauntlet check
+# -----------------------------------------------------------------------------
+#
+# Unlike the REST-backed checks above, this drives the live order book path:
+# subscribe -> receive + validate the pushed P2 book -> unsubscribe and assert
+# pushes stop -> re-subscribe and assert pushes resume. It is the CLI-level
+# counterpart to tests/lighter_wss_latency.py (which white-boxes the wss
+# itself, including the upstream reconnect and nonce-gap resync); a CLI client
+# cannot force the dispatcher's upstream socket to drop, so this verifies the
+# subscription lifecycle end to end instead, including the symbol<->market_id
+# translation and the refcounted teardown (`subscription_expired`).
+
+def _drain_p2(client: 'LighterArgusClient', seconds: float, stop_on_packet: bool) -> List[Dict[str, Any]]:
+    """Drain P2 packets for up to `seconds`. If `stop_on_packet`, return on the
+    first non-empty drain rather than waiting out the whole window."""
+    deadline = time.time() + seconds
+    collected: List[Dict[str, Any]] = []
+    while time.time() < deadline:
+        packets = client.receive_p2_packets()
+        if packets:
+            collected.extend(packets)
+            if stop_on_packet:
+                return collected
+        time.sleep(0.02)
+    return collected
+
+
+def _validate_p2_book(packet: Dict[str, Any], symbol: str) -> float:
+    """Validate one decoded P2 order-book packet; return its latency in ms."""
+    _check(packet.get('symbol') == symbol, f"P2 packet symbol {packet.get('symbol')!r} != subscribed {symbol!r}")
+
+    bids, asks = [], []
+    for i in range(ORDERBOOK_DEPTH):
+        price, size = packet.get(f'bid_{i}_price', 0.0), packet.get(f'bid_{i}_size', 0.0)
+        if price > 0 and size > 0:
+            bids.append(price)
+    for i in range(ORDERBOOK_DEPTH):
+        price, size = packet.get(f'ask_{i}_price', 0.0), packet.get(f'ask_{i}_size', 0.0)
+        if price > 0 and size > 0:
+            asks.append(price)
+
+    _check(len(bids) > 0 or len(asks) > 0, f"P2 packet for {symbol!r} carried no levels")
+    _check(bids == sorted(bids, reverse=True), f"bids not descending: {bids}")
+    _check(asks == sorted(asks), f"asks not ascending: {asks}")
+    if bids and asks:
+        _check(bids[0] < asks[0], f"crossed book bid={bids[0]} ask={asks[0]}")
+
+    book_ts = packet.get('book_timestamp', 0)
+    _check(book_ts > 0, "P2 packet missing/zero book_timestamp")
+    latency_ms = time.time() * 1000.0 - book_ts
+    _check(
+        -2000.0 < latency_ms < 5000.0,
+        f"implausible book latency {latency_ms:.1f}ms (clock skew or unit mismatch?)"
+    )
+    return latency_ms
+
+
+def _gauntlet_market_data_stream(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, _ = client.get_markets(offset=0, limit=10, timeout=int(timeout))
+    _check(len(perps) > 0, "need at least one market to stream")
+    symbol = perps[0]['market']['symbol']
+
+    window = max(2.0, min(timeout, 5.0))
+    start = time.perf_counter()
+
+    result, _ = client.subscribe([symbol], timeout=int(timeout))
+    _check(symbol in (result.get('subscribed') or []), f"subscribe did not confirm {symbol!r}: {result!r}")
+    try:
+        first = _drain_p2(client, window, stop_on_packet=True)
+        _check(len(first) > 0, f"no P2 packets for {symbol!r} within {window:.0f}s of subscribing")
+        latencies = [_validate_p2_book(packet, symbol) for packet in first]
+
+        # Unsubscribe: this socket must stop receiving the symbol's book.
+        client.unsubscribe([symbol], timeout=int(timeout))
+        _drain_p2(client, 0.5, stop_on_packet=False)  # flush in-flight pushes
+        quiet = _drain_p2(client, 1.0, stop_on_packet=False)
+        _check(not quiet, f"received {len(quiet)} P2 packet(s) after unsubscribing from {symbol!r}")
+
+        # Re-subscribe: pushes must resume.
+        client.subscribe([symbol], timeout=int(timeout))
+        resumed = _drain_p2(client, window, stop_on_packet=True)
+        _check(len(resumed) > 0, f"no P2 packets for {symbol!r} after re-subscribing")
+    finally:
+        try:
+            client.unsubscribe([symbol], timeout=int(timeout))
+        except Exception:
+            pass
+
+    dt = time.perf_counter() - start
+    avg = sum(latencies) / len(latencies)
+    return dt, f"symbol={symbol} first_batch={len(first)} avg_latency={avg:.1f}ms (subscribe/unsubscribe/re-subscribe OK)"
+
+
 # (display name, check function) -- add new read-only actions here as the
 # dispatcher's routing table grows. Trading actions should never be added.
 GAUNTLET_CHECKS: List[Tuple[str, Callable[['LighterArgusClient', float], Tuple[float, str]]]] = [
@@ -437,6 +531,7 @@ GAUNTLET_CHECKS: List[Tuple[str, Callable[['LighterArgusClient', float], Tuple[f
     ("get_funding_rates_for_all_perpetuals", _gauntlet_get_funding_rates),
     ("market_info", _gauntlet_market_info),
     ("get_funding_history", _gauntlet_get_funding_history),
+    ("market_data (subscribe/P2 lifecycle)", _gauntlet_market_data_stream),
 ]
 
 

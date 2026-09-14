@@ -2,6 +2,7 @@ import time
 from decimal import Decimal
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from argus.perpetuals.shared import P2OrderBookConvertClass
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 
@@ -416,7 +417,7 @@ class FundingHistoryEntry:
 
 # --- websocket market-data wire encoding -------------------------------------
 
-class LighterP2ConvertClass:
+class LighterP2ConvertClass(P2OrderBookConvertClass):
     """
     Duck-typed adapter for `argus.protocol.transmit_mkt_data_with_protocol_2`,
     direct port of `argus.perpetuals.hyper._classes.HLP2ConvertClass` -- see
@@ -431,7 +432,10 @@ class LighterP2ConvertClass:
     `market_data`, `symbol` for the P2 packet's wire identity. The dispatcher
     resolves symbol<->market_id once, at the boundary, before constructing this.
 
-    Expected input market_data shape (same as HLP2ConvertClass, keyed by market_id):
+    Subclass of `argus.perpetuals.shared._classes.P2OrderBookConvertClass`,
+    which enforces the expected market_data shape (same as `HLP2ConvertClass`,
+    keyed by market_id):
+
     {
         1: {
             "bids": [{"price": "97500", "size": "1.5"}, ...],
@@ -441,33 +445,11 @@ class LighterP2ConvertClass:
     }
     """
 
-    def __init__(self, symbol: str, market_id: int, market_data: Dict[str, Any], order_book_depth: int):
-        self._symbol = symbol
+    def __init__(self, symbol: str, market_id: int, market_data: Dict[Any, Any], order_book_depth: int):
         self.market_id = market_id
-        self.market_data = market_data
-        self.order_book_depth = order_book_depth
-
-    @property
-    def symbol(self) -> str:
-        return self._symbol
-
-    def transferable_2(self) -> bytes:
-        data_obj = self.market_data.get(self.market_id, {})
-        bids = data_obj.get('bids', [])[:self.order_book_depth]
-        asks = data_obj.get('asks', [])[:self.order_book_depth]
-
-        market_packet = ""
-        for i in range(self.order_book_depth):
-            if i < len(bids):
-                market_packet += f"{bids[i]['price']},{bids[i]['size']},"
-            else:
-                market_packet += "0,0,"
-
-        for i in range(self.order_book_depth):
-            if i < len(asks):
-                market_packet += f"{asks[i]['price']},{asks[i]['size']},"
-            else:
-                market_packet += "0,0,"
-
-        market_packet += f"{self.market_data.get('timestamp', '')},{time.time()}"
-        return market_packet.encode('ascii')
+        super().__init__(
+            symbol=symbol,
+            lookup_key=market_id,
+            market_data=market_data,
+            order_book_depth=order_book_depth,
+        )

@@ -1,7 +1,9 @@
 import json
+import time
 import zlib
 import base64
 from argus import protocol
+from collections.abc import Mapping
 from typing import Any, Dict, Optional
 from argus.perpetuals.shared import _errors as ers
 
@@ -65,3 +67,100 @@ class OutboundMessage:
                 "compressed": False,
                 "correlation_id": self.correlation_id
             }
+
+
+class P2OrderBookConvertClass:
+    """
+    Shared base for the duck-typed adapter consumed by
+    `argus.protocol.transmit_mkt_data_with_protocol_2` (`.symbol` /
+    `.transferable_2()`). Hyperliquid's `HLP2ConvertClass` and Lighter's
+    `LighterP2ConvertClass` both subclass this, differing only in the key under
+    which the order book is stored in `market_data`.
+
+    Enforces the exact market-data shape both venues produce (the same shape
+    `argus.polymarket._classes.P2ConvertClass` uses):
+
+        {
+            <lookup_key>: {
+                "bids": [{"price": "97500", "size": "1.5"}, ...],
+                "asks": [{"price": "97501", "size": "2.0"}, ...],
+            },
+            "timestamp": 1770251679393,
+        }
+
+    `symbol` is the P2 wire identity; `lookup_key` is the key the book is stored
+    under in `market_data` (the coin string for Hyperliquid, the integer
+    `market_id` for Lighter). `timestamp` is optional and rendered as an empty
+    field when absent, matching the previous behavior.
+
+    A malformed book raises from the constructor (TypeError/ValueError) rather
+    than silently emitting a packet full of zeros.
+    """
+
+    def __init__(self, symbol: str, lookup_key, market_data: Mapping, order_book_depth: int):
+        if not isinstance(order_book_depth, int) or isinstance(order_book_depth, bool) or order_book_depth < 0:
+            raise ValueError(
+                f"{type(self).__name__}: order_book_depth must be a non-negative int, got {order_book_depth!r}"
+            )
+        self._symbol = symbol
+        self._lookup_key = lookup_key
+        self._order_book_depth = order_book_depth
+        self._validate_market_data(market_data)
+        self.market_data = market_data
+
+    @property
+    def symbol(self) -> str:
+        return self._symbol
+
+    @property
+    def order_book_depth(self) -> int:
+        return self._order_book_depth
+
+    def _validate_market_data(self, market_data: Mapping) -> None:
+        if not isinstance(market_data, Mapping):
+            raise TypeError(
+                f"{type(self).__name__}: market_data must be a mapping, got {type(market_data).__name__}"
+            )
+
+        book = market_data.get(self._lookup_key)
+        if not isinstance(book, Mapping):
+            present = [key for key in market_data if key != 'timestamp']
+            raise ValueError(
+                f"{type(self).__name__}: market_data has no order book for key {self._lookup_key!r} "
+                f"(present keys: {present!r})"
+            )
+
+        for side in ('bids', 'asks'):
+            levels = book.get(side)
+            if not isinstance(levels, list):
+                raise ValueError(
+                    f"{type(self).__name__}: {side!r} for key {self._lookup_key!r} must be a list, "
+                    f"got {type(levels).__name__}"
+                )
+            for i, level in enumerate(levels):
+                if not isinstance(level, Mapping) or 'price' not in level or 'size' not in level:
+                    raise ValueError(
+                        f"{type(self).__name__}: {side}[{i}] must be a mapping with 'price' and 'size', "
+                        f"got {level!r}"
+                    )
+
+    def transferable_2(self) -> bytes:
+        data_obj = self.market_data.get(self._lookup_key, {})
+        bids = data_obj.get('bids', [])[:self._order_book_depth]
+        asks = data_obj.get('asks', [])[:self._order_book_depth]
+
+        market_packet = ""
+        for i in range(self._order_book_depth):
+            if i < len(bids):
+                market_packet += f"{bids[i]['price']},{bids[i]['size']},"
+            else:
+                market_packet += "0,0,"
+
+        for i in range(self._order_book_depth):
+            if i < len(asks):
+                market_packet += f"{asks[i]['price']},{asks[i]['size']},"
+            else:
+                market_packet += "0,0,"
+
+        market_packet += f"{self.market_data.get('timestamp', '')},{time.time()}"
+        return market_packet.encode('ascii')

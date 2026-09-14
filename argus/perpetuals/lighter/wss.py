@@ -1,12 +1,14 @@
 """
 Lighter market-data (order book) websocket streaming.
 
-Structural skeleton (reconnect/ping-pong/threading-event base class, a pure
-socket-agnostic book-state store, and a dispatcher-facing class that owns the
-WS connection) is a near-verbatim port of `argus/perpetuals/hyper/wss.py`. The
-store logic, however, is NOT ported from Hyperliquid's -- see
-`docs/perf/lighter-market-data-parity-plan.md` (the design doc this module
-implements) for the full reasoning. Short version:
+The reconnect/ping-pong/threading-event skeleton and the roster/restore-on-
+reconnect machinery live in `argus.perpetuals.shared.wss` (`VenueWSSBase` /
+`MarketDataWssBase`); this module supplies only what is Lighter-specific: the
+bidirectional JSON ping/pong framing, the order_book+ticker subscription
+payloads, and the snapshot+delta book store. See that shared module's docstring
+for the pattern this was extracted from. The store logic is NOT ported from
+Hyperliquid's -- see `docs/perf/lighter-market-data-parity-plan.md` (the design
+doc this module implements) for the full reasoning. Short version:
 
   - Hyperliquid's `l2Book` push is always a full snapshot -> its store just
     replaces the book wholesale on every message.
@@ -64,212 +66,21 @@ Ping/pong direction is reversed from Hyperliquid (and from Polymarket), and is
 handled in BOTH directions here per the design doc:
   - Lighter's docs say clients must send a frame at least every 2 minutes; we
     send our own `{"type": "ping"}` on a timer (default well under that -- see
-    LIGHTER_PING_INTERVAL_S) and track `{"type": "pong"}` replies exactly like
-    HyperLiquidWSSBase.ping() does.
+    the `LIGHTER_PING_INTERVAL_S` env var, honored by the shared base) and track
+    `{"type": "pong"}` replies exactly like `VenueWSSBase.ping()` does.
   - The reference SDK's actual behavior is that the SERVER also sends
     `{"type": "ping"}`, and the client must reply `{"type": "pong"}`
     immediately -- this is what actually keeps the server-side connection
-    alive. `_on_message_base` answers this unconditionally, independent of our
-    own ping timer/lock state, since it is a protocol requirement rather than
-    a liveness probe we control the cadence of.
+    alive. `_handle_server_ping` answers this unconditionally, independent of
+    our own ping timer/lock state, since it is a protocol requirement rather
+    than a liveness probe we control the cadence of.
 """
-import os
 import json
 import time
 import bisect
 import logging
 import threading
-import traceback
-from utils3 import runAsThread
-from websocket import WebSocketApp
-from argus.wireproxy import wrapper as wp_wrappers
-from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
-
-
-class LighterWSSBase:
-    """
-    Base class for Lighter WebSocket connections. Handles common boilerplate:
-    reconnection, ping/pong (both directions -- see module docstring), threading
-    events. Subclasses must provide: _create_ws_app(), _on_open_impl(),
-    _on_message_impl().
-
-    Near-verbatim port of HyperLiquidWSSBase (argus/perpetuals/hyper/wss.py),
-    itself ported from PolymarketWSSBase, with the ping/pong framing swapped
-    for Lighter's bidirectional JSON {"type": "ping"|"pong"} shape.
-    """
-
-    def __init__(self, name: str, url: str):
-        self._name = name
-        self._url = url
-        self._ws: WebSocketApp = None  # type: ignore
-
-        self._max_reconnect_attempts = int(os.environ.get('LIGHTER_MAX_SOCKET_RETRIES', '50'))
-        self._reconnect_attempts = 0
-        self._internally_closed = False
-        self._allow_ping = True
-
-        self._ping_pong_lock = threading.Lock()
-        self._ping_pongs = (0, 0)  # (sent, received)
-        self._max_ping_pong_failures = int(os.environ.get('LIGHTER_MAX_PING_PONG_FAILURES', '3'))
-        # Lighter's docs require a client frame at least every 2 minutes; ping
-        # comfortably under that. Wider margin than Hyperliquid's 20s default
-        # since Lighter's idle-close window (2min) is double Hyperliquid's (60s).
-        self._ping_interval_s = float(os.environ.get('LIGHTER_PING_INTERVAL_S', '60'))
-
-        self._pinging_lock = threading.Lock()
-        self._last_msg_recv_ts: float = 0.0
-
-        self._reset_threading_events()
-
-    def _reset_threading_events(self):
-        self.wait_till_socket_open = threading.Event()
-        self.wait_till_first_pong = threading.Event()
-
-    def _init_ws(self):
-        with self._ping_pong_lock:
-            self._ping_pongs = (0, 0)
-        self._create_ws_app()
-
-    def _create_ws_app(self):
-        raise NotImplementedError("Subclasses must implement _create_ws_app()")
-
-    def _on_open_base(self, ws):
-        _ = ws
-        self._reconnect_attempts = 0
-        logging.info('%s WebSocket opened.', self._name)
-        self._on_open_impl()
-        self.ping()
-        self.wait_till_socket_open.set()
-
-    def _on_open_impl(self):
-        raise NotImplementedError("Subclasses must implement _on_open_impl()")
-
-    def _on_message_base(self, ws, message):
-        _ = ws
-        try:
-            parsed = json.loads(message)
-        except (json.JSONDecodeError, TypeError):
-            parsed = None
-
-        if isinstance(parsed, dict):
-            msg_type = parsed.get('type')
-
-            if msg_type == 'pong':
-                logging.debug('%s WebSocket received pong.', self._name)
-                with self._ping_pong_lock:
-                    self._ping_pongs = (self._ping_pongs[0], self._ping_pongs[1] + 1)
-                self.wait_till_first_pong.set()
-                return
-
-            if msg_type == 'ping':
-                # Server-initiated keepalive -- required response, independent of our
-                # own ping timer/lock. See module docstring: this is the direction
-                # that actually keeps the connection alive per the reference SDK.
-                logging.debug('%s WebSocket received server ping; replying pong.', self._name)
-                try:
-                    self._ws.send(json.dumps({"type": "pong"}))
-                except Exception as e:
-                    logging.warning('%s: failed to reply to server ping: %s', self._name, e)
-                return
-
-        self._last_msg_recv_ts = time.perf_counter()
-        self._on_message_impl(message)
-
-    def _on_message_impl(self, message: str):
-        raise NotImplementedError("Subclasses must implement _on_message_impl()")
-
-    def _on_close_base(self, ws, close_status_code, close_msg):
-        self._allow_ping = False
-        _ = ws
-        logging.warning('%s WebSocket closed. Code: %s, Message: %s', self._name, close_status_code, close_msg)
-        print(
-            f"Attempting to reconnect {self._name} WebSocket... {self._reconnect_attempts + 1}/{self._max_reconnect_attempts}")
-
-        if not self._internally_closed:
-            self._on_reconnect_start()
-            self._reconnect_attempts += 1
-            if self._reconnect_attempts > self._max_reconnect_attempts:
-                logging.error('Maximum reconnect attempts reached for %s WebSocket. Giving up.', self._name)
-                throw_fuss(
-                    msg=f"{self._name.upper()} WEBSOCKET RECONNECTION FAILURE: Maximum reconnect attempts reached.",
-                    notify=True
-                )
-                return
-            time.sleep(1)
-            self._start_ws()
-            self._allow_ping = True
-
-    def _on_reconnect_start(self):
-        """Called when reconnection starts. Subclasses can override to restore state."""
-        pass
-
-    def _on_error_base(self, ws, error):
-        _ = ws
-        throw_fuss(
-            msg=f"{self._name.upper()} WEBSOCKET ERROR:\n{traceback.format_exc()}",
-            notify=False
-        )
-        macos_notification_with_custom_sound(
-            title=f"{self._name.upper()} WEBSOCKET ERROR",
-            message=str(error),
-            sound_name="Basso"
-        )
-
-    @runAsThread
-    def ping(self):
-        """Send periodic {"type": "ping"} messages and monitor pong responses."""
-        if self._pinging_lock.locked():
-            logging.warning('Ping thread for %s WebSocket is already running. Not starting another.', self._name)
-            return
-
-        with self._pinging_lock:
-            while True:
-                if self._internally_closed:
-                    logging.info('%s ping thread exiting (internally closed).', self._name)
-                    return
-                try:
-                    if self._allow_ping:
-                        self._ws.send(json.dumps({"type": "ping"}))
-                        with self._ping_pong_lock:
-                            self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
-                            pings = self._ping_pongs[0]
-                            pongs = self._ping_pongs[1]
-
-                            if os.environ.get('LIGHTER_DISABLE_PING_PONG_LOGS', 'false').lower() != 'true':
-                                logging.info(
-                                    'Sending ping to %s WebSocket. Total pings: %d, Total pongs: %d',
-                                    self._name, pings, pongs
-                                )
-
-                            ping_delta = abs(pings - pongs)
-                            if ping_delta >= self._max_ping_pong_failures:
-                                logging.error(
-                                    'Maximum ping-pong failures reached. Reconnecting %s WebSocket...', self._name
-                                )
-                                throw_fuss(
-                                    msg=f"{self._name.upper()} WEBSOCKET PING-PONG FAILURE: No pong received for {ping_delta} pings.",
-                                    notify=True
-                                )
-                                self._ws.close()
-                    else:
-                        logging.info('Ping to %s WebSocket is currently disabled.', self._name)
-                except Exception as e:
-                    logging.error("%s WebSocket ping failed: %s", self._name, e)
-                    with self._ping_pong_lock:
-                        self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
-                time.sleep(self._ping_interval_s)
-
-    def _start_ws_sync(self):
-        logging.info('Starting %s WebSocket...', self._name)
-        self._init_ws()
-        wp_wrappers.start_proxy_aware_ws(
-            idx='LIGHTER',
-            websocket=self._ws,
-        )
-
-    @runAsThread
-    def _start_ws(self):
-        self._start_ws_sync()
+from argus.perpetuals.shared.wss import MarketDataWssBase
 
 
 class LighterOrderBookStore:
@@ -601,7 +412,7 @@ class LighterOrderBookStore:
         return list(self._market_id_to_order_book.keys())
 
 
-class LighterMarketDataWss(LighterWSSBase):
+class LighterMarketDataWss(MarketDataWssBase):
     """
     Single-connection order book streamer for Lighter.
 
@@ -612,78 +423,59 @@ class LighterMarketDataWss(LighterWSSBase):
     HyperLiquidMarketDataWss's shape (no shard pool -- Lighter has on the
     order of ~100 markets and no documented per-connection subscription cap,
     per the design doc's Section 3, so one connection is assumed sufficient
-    until live testing shows otherwise).
+    until live testing shows otherwise). The reconnect/ping-pong skeleton and
+    subscription restore come from `MarketDataWssBase`; the store is wired with
+    a `resync_callback` so a nonce-chain gap forces a fresh `order_book`
+    snapshot (see `_resubscribe_order_book`).
     """
 
     def __init__(self, order_book_update_callback=None):
-        super().__init__(name="Lighter Order Book", url='wss://mainnet.zklighter.elliot.ai/stream')
+        super().__init__(
+            name="Lighter Order Book",
+            url='wss://mainnet.zklighter.elliot.ai/stream',
+            env_prefix='LIGHTER',
+            proxy_idx='LIGHTER',
+            default_ping_interval_s=60,
+        )
         self._store = LighterOrderBookStore(
             order_book_update_callback=order_book_update_callback,
             resync_callback=self._resubscribe_order_book,
         )
-        self._roster: set = set()
-        self._roster_lock = threading.Lock()
-        self._restore_state_timeout = float(
-            os.environ.get('LIGHTER_WS_RESTORE_TIMEOUT', '120')
-        )
 
-    def _create_ws_app(self):
-        self._ws = WebSocketApp(
-            url=self._url,
-            on_open=self._on_open_base,
-            on_close=self._on_close_base,
-            on_error=self._on_error_base,
-            on_message=self._on_message_base,
-        )
+    ########################################
+    # Venue framing (shared base hooks)
+    ########################################
 
-    def _on_open_impl(self):
-        # No handshake frame needed before real subscriptions can be sent.
-        pass
+    def _ping_frame(self) -> str:
+        return json.dumps({"type": "ping"})
 
-    def _on_message_impl(self, message: str):
-        self._store.apply_message(message)
+    def _is_pong_frame(self, parsed) -> bool:
+        return parsed.get('type') == 'pong'
 
-    def _on_reconnect_start(self):
-        self._reset_threading_events()
-        self._defer_restore_state(self.wait_till_first_pong)
+    def _handle_server_ping(self, parsed) -> bool:
+        # Server-initiated keepalive -- required response, independent of our
+        # own ping timer/lock. See module docstring: this is the direction that
+        # actually keeps the connection alive per the reference SDK.
+        if parsed.get('type') != 'ping':
+            return False
+        logging.debug('%s WebSocket received server ping; replying pong.', self._name)
+        try:
+            self._ws.send(json.dumps({"type": "pong"}))
+        except Exception as e:
+            logging.warning('%s: failed to reply to server ping: %s', self._name, e)
+        return True
 
-    @runAsThread
-    def _defer_restore_state(self, pong_event: threading.Event):
-        """After the new socket comes back up, replay every market_id in our roster.
-        Ported from HyperLiquidMarketDataWss._defer_restore_state -- see that
-        docstring for why `pong_event` is bound at spawn time and the wait is bounded."""
-        if not pong_event.wait(timeout=self._restore_state_timeout):
-            logging.warning(
-                '%s: no pong within %.0fs of reconnect; abandoning subscription restore '
-                '(a later reconnect will retry).',
-                self._name, self._restore_state_timeout,
-            )
-            return
+    ########################################
+    # Subscription ops
+    ########################################
 
-        if self._internally_closed:
-            logging.info('%s: closed while awaiting pong; skipping restore.', self._name)
-            return
+    def _send_subscribe_op(self, key: int) -> None:
+        self._ws.send(json.dumps({"type": "subscribe", "channel": f"order_book/{key}"}))
+        self._ws.send(json.dumps({"type": "subscribe", "channel": f"ticker/{key}"}))
 
-        if pong_event is not self.wait_till_first_pong:
-            logging.info('%s: superseded by a newer reconnect; leaving restore to it.', self._name)
-            return
-
-        with self._roster_lock:
-            market_ids = list(self._roster)
-        if market_ids:
-            logging.info('Restoring %s subscriptions: %s', self._name, market_ids)
-            for market_id in market_ids:
-                self._send_subscribe_op(market_id)
-        else:
-            logging.info('No markets to restore for %s.', self._name)
-
-    def _send_subscribe_op(self, market_id: int) -> None:
-        self._ws.send(json.dumps({"type": "subscribe", "channel": f"order_book/{market_id}"}))
-        self._ws.send(json.dumps({"type": "subscribe", "channel": f"ticker/{market_id}"}))
-
-    def _send_unsubscribe_op(self, market_id: int) -> None:
-        self._ws.send(json.dumps({"type": "unsubscribe", "channel": f"order_book/{market_id}"}))
-        self._ws.send(json.dumps({"type": "unsubscribe", "channel": f"ticker/{market_id}"}))
+    def _send_unsubscribe_op(self, key: int) -> None:
+        self._ws.send(json.dumps({"type": "unsubscribe", "channel": f"order_book/{key}"}))
+        self._ws.send(json.dumps({"type": "unsubscribe", "channel": f"ticker/{key}"}))
 
     def _resubscribe_order_book(self, market_id: int) -> None:
         """Force a fresh order_book snapshot after a nonce-chain gap (design doc
@@ -696,38 +488,18 @@ class LighterMarketDataWss(LighterWSSBase):
         except Exception as e:
             logging.warning('%s: error resubscribing order_book for market_id %s: %s', self._name, market_id, e)
 
-    def run(self, main_thread=False):
-        """Bring the connection online. `main_thread` accepted for API parity with
-        HyperLiquidMarketDataWss.run() but ignored -- always runs in a background thread."""
-        _ = main_thread
-        self._start_ws()
+    ########################################
+    # Dispatcher-facing surface
+    ########################################
 
     def subscribe_to_market(self, market_id: int) -> None:
-        with self._roster_lock:
-            if market_id in self._roster:
-                return
-            self._roster.add(market_id)
-
-        self.wait_till_socket_open.wait()
-        self._send_subscribe_op(market_id)
+        self._subscribe_to_key(market_id)
 
     def unsubscribe_from_market(self, market_id: int) -> None:
-        with self._roster_lock:
-            self._roster.discard(market_id)
-
-        try:
-            self._send_unsubscribe_op(market_id)
-        except Exception as e:
-            logging.warning('LighterMarketDataWss: error sending unsubscribe for market_id %s: %s', market_id, e)
-
-        self._store.forget(market_id)
+        self._unsubscribe_from_key(market_id)
 
     def order_book_for_market(self, market_id: int):
         return self._store.order_book_for_market(market_id)
-
-    @property
-    def order_books(self):
-        return self._store.order_books
 
     @property
     def market_ids(self):

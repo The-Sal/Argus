@@ -12,8 +12,10 @@ latency as:
 
 for both the fast l2Book snapshots (5 levels, ~0.5s cadence) and the bbo
 stream (top of book, pushed per block when it changes). Also validates the
-merged book (same-side ordering, no cross) and that the l2Book push rate
-actually reflects the `fast: true` subscription.
+merged book (same-side ordering, no cross), that the l2Book push rate
+actually reflects the `fast: true` subscription, and the reconnect path: the
+socket is forcibly closed mid-run and the test asserts the reconnect fires and
+data resumes (subscription roster replayed) afterward.
 
 Usage:
     uv run tests/hyper_wss_latency.py            # BTC, 15s
@@ -110,7 +112,28 @@ def run_probe(HyperLiquidMarketDataWss, coin, duration_s):
     print(f"subscribing to {coin} (l2Book fast + bbo) ...")
     started_ms = time.time() * 1000.0
     wss.subscribe_to_coin(coin)
-    time.sleep(duration_s)
+
+    # Force a reconnect mid-run and verify (a) the reconnect path runs at all and
+    # (b) the subscription roster is replayed so data resumes on the new socket.
+    reconnect_triggered = threading.Event()
+    original_reconnect_start = wss._on_reconnect_start
+
+    def reconnect_spy():
+        reconnect_triggered.set()
+        return original_reconnect_start()
+
+    wss._on_reconnect_start = reconnect_spy
+
+    reconnect_at = max(2.0, duration_s / 2)
+    time.sleep(reconnect_at)
+    forced_close_ms = time.time() * 1000.0
+    print("forcing a reconnect (closing the socket) ...")
+    try:
+        wss._ws.close()
+    except Exception:
+        pass
+
+    time.sleep(max(0.0, duration_s - reconnect_at))
     ended_ms = time.time() * 1000.0
 
     records = collector.snapshot_records()
@@ -120,7 +143,13 @@ def run_probe(HyperLiquidMarketDataWss, coin, duration_s):
     except Exception:
         pass
 
-    return records, (ended_ms - started_ms) / 1000.0
+    resumed_after_close = any(r['recv_ms'] > forced_close_ms for r in records)
+    return (
+        records,
+        (ended_ms - started_ms) / 1000.0,
+        reconnect_triggered.is_set(),
+        resumed_after_close,
+    )
 
 
 def _percentile(sorted_values, percentile):
@@ -138,7 +167,7 @@ def _validate_book(record):
         assert bids[0] < asks[0], f"crossed book bid={bids[0]} ask={asks[0]}"
 
 
-def report(coin, records, duration_s):
+def report(coin, records, duration_s, reconnect_triggered, resumed_after_close):
     by_source = defaultdict(list)
     for record in records:
         by_source[record['source']].append(record)
@@ -180,6 +209,11 @@ def report(coin, records, duration_s):
             failures.append(f"{record['source']} book invariant violated: {exc}")
             break
 
+    if not reconnect_triggered:
+        failures.append("forced socket close did not trigger the reconnect path")
+    if not resumed_after_close:
+        failures.append("no data arrived after the forced reconnect -- subscription restore failed")
+
     latest = records[-1] if records else None
     if latest is not None:
         print()
@@ -189,12 +223,15 @@ def report(coin, records, duration_s):
         )
 
     print()
+    print(f"reconnect path triggered: {reconnect_triggered}")
+    print(f"data resumed after forced reconnect: {resumed_after_close}")
+    print()
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}")
         return failures
 
-    print("PASS: l2Book fast + bbo both streaming, book merged cleanly, latencies sane")
+    print("PASS: l2Book fast + bbo both streaming, book merged cleanly, latencies sane, reconnect restored")
     return failures
 
 
@@ -205,8 +242,10 @@ def main():
     args = parser.parse_args()
 
     HyperLiquidMarketDataWss = _load_wss_class()
-    records, duration_s = run_probe(HyperLiquidMarketDataWss, args.coin, args.duration)
-    failures = report(args.coin, records, duration_s)
+    records, duration_s, reconnect_triggered, resumed_after_close = run_probe(
+        HyperLiquidMarketDataWss, args.coin, args.duration
+    )
+    failures = report(args.coin, records, duration_s, reconnect_triggered, resumed_after_close)
     return 1 if failures else 0
 
 

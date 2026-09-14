@@ -12,9 +12,10 @@ then measures per-channel receive latency as:
 for both the `order_book` channel (snapshot + ~50ms-batched deltas) and the
 `ticker` channel (BBO fast path, cadence undocumented -- this test is what
 actually establishes it, per docs/perf/lighter-market-data-parity-plan.md
-Section 7/8). Also validates the merged book (sorted both sides, no cross)
-and exercises the nonce-chain gap-detection/resubscribe path by forcing a
-synthetic desync.
+Section 7/8). Also validates the merged book (sorted both sides, no cross),
+exercises the nonce-chain gap-detection/resubscribe path by forcing a
+synthetic desync, and forces a mid-run socket close to verify the reconnect
+path fires and data resumes (subscriptions replayed) afterward.
 
 Usage:
     uv run tests/lighter_wss_latency.py            # market_id 0, 15s
@@ -138,6 +139,29 @@ def run_probe(LighterMarketDataWss, market_id, duration_s):
             }, int(time.time() * 1000))
 
     remaining = max(0.0, duration_s - (time.time() * 1000.0 - started_ms) / 1000.0)
+
+    # Also force a reconnect and verify the reconnect path fires and data resumes
+    # (order_book + ticker subscriptions replayed) on the new socket.
+    reconnect_triggered = threading.Event()
+    original_reconnect_start = wss._on_reconnect_start
+
+    def reconnect_spy():
+        reconnect_triggered.set()
+        return original_reconnect_start()
+
+    wss._on_reconnect_start = reconnect_spy
+
+    reconnect_at = max(2.0, duration_s * 2 / 3)
+    remaining_to_reconnect = max(0.0, reconnect_at - (time.time() * 1000.0 - started_ms) / 1000.0)
+    time.sleep(min(remaining, remaining_to_reconnect))
+    forced_close_ms = time.time() * 1000.0
+    print("forcing a reconnect (closing the socket) ...")
+    try:
+        wss._ws.close()
+    except Exception:
+        pass
+
+    remaining = max(0.0, duration_s - (time.time() * 1000.0 - started_ms) / 1000.0)
     time.sleep(remaining)
     ended_ms = time.time() * 1000.0
 
@@ -148,7 +172,14 @@ def run_probe(LighterMarketDataWss, market_id, duration_s):
     except Exception:
         pass
 
-    return records, (ended_ms - started_ms) / 1000.0, resync_triggered.is_set()
+    resumed_after_close = any(r['recv_ms'] > forced_close_ms for r in records)
+    return (
+        records,
+        (ended_ms - started_ms) / 1000.0,
+        resync_triggered.is_set(),
+        reconnect_triggered.is_set(),
+        resumed_after_close,
+    )
 
 
 def _percentile(sorted_values, percentile):
@@ -166,7 +197,7 @@ def _validate_book(record):
         assert bids[0] < asks[0], f"crossed book bid={bids[0]} ask={asks[0]}"
 
 
-def report(market_id, records, duration_s, resync_triggered):
+def report(market_id, records, duration_s, resync_triggered, reconnect_triggered, resumed_after_close):
     by_source = defaultdict(list)
     for record in records:
         by_source[record['source']].append(record)
@@ -206,6 +237,10 @@ def report(market_id, records, duration_s, resync_triggered):
 
     if not resync_triggered:
         failures.append("synthetic nonce-gap did not trigger the resubscribe path")
+    if not reconnect_triggered:
+        failures.append("forced socket close did not trigger the reconnect path")
+    if not resumed_after_close:
+        failures.append("no data arrived after the forced reconnect -- subscription restore failed")
 
     latest = records[-1] if records else None
     if latest is not None:
@@ -217,13 +252,15 @@ def report(market_id, records, duration_s, resync_triggered):
 
     print()
     print(f"resubscribe-on-desync path triggered: {resync_triggered}")
+    print(f"reconnect path triggered: {reconnect_triggered}")
+    print(f"data resumed after forced reconnect: {resumed_after_close}")
     print()
     if failures:
         for failure in failures:
             print(f"FAIL: {failure}")
         return failures
 
-    print("PASS: order_book + ticker both streaming, book merged cleanly, latencies sane, resync path verified")
+    print("PASS: order_book + ticker both streaming, book merged cleanly, latencies sane, resync + reconnect verified")
     return failures
 
 
@@ -234,8 +271,12 @@ def main():
     args = parser.parse_args()
 
     LighterMarketDataWss = _load_wss_class()
-    records, duration_s, resync_triggered = run_probe(LighterMarketDataWss, args.market_id, args.duration)
-    failures = report(args.market_id, records, duration_s, resync_triggered)
+    records, duration_s, resync_triggered, reconnect_triggered, resumed_after_close = run_probe(
+        LighterMarketDataWss, args.market_id, args.duration
+    )
+    failures = report(
+        args.market_id, records, duration_s, resync_triggered, reconnect_triggered, resumed_after_close
+    )
     return 1 if failures else 0
 
 

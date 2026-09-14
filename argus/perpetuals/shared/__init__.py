@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from utils3.networking.sockets import Server
 from datetime import datetime, timedelta, UTC
 from argus.perpetuals.shared import _classes as cls, _errors as ers
+from argus.perpetuals.shared._classes import P2OrderBookConvertClass
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
 
 

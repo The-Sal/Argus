@@ -4,6 +4,7 @@ from enum import Enum
 from decimal import Decimal
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from argus.perpetuals.shared import P2OrderBookConvertClass
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple
 
 
@@ -738,7 +739,7 @@ class PerpConciseAnnotation:
 
 # --- websocket market-data wire encoding -------------------------------------
 
-class HLP2ConvertClass:
+class HLP2ConvertClass(P2OrderBookConvertClass):
     """
     Duck-typed adapter for `argus.protocol.transmit_mkt_data_with_protocol_2`,
     mirroring `argus.polymarket._classes.P2ConvertClass`'s `.symbol` /
@@ -748,7 +749,9 @@ class HLP2ConvertClass:
     differs: Hyperliquid has no separate ticker/market-slug, so `coin` (e.g.
     "BTC", or "xyz:AAPL" for a HIP-3 dex asset) is used directly as the symbol.
 
-    Expected input market_data shape (same as P2ConvertClass):
+    Thin subclass of `argus.perpetuals.shared._classes.P2OrderBookConvertClass`,
+    which enforces the expected market_data shape (see that class's docstring):
+
     {
         "BTC": {
             "bids": [{"price": "97500", "size": "1.5"}, ...],
@@ -759,34 +762,12 @@ class HLP2ConvertClass:
     """
 
     def __init__(self, coin: str, market_data: Dict[str, Any], order_book_depth: int):
-        self.coin = coin
-        self.market_data = market_data
-        self.order_book_depth = order_book_depth
-
-    @property
-    def symbol(self) -> str:
-        return self.coin
-
-    def transferable_2(self) -> bytes:
-        data_obj = self.market_data.get(self.coin, {})
-        bids = data_obj.get('bids', [])[:self.order_book_depth]
-        asks = data_obj.get('asks', [])[:self.order_book_depth]
-
-        market_packet = ""
-        for i in range(self.order_book_depth):
-            if i < len(bids):
-                market_packet += f"{bids[i]['price']},{bids[i]['size']},"
-            else:
-                market_packet += "0,0,"
-
-        for i in range(self.order_book_depth):
-            if i < len(asks):
-                market_packet += f"{asks[i]['price']},{asks[i]['size']},"
-            else:
-                market_packet += "0,0,"
-
-        market_packet += f"{self.market_data.get('timestamp', '')},{time.time()}"
-        return market_packet.encode('ascii')
+        super().__init__(
+            symbol=coin,
+            lookup_key=coin,
+            market_data=market_data,
+            order_book_depth=order_book_depth,
+        )
 
 
 if __name__ == "__main__":
