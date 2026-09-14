@@ -493,6 +493,7 @@ resolve_symbol("BTCUSD")  # <1ms cached
 
 Environment variables are primarily managed through:
 - `.env` file for local development
+- `.env.enc.se` encrypted file, decrypted just-in-time by `SecureEnvLoader` (see Security Notes)
 - System environment variables for production
 - Some variables are auto-generated during authentication processes (like `IB_COOKIE`)
 
@@ -501,3 +502,14 @@ Environment variables are primarily managed through:
 - Sensitive variables like private keys, passwords, and API tokens should never be committed to version control
 - Use `.env` files for local development and ensure they're in `.gitignore`
 - For production, use secure environment variable management systems
+
+### Encrypted `.env` Loading via SDist (`SecureEnvLoader`)
+
+Argus supports **just-in-time encrypted environment loading** through [SDist](https://github.com/The-Sal/SDist) and its macOS Secure Enclave backend:
+
+- `SecureEnvLoader` (`EnvLoader` in `_argus_utils.py`, exposed as the singleton `SECURE_ENV_VAR_LOADER`) is the single `load_dotenv()` used throughout the codebase; every module imports its `load_dotenv()` instead of calling `python-dotenv` directly
+- If a `.env.enc.se` file (SDist Secure Enclave format, magic `SDIST.SE`) is present and the `sdist` CLI is on `PATH`, the loader decrypts it to `.env` via `sdist -c -p NONE --args-only -f decrypt-se -a .env.enc.se .env`, loads the result with `python-dotenv`, then immediately deletes the plaintext `.env`. The load only ever happens once per process
+- Decryption requires **macOS with a Secure Enclave** (Darwin). On other platforms, or if `sdist` is not installed, the loader prints a warning and falls back to loading a plaintext `.env` (which must be present in that case)
+- Encrypt an existing `.env` with `sdist -c -p n -f encrypt-se -a .env .env.enc.se ?`, then delete the plaintext. The `.run/Encrypt Env.run.xml` and `.run/Decrypt Env.run.xml` IDE run configurations wrap these commands
+- `ib/set_auth.py` refuses to run while the loader is active (`UnavailableInSecurityContext`) because it would persist the IBKR cookie into a plaintext `.env`
+- `.env.enc.se` is ignored by `.gitignore` (`*.enc.se`): the encryption protects credentials at rest on disk, it does **not** make committing them acceptable — never commit either file
