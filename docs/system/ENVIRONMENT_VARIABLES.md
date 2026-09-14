@@ -15,11 +15,29 @@ This document lists all environment variables used throughout the Argus project 
 - **Required**: Yes (for trading/order placement)
 - **Used in**: `polymarket_direct/_example.py`, `polymarket_direct/_examples/unsub_test.py`
 
+### `POLYMARKET_STREAM_DIR`
+- **Purpose**: Directory to save Polymarket stream data
+- **Default**: `./polymarket_data`
+- **Required**: No
+- **Used in**: `polymarket_direct/_example.py`
+
+### `POLYMARKET_STREAM_PREFIX`
+- **Purpose**: File prefix for Polymarket stream data files
+- **Default**: `polymarket_stream`
+- **Required**: No
+- **Used in**: `polymarket_direct/_example.py`
+
+### `POLYMARKET_STREAM_SAVE_INTERVAL`
+- **Purpose**: Save interval for stream data (seconds)
+- **Default**: `60`
+- **Required**: No
+- **Used in**: `polymarket_direct/_example.py`
+
 ### `POLYMARKET_MAX_SOCKET_RETRIES`
 - **Purpose**: Maximum number of socket connection retries
 - **Default**: `50` (for WebSocket connections in `wss.py`), varies by component
 - **Required**: No
-- **Used in**: `polymarket_direct/wss.py`
+- **Used in**: `polymarket_direct/__init__.py`, `polymarket_direct/wss.py`
 - **Note**: Different components may use different defaults for this variable
 
 ### `POLYMARKET_ORDERBOOK_DEPTH`
@@ -43,40 +61,19 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: Maximum number of ping-pong failures before reconnect
 - **Default**: `3`
 - **Required**: No
-- **Used in**: `polymarket_direct/wss.py`
+- **Used in**: `polymarket_direct/rest.py`
 
 ### `POLYMARKET_DISABLE_PING_PONG_LOGS`
 - **Purpose**: Disable ping-pong logging to reduce noise
 - **Default**: `false`
 - **Required**: No
-- **Used in**: `polymarket_direct/wss.py`
-
-### `POLYMARKET_KEEPALIVE_INTERVAL`
-- **Purpose**: Interval in seconds between CLOB REST keepalive pings
-- **Default**: `5.0`
-- **Required**: No
 - **Used in**: `polymarket_direct/rest.py`
-- **Behavior**: Controls how often the background keepalive thread pings `/ok` to keep the shared httpx connection (TCP+TLS+SOCKS5) warm, so hot-path order POSTs avoid a cold handshake
-
-### `POLYMARKET_KEEPALIVE_DISABLE`
-- **Purpose**: Disable the CLOB REST keepalive thread
-- **Default**: `false`
-- **Required**: No
-- **Used in**: `polymarket_direct/rest.py`
-- **Behavior**: When `true`, the background keepalive pinger is not started and idle connections may need to be re-established on the next order POST
 
 ### `POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL`
 - **Purpose**: Refresh interval for full market cache in seconds
 - **Default**: `300` (5 minutes)
 - **Required**: No
 - **Used in**: `polymarket/__init__.py`
-
-### `POLYMARKET_BUILD_POOL_WORKERS`
-- **Purpose**: Thread pool size for concurrent order building in `place_multiple_orders`
-- **Default**: `10`
-- **Required**: No
-- **Used in**: `polymarket/__init__.py`
-- **Behavior**: Sets the max workers of the persistent `ThreadPoolExecutor` reused across order-building calls, avoiding thread-spawn overhead on each invocation
 
 ### `POLYMARKET_PARANOID`
 - **Purpose**: Enable immediate termination if IP is in known geo-blocked regions
@@ -117,7 +114,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: Enable/disable fuss notifications for user account events
 - **Default**: `false`
 - **Required**: No
-- **Used in**: `polymarket_direct/wss.py`
+- **Used in**: `polymarket_direct/rest.py`
 - **Behavior**: When `true`, triggers fuss notifications and macOS notifications for user account events received via WebSocket
 
 
@@ -127,7 +124,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: For endpoints that do not require authentication, bypass WireProxy to enable maximum performance.
 - **Default**: `false`
 - **Required**: No
-- **Used in**: `polymarket_direct/wss.py`, `polymarket_direct/rest.py`, `polymarket_direct/unsafe_api.py`
+- **Used in**: `polymarket_direct/wss.py`
 - **Behavior**: When `true`, all connections to Polymarket that do not require authenticationa are made directly without routing through WireProxy. These include changes across the rest and websocket layer of the dispatcher. This feature is not stable and its behavior maybe changed with future updates (i.e., supporting more 'usafe' connections. This works in tangent with WIREPROXY integration (and only makes sense if you are geo-blocked from placing orders). It selectively punches holes in the connections.
 - **Warning**: Enabling this in a geo-blocked region will result in connection failures. Use with caution and only if you are sure your IP is not blocked for market data access.
 
@@ -170,20 +167,6 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket_direct/wss.py`
 - **Behavior**: Shards that have been idle (no activity) for this duration enter a grace window before being closed. Uses monotonic time to avoid clock skew issues
 
-### `POLYMARKET_WS_STAT_SAMPLES`
-- **Purpose**: Maximum number of WebSocket frame timestamp samples retained for stats
-- **Default**: `4096`
-- **Required**: No
-- **Used in**: `polymarket_direct/wss.py`
-- **Behavior**: Bounds the per-shard `deque` of frame timestamps used by `print_stats`. Previously an unbounded list that grew for the life of the process and leaked gigabytes under load
-
-### `POLYMARKET_WS_RESTORE_TIMEOUT`
-- **Purpose**: Upper bound in seconds a restore thread waits for the first PONG after a reconnect
-- **Default**: `120`
-- **Required**: No
-- **Used in**: `polymarket_direct/wss.py`
-- **Behavior**: Generous on purpose: PING goes out every 10s and the ping/pong failure detector tears the socket down after 3 missed PONGs (~30s). This timeout only fires for a wedged socket, not a slow one
-
 ### `MAX_SEEN_CORRELATION_IDS`
 - **Purpose**: Maximum number of seen correlation IDs to track for duplicate detection
 - **Default**: `100000`
@@ -198,28 +181,29 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket/_classes.py`
 - **Behavior**: Truncates correlation IDs to this length before storage
 
+
+### `POLYMARKET_MEMORY_PRUNING`
+- **Purpose**: Enable aggressive memory pruning using `_mem_slim` to strip attributes from objects
+- **Default**: `false`
+- **Required**: No
+- **Used in**: `polymarket/__init__.py`
+- **Behavior**: When `true`, the `_mem_slim` method is called on all `PolymarketEvent` objects to aggresively **REMOVE** attributes to save RAM
+- **Warning**: This is a very aggressive memory optimization that will mean an incomplete API response if you request for the full object. It is destructive operations that strip attrs! 
+
+
+### `POLYMARKET_PROTECTED_ATTRIBUTES`
+- **Purpose**: Comma-separated list of attribute names to preserve when slimming PolymarketEvent objects for memory optimization
+- **Default**: `ticker,title,resolutionSource,slug,clobTokenIds,question,outcomes,eventStartTime,startDate,startDateIso,endDate,endDateIso`
+- **Required**: No
+- **Used in**: `polymarket/_mem_slim.py`
+- **Behavior**: Controls which fields are retained when creating memory-slimmed versions of market data events. Removing attributes from this list will cause them to be stripped from cached market data, reducing memory usage but potentially breaking dependent code
+
 ### `POLYMARKET_DISPATCHER_LOG_FILE`
 - **Purpose**: File path for the Polymarket dispatcher log file
 - **Default**: `~/.argus/polymarket_dispatcher.log`
 - **Required**: No
 - **Used in**: `polymarket/__init__.py`
 - **Behavior**: Controls where the Polymarket dispatcher writes its log output
-
-### `POLYMARKET_DISPATCHER_PYTHON_STATE_FILE`
-- **Purpose**: File path for the dispatcher's persisted Python state (pickled asset-id/ticker/market caches)
-- **Default**: `~/.argus/polymarket_dispatcher_state.pkl`
-- **Required**: No
-- **Used in**: `polymarket/__init__.py`
-- **Behavior**: On startup, if the file exists and is newer than `POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL`, the dispatcher loads its routing state from it instead of rebuilding the mapping from APDB
-
-## Argus Polymarket Database (APDB)
-
-### `APDB_BIND_ADDRESS`
-- **Purpose**: Unix domain socket path the APDB server binds to and the dispatcher/satellite system connect to
-- **Default**: `/tmp/argus_polymarket_db.sock`
-- **Required**: No
-- **Used in**: `polymarket/apdb_client.py`, `satellite_sys/__init__.py` (also read by the `argus-polymarket-db` Rust server as its bind address — a single source of truth for both processes)
-- **Behavior**: Must be consistent across the APDB process and every Argus client connecting to it; the dispatcher raises a startup `RuntimeError` if APDB cannot be reached at this path
 
 
 ## Interactive Brokers Integration

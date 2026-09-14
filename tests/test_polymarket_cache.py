@@ -144,6 +144,7 @@ class TestClient:
 
 
 def run_test():
+    os.environ['POLYMARKET_MEMORY_PRUNING'] = 'false'
     os.environ['POLYMARKET_NO_SAFETY_CHECK'] = 'true'
 
     dispatcher = PolymarketDispatcher(port=12345, host='localhost')
