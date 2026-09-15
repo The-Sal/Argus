@@ -11,7 +11,7 @@ from utils3.networking.sockets import Server
 from datetime import datetime, timedelta, UTC
 from typing import Callable, Any, Generic, TypeVar
 from argus.perpetuals.shared import _classes as cls, _errors as ers
-from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage
+from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage, NewFundingRate
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
 
 

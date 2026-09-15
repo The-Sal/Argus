@@ -27,7 +27,7 @@ from argus import __version__ as argus_version
 from argus.perpetuals.lighter import _classes as _cls
 from argus.perpetuals.lighter.rest import LighterRest
 from argus.protocol import transmit_mkt_data_with_protocol_2
-from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, OutboundMessage
+from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate
 
 
 __version__ = [1, 0, 0, 0]
@@ -204,21 +204,10 @@ class LighterDispatcher(BaseDispatcher):
                 if not clients_to_send:
                     continue
 
-                # funding_rate is Optional[Decimal] -- json.dumps (used by
-                # OutboundMessage.convert_to_protocol_1) can't serialize Decimal, so
-                # stringify here the same way Perpetual.to_dict() does.
-                funding_rate = perp.funding_rate
-                payload = {
-                    "symbol": perp.name,
-                    "funding_rate": str(funding_rate) if funding_rate is not None else None
-                }
-
-                message = OutboundMessage(
-                    action="funding_rate_update",
-                    data=payload,
-                )
-
-                p1_bytes = message.convert_to_protocol_1()
+                p1_bytes = NewFundingRate(
+                    perp_name=perp.name,
+                    funding_rate=perp.funding_rate
+                ).convert_to_protocol_1()
             except Exception as e:
                 pi.prt(f"Unexpected error building perpetual info payload for symbol {perp.name}: {e}")
                 traceback.print_exc()

@@ -3,6 +3,7 @@ import time
 import zlib
 import base64
 from argus import protocol
+from decimal import Decimal
 from collections.abc import Mapping
 from typing import Any, Dict, Optional
 from argus.perpetuals.shared import _errors as ers
@@ -164,3 +165,21 @@ class P2OrderBookConvertClass:
 
         market_packet += f"{self.market_data.get('timestamp', '')},{time.time()}"
         return market_packet.encode('ascii')
+
+class NewFundingRate:
+    """
+    A funding rate for a perpetual that will be sent unsolicited to the client under
+    the action "funding_rate_update". Can directly be converted to bytes through the
+    OutboundMessage.convert_to_protocol_1() method. Everyone using _distribute_refreshed_perpetuals
+    should use this class. Downstream SDK depends on this structure.
+    """
+    def __init__(self, perp_name: str, funding_rate: Decimal | None):
+        self.perp_name = perp_name
+        self.funding_rate = str(funding_rate) if funding_rate is not None else None
+
+    def convert_to_protocol_1(self):
+        payload = {
+            "coin": self.perp_name,
+            "funding_rate": self.funding_rate
+        }
+        return OutboundMessage(action="funding_rate_update", data=payload).convert_to_protocol_1()
