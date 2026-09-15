@@ -20,13 +20,14 @@ stays on `market_id` throughout.
 """
 import os
 import traceback
+from utils3 import runAsThread
 from argus.perpetuals.lighter import wss
 from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
 from argus.perpetuals.lighter import _classes as _cls
 from argus.perpetuals.lighter.rest import LighterRest
 from argus.protocol import transmit_mkt_data_with_protocol_2
-from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
+from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, OutboundMessage
 
 
 __version__ = [1, 0, 0, 0]
@@ -74,10 +75,13 @@ class LighterDispatcher(BaseDispatcher):
             port=port,
             routing_table=routing_table,
             pi=pi,
-            common_rest=rest_client
+            common_rest=rest_client,
+            configurations={
+                'distribute_refreshed_perps': True
+            }
         )
         self.rest = rest_client
-        self._all_perps = self.rest.get_all_perpetuals()
+        self._all_perps = LockedState(self.rest.get_all_perpetuals())
         self._refresh_perpetuals()
 
         self._orderbook_depth = int(os.environ.get("LIGHTER_ORDERBOOK_DEPTH", 10))
@@ -100,7 +104,7 @@ class LighterDispatcher(BaseDispatcher):
         to the wire-level `market_id` here, at the boundary -- see module docstring.
         :param channel_id: The symbol whose last subscriber just went away.
         """
-        perp = self._all_perps.get(channel_id)
+        perp = self._all_perps.value.get(channel_id)
         if perp is None:
             pi.prt(f"subscription_expired: unknown symbol '{channel_id}', cannot unsubscribe upstream")
             return
@@ -117,10 +121,11 @@ class LighterDispatcher(BaseDispatcher):
         subscribed = []
         failed = []
         for symbol in args.args or []:
+            perp = self._all_perps.value.get(symbol)
+            if perp is None:
+                raise _shared_ers.InvalidCoinError(f"Symbol {symbol} is not a valid perpetual on Lighter")
+
             try:
-                perp = self._all_perps.get(symbol)
-                if perp is None:
-                    raise ValueError(f"Unknown symbol: {symbol}")
                 self.add_socket_to_subscription(sock, symbol)
                 self.market_data.subscribe_to_market(perp.market_id)
                 subscribed.append(symbol)
@@ -165,7 +170,7 @@ class LighterDispatcher(BaseDispatcher):
             return
         market_id = market_id_keys[0]
 
-        perp = next((p for p in self._all_perps if p.market_id == market_id), None)
+        perp = next((p for p in self._all_perps.value if p.market_id == market_id), None)
         if perp is None:
             pi.prt(f"Order book update for unknown market_id {market_id}; no symbol mapping, dropping.")
             return
@@ -196,6 +201,51 @@ class LighterDispatcher(BaseDispatcher):
                 self.remove_socket(sock)
                 traceback.print_exc()
 
+    @runAsThread
+    def _distribute_refreshed_perpetuals(self):
+        """
+        Distributes the refreshed perpetuals currently subscribed to their respective clients as a P1 message.
+        Mirrors HyperLiquidDispatcher._distribute_refreshed_perpetuals -- see that method's docstring.
+        :return:
+        """
+        for perp in self._all_perps.value:
+            try:
+                clients_to_send = list(self.market_data_routing_table.get(perp.name, []))
+                if not clients_to_send:
+                    continue
+
+                # funding_rate is Optional[Decimal] -- json.dumps (used by
+                # OutboundMessage.convert_to_protocol_1) can't serialize Decimal, so
+                # stringify here the same way Perpetual.to_dict() does.
+                funding_rate = perp.funding_rate
+                payload = {
+                    "symbol": perp.name,
+                    "funding_rate": str(funding_rate) if funding_rate is not None else None
+                }
+
+                message = OutboundMessage(
+                    action="market_info",
+                    data=payload,
+                )
+
+                p1_bytes = message.convert_to_protocol_1()
+            except Exception as e:
+                pi.prt(f"Unexpected error building perpetual info payload for symbol {perp.name}: {e}")
+                traceback.print_exc()
+                continue
+
+            for sock in clients_to_send:
+                try:
+                    with self.send_lock_for(sock):
+                        sock.sendall(p1_bytes)
+                except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                    self.remove_socket(sock)
+                    pi.prt(f"Removed dead socket while sending perpetual info for symbol {perp.name}: {e}")
+                except Exception as e:
+                    pi.prt(f"Unexpected error sending perpetual info for symbol {perp.name} to socket: {e}")
+                    self.remove_socket(sock)
+                    traceback.print_exc()
+
     ########################################
     # Dispatcher Functions
     ########################################
@@ -223,7 +273,7 @@ class LighterDispatcher(BaseDispatcher):
         """
         DEFAULT_VALUE = 10
 
-        perpetuals = self._all_perps.perpetuals
+        perpetuals = self._all_perps.value.perpetuals
 
         offset = args.args.get('offset', 0)
         limit = args.args.get('limit', min(DEFAULT_VALUE, len(perpetuals)))
@@ -246,7 +296,7 @@ class LighterDispatcher(BaseDispatcher):
 
         DEFAULT_VALUE = 20
 
-        funding_rate_sorted = self._all_perps.sorted_by_funding_rate()
+        funding_rate_sorted = self._all_perps.value.sorted_by_funding_rate()
         offset = args.args.get('offset', 0)
         limit = args.args.get('limit', min(DEFAULT_VALUE, len(funding_rate_sorted)))
         if limit > DEFAULT_VALUE:
@@ -277,9 +327,9 @@ class LighterDispatcher(BaseDispatcher):
             raise _shared_ers.MissingArgumentError("Missing argument: 'symbol' or 'market_id'")
 
         if symbol is not None:
-            perp = self._all_perps.get(symbol)
+            perp = self._all_perps.value.get(symbol)
         else:
-            perp = next((p for p in self._all_perps if p.market_id == market_id), None)
+            perp = next((p for p in self._all_perps.value if p.market_id == market_id), None)
 
         return {'perpetual': perp.to_dict() if perp is not None else None}
 

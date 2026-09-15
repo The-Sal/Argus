@@ -11,6 +11,9 @@ Usage:
 Protocol:
     - P1 (control): ~NNNN|<json-payload>
     Every Lighter request MUST include a "correlation_id".
+    Once a client has subscribed, the same socket also carries unsolicited P1
+    system pushes (e.g. the hourly refreshed funding rate, action "market_info";
+    see LighterDispatcher._distribute_refreshed_perpetuals).
     - P2 (async market-data push): ~<packet-length><symbol-length>|<symbol><csv-data>L
     Pushed unsolicited once a client has `subscribe`d to one or more symbols (see
     LighterDispatcher._order_book_update_callback / argus/perpetuals/lighter/wss.py).
@@ -24,6 +27,7 @@ lookup rather than a multi-call annotation/category assembly.
 """
 import os
 import sys
+import json
 import time
 import uuid
 import socket
@@ -158,6 +162,61 @@ def format_orderbook(parsed_data: Dict[str, Any], depth: int = 5) -> str:
 
 
 # =============================================================================
+# Mixed P1/P2 Stream Splitting
+# =============================================================================
+#
+# A subscribed socket carries both P2 order book frames and P1 system pushes
+# (e.g. funding-rate updates) interleaved. The two share a '~NNNN' length header
+# but differ after it, so they are told apart by structure: P2's first '|' sits
+# at byte 9 (after a 4-digit symbol length) and the frame ends with 'L', while
+# P1 is '~NNNN|' followed directly by its JSON payload. Mirrors the extraction
+# helpers in tests/test_poly_dispatcher_order_lifecycle.py.
+
+def extract_p1_p2_frames(raw: bytes) -> Tuple[List[Tuple[str, bytes]], bytes]:
+    """
+    Split a mixed byte stream into complete frames. Returns (frames, leftover),
+    where each frame is ('p1', raw_frame_bytes) or ('p2', raw_frame_bytes), and
+    `leftover` holds an incomplete trailing frame to prepend on the next call.
+    """
+    frames: List[Tuple[str, bytes]] = []
+    while raw and raw[0:1] == b'~':
+        if len(raw) < 5:
+            break  # need ~NNNN before any length can be read
+
+        pipe_idx = raw.find(b'|')
+        if pipe_idx == -1:
+            break  # incomplete frame
+
+        # P2 probe: first pipe at byte 9 (after the 4-digit symbol length) and
+        # a trailing 'L'. If the probe fails, fall through to the P1 layout.
+        if pipe_idx == 9:
+            try:
+                p2_packet_len = int(raw[1:5].decode('ascii'))
+                p2_total = 5 + p2_packet_len
+                if len(raw) >= p2_total and raw[p2_total - 1:p2_total] == b'L':
+                    frames.append(('p2', raw[:p2_total]))
+                    raw = raw[p2_total:]
+                    continue
+                if len(raw) < p2_total:
+                    break  # incomplete P2 frame
+            except (ValueError, UnicodeDecodeError):
+                pass
+
+        # P1 frame: ~<length>|<payload>
+        try:
+            payload_len = int(raw[1:pipe_idx].decode('ascii'))
+        except (ValueError, UnicodeDecodeError):
+            break
+        frame_len = pipe_idx + 1 + payload_len
+        if len(raw) < frame_len:
+            break  # incomplete P1 frame
+        frames.append(('p1', raw[:frame_len]))
+        raw = raw[frame_len:]
+
+    return frames, raw
+
+
+# =============================================================================
 # Client
 # =============================================================================
 
@@ -169,6 +228,7 @@ class LighterArgusClient:
         self.port = port
         self.socket: Optional[socket.socket] = None
         self.p2_parser = P2PacketParser()
+        self._recv_buffer = b''
 
     def connect(self) -> None:
         try:
@@ -184,32 +244,30 @@ class LighterArgusClient:
             self.socket = None
 
     def _recv_framed_payload(self) -> bytes:
-        """Read one full P1 packet off the socket and return its payload bytes."""
+        """
+        Read one full P1 packet off the socket and return its payload bytes.
+        Interleaved P2 (order book) frames are skipped; an incomplete trailing
+        frame, as well as any complete frames after the returned one, are kept
+        in self._recv_buffer for the next read.
+        """
         if not self.socket:
             raise ConnectionError("Not connected to server")
 
-        buf = b''
-        # Header is fixed-width: '~' + 4-digit length + '|' = 6 bytes.
-        while len(buf) < 6:
-            chunk = self.socket.recv(4096)
-            if not chunk:
-                raise ConnectionError("Server closed connection before responding.")
-            buf += chunk
+        while True:
+            frames, self._recv_buffer = extract_p1_p2_frames(self._recv_buffer)
+            for i, (frame_type, frame_bytes) in enumerate(frames):
+                if frame_type == 'p1':
+                    later_frames = b''.join(frame for _, frame in frames[i + 1:])
+                    self._recv_buffer = later_frames + self._recv_buffer
+                    return protocol.decode_packet(frame_bytes)
 
-        declared_len = int(buf[1:5].decode('ascii'))
-        total_needed = 6 + declared_len
-        while len(buf) < total_needed:
             chunk = self.socket.recv(131072)
             if not chunk:
                 raise ConnectionError("Server closed connection before responding.")
-            buf += chunk
-
-        return protocol.decode_packet(buf[:total_needed])
+            self._recv_buffer += chunk
 
     def send_request(self, action: str, data: Any = None, timeout: int = 30) -> Tuple[dict, float]:
         """Send a P1 request (with a fresh correlation_id) and return (response, round-trip time)."""
-        import json
-
         if data is None:
             data = {}
 
@@ -297,13 +355,17 @@ class LighterArgusClient:
             raise Exception(f"unsubscribe failed: {resp['error']}")
         return dict(resp.get('data') or {}), dt
 
-    def receive_p2_packets(self, timeout: float = 0.1) -> List[Dict[str, Any]]:
+    def receive_packets(self, timeout: float = 0.1) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Drain whatever P2 (order book push) packets are currently sitting on the
-        socket, without blocking. `timeout` is accepted for API parity with
-        hyper_cli.py's client but unused here for the same reason: a non-blocking
-        recv() either returns available bytes immediately or raises BlockingIOError,
-        so the drain is inherently instantaneous.
+        Drain whatever packets are currently sitting on the socket, without
+        blocking, and return them split by type: (P2 order book packets,
+        P1 system pushes -- e.g. updated funding rates). Incomplete trailing
+        frames stay buffered for the next call.
+
+        `timeout` is accepted for API parity with hyper_cli.py's client but unused
+        here for the same reason: a non-blocking recv() either returns available
+        bytes immediately or raises BlockingIOError, so the drain is inherently
+        instantaneous.
         """
         if not self.socket:
             raise ConnectionError("Not connected to server")
@@ -323,9 +385,28 @@ class LighterArgusClient:
         finally:
             self.socket.setblocking(True)
 
-        if not data:
-            return []
-        return self.p2_parser.parse_multiple(data)
+        frames, self._recv_buffer = extract_p1_p2_frames(self._recv_buffer + data)
+
+        p2_packets: List[Dict[str, Any]] = []
+        pushes: List[Dict[str, Any]] = []
+        for frame_type, frame_bytes in frames:
+            if frame_type == 'p2':
+                p2_packets.append(self.p2_parser.parse(frame_bytes))
+                continue
+            try:
+                payload = protocol.decode_packet(frame_bytes)
+                push = json.loads(payload.decode('utf-8'))
+                pushes.append(protocol.decompress_p1_response(push))
+            except (ValueError, UnicodeDecodeError):
+                continue  # unparseable push -- skip rather than kill the stream
+
+        return p2_packets, pushes
+
+    def receive_p2_packets(self, timeout: float = 0.1) -> List[Dict[str, Any]]:
+        """Return only the P2 (order book push) packets from receive_packets(),
+        discarding any P1 system pushes. Kept for the gauntlet's stream checks."""
+        packets, _ = self.receive_packets(timeout)
+        return packets
 
 
 # =============================================================================
@@ -648,18 +729,33 @@ def format_perpetuals(perps: List[dict], limit: Optional[int] = None) -> str:
     return "\n".join(output)
 
 
+def format_system_push(push: Dict[str, Any]) -> str:
+    """
+    Format one P1 system push (e.g. a funding-rate update sent by
+    _distribute_refreshed_perpetuals) for display in sub mode.
+    """
+    action = push.get('action', 'unknown')
+    data = push.get('data')
+    if isinstance(data, dict) and 'funding_rate' in data:
+        subject = data.get('coin') or data.get('symbol') or '?'
+        return f"[push] {action}: {subject} funding_rate={data.get('funding_rate')}"
+    return f"[push] {action}: {data}"
+
+
 # =============================================================================
 # Live market-data streaming (P2)
 # =============================================================================
 
 def subscribe_market_data_mode(client: LighterArgusClient, symbol: str):
     """
-    Subscribe to a symbol's order book and display live updates + latency.
+    Subscribe to a symbol's order book and display live updates + latency, along
+    with any P1 system pushes the dispatcher emits (e.g. updated funding rates).
     Press Ctrl+C to stop, unsubscribe, and show aggregate statistics.
     Mirrors tests/hyper_cli.py's subscribe_market_data_mode.
     """
     latencies: List[float] = []
     packet_count = 0
+    push_count = 0
     start_time = time.time()
 
     print(f"\n📡 Subscribing to order book: {symbol}")
@@ -674,12 +770,18 @@ def subscribe_market_data_mode(client: LighterArgusClient, symbol: str):
 
     print(f"\n📊 Monitoring order book... Press Ctrl+C to stop and view statistics.")
     print(f"   Orderbook depth: {ORDERBOOK_DEPTH} levels")
+    print(f"   System pushes (e.g. funding rate updates) print as [push] lines")
     print(f"\n{'PACKET':<8} {'LATENCY(ms)':<14} {'BEST BID':<14} {'BEST ASK':<14}")
     print("-" * 60)
 
     try:
         while True:
-            packets = client.receive_p2_packets(timeout=0.1)
+            packets, pushes = client.receive_packets(timeout=0.1)
+
+            for push in pushes:
+                push_count += 1
+                print(format_system_push(push))
+
             for packet_data in packets:
                 packet_count += 1
                 receive_time = time.time()
@@ -715,6 +817,7 @@ def subscribe_market_data_mode(client: LighterArgusClient, symbol: str):
         print(f"\n📈 Session Summary:")
         print(f"  Duration: {duration:.1f} seconds")
         print(f"  Total packets: {packet_count}")
+        print(f"  System pushes: {push_count}")
         if duration > 0:
             print(f"  Packets/sec: {packet_count/duration:.1f}")
         if latencies:
@@ -741,7 +844,7 @@ def print_help():
     print("  funding [offset] [limit]   - Show markets by funding rate, highest first (default limit: 20)")
     print("  info <symbol>              - Show market metadata + live data for one symbol")
     print("  history <market_id> [days] - Show funding history for a market over the last N days (default: 1)")
-    print("  sub <symbol>               - Subscribe to live order book updates and stream them (Ctrl+C to stop)")
+    print("  sub <symbol>               - Subscribe to live order book + system pushes (e.g. funding rate updates), Ctrl+C to stop")
     print("  test | gauntlet            - Call every known read-only action and validate the responses")
     print("  clear                      - Clear screen")
     print("  help                       - Show this help")

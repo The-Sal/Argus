@@ -5,6 +5,7 @@ Track the PR for hyperliquid [here](https://github.com/The-Sal/Argus/pull/96)
 """
 import os
 import traceback
+from utils3 import runAsThread
 from argus.perpetuals.hyper import wss
 from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
@@ -12,7 +13,8 @@ from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
 from argus.perpetuals.hyper.rest import HyperLiquidRest
 from argus.protocol import transmit_mkt_data_with_protocol_2
-from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface
+from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, OutboundMessage
+
 
 
 __version__ = [1, 0, 0, 0]
@@ -65,7 +67,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
       "data": { /* response data or null */ },
       "error": "<error message or null>",
       "compressed": <bool>, // true when data is auto-compressed (see polymarket docs for details)
-      "correlation_id": "<uuid>" // None if the request errors before packet was processed, or a pushed response
+      "correlation_id": "<uuid>" // None if the request errors before a packet was processed, or a pushed response
     }
 
     """
@@ -101,13 +103,18 @@ class HyperLiquidDispatcher(BaseDispatcher):
             port=port,
             routing_table=routing_table,
             pi=pi,
-            common_rest=rest_client
+            common_rest=rest_client,
+            configurations={
+                'distribute_refreshed_perps': True
+            }
         )
         self.rest = rest_client
-        self._all_perps = self.rest.get_all_perpetuals()
+        self._all_perps = LockedState(self.rest.get_all_perpetuals())
         self._refresh_perpetuals()
 
         self._orderbook_depth = int(os.environ.get("HYPERLIQUID_ORDERBOOK_DEPTH", 10))
+        if self._orderbook_depth > 20:
+            raise ValueError("HYPERLIQUID_ORDERBOOK_DEPTH cannot exceed 20")
         self.market_data = wss.HyperLiquidMarketDataWss(
             order_book_update_callback=self._order_book_update_callback
         )
@@ -139,6 +146,18 @@ class HyperLiquidDispatcher(BaseDispatcher):
         subscribed = []
         failed = []
         for coin in args.args or []:
+
+            # check if this coin is value within self.all_perps it should exist
+            maybe_dex = coin.split(":")
+            if len(maybe_dex) == 2:
+                dex = maybe_dex[0]
+            else:
+                dex = ""
+
+            is_valid = self._all_perps.value.get(coin, dex=dex)
+            if is_valid is None:
+                raise _shared_ers.InvalidCoinError(f"Coin {coin} is not a valid perpetual on Hyperliquid")
+
             try:
                 self.add_socket_to_subscription(sock, coin)
                 self.market_data.subscribe_to_coin(coin)
@@ -206,6 +225,49 @@ class HyperLiquidDispatcher(BaseDispatcher):
                 self.remove_socket(sock)
                 traceback.print_exc()
 
+    @runAsThread
+    def _distribute_refreshed_perpetuals(self):
+        """
+        Distributes the refreshed perpetuals currently subscribed to their respective clients as a P1 message
+        :return:
+        """
+        for perp in self._all_perps.value:
+            try:
+                clients_to_send = list(self.market_data_routing_table.get(perp.name, []))
+                if not clients_to_send:
+                    continue
+
+                # funding_rate is Decimal -- json.dumps (used by
+                # OutboundMessage.convert_to_protocol_1) can't serialize Decimal, so
+                # stringify here the same way Perpetual.to_dict() does.
+                payload = {
+                    "coin": perp.name,
+                    "funding_rate": str(perp.funding_rate)
+                }
+
+                message = OutboundMessage(
+                    action="perpetual_info",
+                    data=payload,
+                )
+
+                p1_bytes = message.convert_to_protocol_1()
+            except Exception as e:
+                pi.prt(f"Unexpected error building perpetual info payload for coin {perp.name}: {e}")
+                traceback.print_exc()
+                continue
+
+            for sock in clients_to_send:
+                try:
+                    with self.send_lock_for(sock):
+                        sock.sendall(p1_bytes)
+                except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                    self.remove_socket(sock)
+                    pi.prt(f"Removed dead socket while sending perpetual info for coin {perp.name}: {e}")
+                except Exception as e:
+                    pi.prt(f"Unexpected error sending perpetual info for coin {perp.name} to socket: {e}")
+                    self.remove_socket(sock)
+                    traceback.print_exc()
+
     ########################################
     # Dispatcher Functions
     ########################################
@@ -262,7 +324,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
 
         DEFAULT_VALUE = 20
 
-        funding_rate_sorted = self._all_perps.sorted_by_funding_rate()
+        funding_rate_sorted = self._all_perps.value.sorted_by_funding_rate()
         offset = args.args.get('offset', 0)
         limit = args.args.get('limit', min(DEFAULT_VALUE, len(funding_rate_sorted)))
         if limit > DEFAULT_VALUE:

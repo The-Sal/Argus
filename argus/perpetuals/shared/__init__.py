@@ -6,12 +6,12 @@ import threading
 import traceback
 from argus import protocol
 from utils3 import runAsThread
-from typing import Callable, Any
 from collections.abc import Mapping
 from utils3.networking.sockets import Server
 from datetime import datetime, timedelta, UTC
+from typing import Callable, Any, Generic, TypeVar
 from argus.perpetuals.shared import _classes as cls, _errors as ers
-from argus.perpetuals.shared._classes import P2OrderBookConvertClass
+from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
 
 
@@ -45,23 +45,32 @@ class PrintInterface:
 
 _p = PrintInterface("BaseDispatcher")
 
+T = TypeVar("T")
 
-class LockedState:
+
+class LockedState(Generic[T]):
     """
-    `value` must be an immutable, non-referential type (bool, int, float, str,
-    None, or a tuple of such) -- nothing that can be mutated through a
-    reference (list, dict, set, or any other mutable object). __copy__ /
-    __deepcopy__ only shallow-copy `value`, so a mutable value would let
-    callers of BaseDispatcher.state mutate this object's live internal state
-    through the "copy" they were handed.
+    A lock-guarded, atomically-swappable reference. The lock only protects
+    reassigning/reading `value` itself -- it does not make `value` immutable.
+
+    For a truly immutable `value` (bool, int, float, str, None, or a tuple of
+    such -- nothing mutable through a reference like a list, dict, or set),
+    this is deep-copy-safe: __copy__ / __deepcopy__ only shallow-copy `value`,
+    so callers of BaseDispatcher.state can't mutate this object's live
+    internal state through the "copy" they were handed.
+
+    For a referential `value` (e.g. PerpetualsIndex), that guarantee does not
+    hold: `.value` returns the live object on every access (not a copy), so
+    callers must not mutate it in place -- treat it as read-only after
+    construction. Replace it wholesale via the `value` setter instead.
     """
 
-    def __init__(self, value):
+    def __init__(self, value: T):
         self._value = value
         self.lock = threading.Lock()
 
     @property
-    def value(self):
+    def value(self) -> T:
         """
         Do not use inside context managers.
         :return:
@@ -70,7 +79,7 @@ class LockedState:
             return self._value
 
     @value.setter
-    def value(self, value):
+    def value(self, value: T):
         with self.lock:
             self._value = value
 
@@ -145,6 +154,16 @@ class BaseDispatcher(Introspective, RoutingHelper):
     Utilities can also set the system into a terminal state (e.g., disable routing) if they fail to complete after a
     certain number of retries. This is to ensure the dispatcher is not left providing bad data to clients.
 
+    That retry/terminal-state handling is only for transient runtime failures (e.g. a REST call failing). It is
+    deliberately NOT applied to argus.perpetuals.shared._errors.FatalDispatcherError (and its subclasses, e.g.
+    AbstractMethodNotImplementedError) -- those mean the running code itself is misconfigured or incomplete, such
+    as a subclass enabling a utility (e.g. distribute_refreshed_perps) without overriding the abstract method it
+    depends on (_distribute_refreshed_perpetuals). Utilities specifically exempt FatalDispatcherError from their
+    retry loops: they log it loudly via pi.throw_fuss and then let it propagate uncaught, rather than retrying or
+    silently disabling routing around it, because retrying would only mask the bug as a flaky failure. Any future
+    "this should be impossible, the code is wrong if we get here" error added to a utility should subclass
+    FatalDispatcherError so it gets the same treatment.
+
     The state of the base class is managed by self._state with each value being of type LockedState. Subclasses
     should not modify self._state directly. Internally, they are all thread-safe. You can access the state of the
     base dispatcher, however, through the self.state property. This property returns a copy of the state. Note
@@ -164,7 +183,8 @@ class BaseDispatcher(Introspective, RoutingHelper):
                  routing_table: Mapping[str, Callable[[ArgsObject], Any]],
                  pi: "PrintInterface" = _p,
                  common_rest: BaseDispatcherCompatibleRest = None,
-                 configurations: dict = None):
+                 configurations: dict = None,
+                 interactive_functions: dict = None):
         super().__init__()
         RoutingHelper.__init__(self)
         self._dispatcher_server = Server(
@@ -188,6 +208,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
         self._disable_routing_on_prep_cache_failure = configurations.get("disable_routing_on_prep_cache_failure", True)
         self._retry_backoff_base_rest = configurations.get("retry_backoff_base_rest", 3.0)
         self._retry_backoff_max_rest = configurations.get("retry_backoff_max_rest", 30.0)
+        self._distribute_refreshed_perps = configurations.get("distribute_refreshed_perps", False)
 
     ########################################
     # Threads and utilities
@@ -195,9 +216,19 @@ class BaseDispatcher(Introspective, RoutingHelper):
     @runAsThread
     def _refresh_perpetuals(self):
         """
-        Every UTC hour, refresh the perpetual list.
+        Every UTC hour, refresh the perpetual list. This function set's the value of
+        self._all_perps to LockedState(self.common_rest.get_all_perpetuals()) you must write users of all_perps
+        to use LockedState.value to access the underlying value.
         :return:
         """
+
+        try:
+            # noinspection PyUnresolvedReferences
+            if self._all_perps is not None and not isinstance(self._all_perps, LockedState):
+                raise TypeError("self._all_perps must be a LockedState. Update source code to use LockedState.")
+        except AttributeError:  # self._all_perps is not set
+            pass
+
         if self.common_rest is None:
             raise RuntimeError("Cannot refresh perpetuals: self.common_rest is None. "
                                "Subclasses must set self.common_rest to a BaseDispatcherCompatibleRest "
@@ -214,10 +245,26 @@ class BaseDispatcher(Introspective, RoutingHelper):
                     refreshed = False
                     for i in range(self._max_retry_range_rest):
                         try:
-                            self._all_perps = self.common_rest.get_all_perpetuals()
+                            self._all_perps = LockedState(self.common_rest.get_all_perpetuals())
                             self._state["enable_routing"].value = True
                             refreshed = True
+                            if self._distribute_refreshed_perps:
+                                self._distribute_refreshed_perpetuals()
                             break
+                        except ers.FatalDispatcherError as e:
+                            # Not a transient refresh failure -- the perpetual list above
+                            # already refreshed fine. This means the running code is
+                            # misconfigured (e.g. distribute_refreshed_perps enabled on a
+                            # subclass that never overrode the distribute method), so retrying
+                            # or disabling routing around it would only hide the real bug.
+                            # Surface it loudly and let it propagate instead of swallowing it.
+                            self.pi.throw_fuss(
+                                f"Fatal dispatcher error during perpetual refresh: {e}. "
+                                f"This is a code/configuration bug, not a transient failure -- not retrying.",
+                                title="Fatal Dispatcher Error",
+                                notify=True,
+                            )
+                            raise
                         except Exception as e:
                             msg = f"Failed to refresh perpetual list. Err={e}. Retrying ({i + 1}/{self._max_retry_range_rest})..."
                             if self._disable_routing_on_prep_cache_failure:
@@ -242,7 +289,9 @@ class BaseDispatcher(Introspective, RoutingHelper):
 
                     if not refreshed:
                         self._state["enable_routing"].value = False
-                        raise RuntimeError("Failed to refresh perpetual list after {} retries. Disabling routing.".format(self._max_retry_range_rest))
+                        raise RuntimeError(
+                            "Failed to refresh perpetual list after {} retries. Disabling routing.".format(
+                                self._max_retry_range_rest))
 
                     # Without this, `datetime.now(UTC) >= next_utc_hour_in` stays true for the
                     # rest of the hour, so the inner loop would immediately refresh again (and
@@ -251,6 +300,21 @@ class BaseDispatcher(Introspective, RoutingHelper):
                     break
 
                 time.sleep(0.01)
+
+    def _distribute_refreshed_perpetuals(self):
+        """
+        After `_refresh_perpetuals` has refreshed the perpetual list (and thereby the funding rates),
+        send the new funding rates to all clients who've subscribed to that perpetual. This fn is opt-in
+        just like `_refresh_perpetuals`. Because each dispatcher's perpetual has a different shape, this function
+        needs to be overridden by the subclass.
+
+        Raises ers.AbstractMethodNotImplementedError if not overridden. See the BaseDispatcher class docstring
+        ("terminal state" section) for why this is a FatalDispatcherError rather than a bare NotImplementedError:
+        _refresh_perpetuals deliberately does not retry or disable routing around it, it logs via pi.throw_fuss
+        and re-raises, since a missing override is a code bug, not a transient failure.
+        :return:
+        """
+        raise ers.AbstractMethodNotImplementedError("Subclasses must implement _distribute_refreshed_perpetuals()")
 
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks
@@ -338,7 +402,8 @@ class BaseDispatcher(Introspective, RoutingHelper):
         if func is None:
             raise ers.InvalidFunctionError(f"Function {function} is not valid")
 
-        _p.prt("[{}] Routing: {} with args: {}".format(datetime.now().strftime("%H:%M:%S:%f %d-%m-%Y"), function, args.args))
+        _p.prt("[{}] Routing: {} with args: {}".format(datetime.now().strftime("%H:%M:%S:%f %d-%m-%Y"), function,
+                                                       args.args))
 
         # noinspection all
         response = func(args)
@@ -348,7 +413,13 @@ class BaseDispatcher(Introspective, RoutingHelper):
     # PUBLIC FUNCTIONS
     ########################################
     def interactive_mode(self):
-        self._interactive_ui({})
+        fns = {}
+        if self._distribute_refreshed_perps:
+            fns["Distribute Refreshed Perpetuals"] = (
+                "Distributes the refreshed perpetuals currently subscribed to their respective clients as a P1 message",
+                self._distribute_refreshed_perpetuals,
+            )
+        self._interactive_ui(fns)
 
     def run_server(self):
         _p.prt("Starting dispatcher server on host: {}, port: {}".format(self._dispatcher_server.host,

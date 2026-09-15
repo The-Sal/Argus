@@ -249,3 +249,10 @@ class HyperLiquidMarketDataWss(MarketDataWssBase):
     # pool isn't itself a WSSBase and has to reach into its shards' store, whereas
     # this class's `MarketDataWssBase._on_message_base` already sets the plain
     # attribute on `self` and it is accurate as-is.
+
+
+if __name__ == '__main__':
+    hl = HyperLiquidMarketDataWss(order_book_update_callback=lambda update: None)
+    hl.run(main_thread=False)
+    hl.subscribe_to_coin("SOL")
+    input("Press Enter to exit...\n")
