@@ -224,7 +224,7 @@ class LighterDispatcher(BaseDispatcher):
                 }
 
                 message = OutboundMessage(
-                    action="perpetual_info",
+                    action="funding_rate_update",
                     data=payload,
                 )
 
