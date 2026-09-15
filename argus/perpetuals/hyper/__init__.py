@@ -154,14 +154,15 @@ class HyperLiquidDispatcher(BaseDispatcher):
             else:
                 dex = ""
 
-            is_valid = self._all_perps.value.get(coin, dex=dex)
-            if is_valid is None:
+            perp = self._all_perps.value.get(coin, dex=dex)
+            if perp is None:
                 raise _shared_ers.InvalidCoinError(f"Coin {coin} is not a valid perpetual on Hyperliquid")
 
             try:
                 self.add_socket_to_subscription(sock, coin)
                 self.market_data.subscribe_to_coin(coin)
                 subscribed.append(coin)
+                self._routine_push_funding_rates_for_client(sock, perp)
             except Exception as e:
                 failed.append(coin)
                 pi.prt(f"Error subscribing to coin {coin}: {e}")
@@ -213,7 +214,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
             )
         )
 
-        self._send_packet_to_clients(clients_to_send, packet, f"order book update for coin {coin}")
+        self._routine_send_packet_to_clients(clients_to_send, packet, f"order book update for coin {coin}")
 
     @runAsThread
     def _distribute_refreshed_perpetuals(self):
@@ -235,7 +236,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
                 traceback.print_exc()
                 continue
 
-            self._send_packet_to_clients(clients_to_send, p1_bytes, f"perpetual info for coin {perp.name}")
+            self._routine_send_packet_to_clients(clients_to_send, p1_bytes, f"perpetual info for coin {perp.name}")
 
     ########################################
     # Dispatcher Functions

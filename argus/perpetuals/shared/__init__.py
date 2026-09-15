@@ -1,6 +1,7 @@
 import copy
 import json
 import time
+import random
 import socket
 import threading
 import traceback
@@ -131,9 +132,11 @@ class BaseDispatcher(Introspective, RoutingHelper):
     etc... to provide the foundation for a trading-enabled dispatcher. The common data shapes for this dispatcher
     can be found in shared/_classes.py & shared/_errors.py
 
-    This base class supports runtime.py's .interactive_mode() [to Introspective._interactive_ui]
-    that defaults to no custom functions. Subclasses should override this function to provide custom functionality.
-    See PolymarketDispatcher for an example of how to do this.
+    This base class supports runtime.py's .interactive_mode() [to Introspective._interactive_ui].
+    Subclasses should NOT override this function to provide custom functionality. Rather provide custom
+    fn's through `interactive_functions` param. This base class change adds its own functionality
+    into the interactive method depending on what configs are enabled. (e.g., if you use _distribute_refreshed_perps,
+    then certain interactive functions are enabled)
 
     The server enforces correlation IDs for all requests. A request without a correlation ID will be rejected;
     The server uses P1 protocol to encode the messages. It uses the same shape as Polymarket's P1 messages with
@@ -153,6 +156,14 @@ class BaseDispatcher(Introspective, RoutingHelper):
     refresh_perpetuals() utility fails to refresh the perpetual list. See the source code for more details.
     Utilities can also set the system into a terminal state (e.g., disable routing) if they fail to complete after a
     certain number of retries. This is to ensure the dispatcher is not left providing bad data to clients.
+
+    Additionally, there are routine_* functions; these are common subroutines that are used by dispatchers. They
+    interact with clients for you. You must call them when required; they have no impact and cannot be opt-into
+    like some of the utility classes (e.g., _distribute_refreshed_perpetuals gates on config). It's very important
+    to read the doc string of these functions as they may require objects that follow a certain shape. e.g., the
+    _routine_push_funding_rates_for_client requires some object that has a .name and .funding_rate attribute. Its
+    highly recommended to use these subroutines as they homogenise the API response between dispatchers making the
+    SDK cleaner.
 
     That retry/terminal-state handling is only for transient runtime failures (e.g. a REST call failing). It is
     deliberately NOT applied to argus.perpetuals.shared._errors.FatalDispatcherError (and its subclasses, e.g.
@@ -209,6 +220,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
         self._retry_backoff_base_rest = configurations.get("retry_backoff_base_rest", 3.0)
         self._retry_backoff_max_rest = configurations.get("retry_backoff_max_rest", 30.0)
         self._distribute_refreshed_perps = configurations.get("distribute_refreshed_perps", False)
+        self._interactive_fns = interactive_functions if interactive_functions is not None else {}
 
     ########################################
     # Threads and utilities
@@ -316,30 +328,6 @@ class BaseDispatcher(Introspective, RoutingHelper):
         """
         raise ers.AbstractMethodNotImplementedError("Subclasses must implement _distribute_refreshed_perpetuals()")
 
-    def _send_packet_to_clients(self, clients: list[socket.socket], packet: bytes, context: str):
-        """
-        Send an already-encoded packet (P1 or P2 -- this doesn't care which) to a list of client
-        sockets, one at a time, cleaning up any socket that turns out to be dead. Shared by every
-        "broadcast this packet to subscribed clients" callback (order book updates, refreshed-perpetual
-        pushes, ...) so the send/error handling isn't duplicated per callback per venue.
-        :param clients: Sockets to send `packet` to.
-        :param packet: The already protocol-encoded bytes to send.
-        :param context: Human-readable description of what's being sent, used only for logging,
-        e.g. "perpetual info for coin BTC" or "order book update for coin BTC".
-        :return:
-        """
-        for sock in clients:
-            try:
-                with self.send_lock_for(sock):
-                    sock.sendall(packet)
-            except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                self.remove_socket(sock)
-                self.pi.prt(f"Removed dead socket while sending {context}: {e}")
-            except Exception as e:
-                self.pi.prt(f"Unexpected error sending {context} to socket: {e}")
-                self.remove_socket(sock)
-                traceback.print_exc()
-
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks
     ########################################
@@ -434,6 +422,48 @@ class BaseDispatcher(Introspective, RoutingHelper):
         return response
 
     ########################################
+    # Common subroutines for dispatchers
+    ########################################
+
+    def _routine_send_packet_to_clients(self, clients: list[socket.socket], packet: bytes, context: str):
+        """
+        Send an already-encoded packet (P1 or P2 -- this doesn't care which) to a list of client
+        sockets, one at a time, cleaning up any socket that turns out to be dead. Shared by every
+        "broadcast this packet to subscribed clients" callback (order book updates, refreshed-perpetual
+        pushes, ...) so the send/error handling isn't duplicated per callback per venue.
+        :param clients: Sockets to send `packet` to.
+        :param packet: The already protocol-encoded bytes to send.
+        :param context: Human-readable description of what's being sent, used only for logging,
+        e.g. "perpetual info for coin BTC" or "order book update for coin BTC".
+        :return:
+        """
+        for sock in clients:
+            try:
+                with self.send_lock_for(sock):
+                    sock.sendall(packet)
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                self.remove_socket(sock)
+                self.pi.prt(f"Removed dead socket while sending {context}: {e}")
+            except Exception as e:
+                self.pi.prt(f"Unexpected error sending {context} to socket: {e}")
+                self.remove_socket(sock)
+                traceback.print_exc()
+
+    @runAsThread
+    def _routine_push_funding_rates_for_client(self, client: socket.socket, PerpObject):
+        """
+        :param client: A socket object to send the funding rates to.
+        :param PerpObject: Any object with a .name and .funding_rate attribute.
+        :return:
+        """
+        time.sleep(random.randint(1, 10) / 10)  # random jitter important for SDK
+        new_rate = NewFundingRate(
+            perp_name=PerpObject.name,
+            funding_rate=PerpObject.funding_rate
+        )
+        self._routine_send_packet_to_clients([client], new_rate.convert_to_protocol_1(), context="Funding Rate Update")
+
+    ########################################
     # PUBLIC FUNCTIONS
     ########################################
     def interactive_mode(self):
@@ -443,6 +473,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
                 "Distributes the refreshed perpetuals currently subscribed to their respective clients as a P1 message",
                 self._distribute_refreshed_perpetuals,
             )
+        fns.update(self._interactive_fns)
         self._interactive_ui(fns)
 
     def run_server(self):

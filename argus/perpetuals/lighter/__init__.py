@@ -12,7 +12,7 @@ Market-data streaming (subscribe/unsubscribe, live order book over P2) mirrors
 HyperLiquidDispatcher's wiring -- see `argus/perpetuals/lighter/wss.py` for the
 websocket layer and `docs/perf/lighter-market-data-parity-plan.md` for the design
 this was built against. One divergence from Hyperliquid worth noting here: Hyperliquid's
-`coin` is both the client-facing subscribe key and the wire-level channel key, whereas
+`coin` is both the client-facing subscription key and the wire-level channel key, whereas
 Lighter's wss channels are keyed by integer `market_id`, not the symbol string clients
 subscribe with -- so `subscribe`/`unsubscribe`/`subscription_expired` below translate
 symbol -> market_id once, at this dispatcher boundary, and everything below `self.market_data`
@@ -129,6 +129,7 @@ class LighterDispatcher(BaseDispatcher):
                 self.add_socket_to_subscription(sock, symbol)
                 self.market_data.subscribe_to_market(perp.market_id)
                 subscribed.append(symbol)
+                self._routine_push_funding_rates_for_client(sock, perp)
             except Exception as e:
                 failed.append(symbol)
                 pi.prt(f"Error subscribing to symbol {symbol}: {e}")
@@ -189,7 +190,7 @@ class LighterDispatcher(BaseDispatcher):
             )
         )
 
-        self._send_packet_to_clients(clients_to_send, packet, f"order book update for symbol {symbol}")
+        self._routine_send_packet_to_clients(clients_to_send, packet, f"order book update for symbol {symbol}")
 
     @runAsThread
     def _distribute_refreshed_perpetuals(self):
@@ -213,7 +214,7 @@ class LighterDispatcher(BaseDispatcher):
                 traceback.print_exc()
                 continue
 
-            self._send_packet_to_clients(clients_to_send, p1_bytes, f"perpetual info for symbol {perp.name}")
+            self._routine_send_packet_to_clients(clients_to_send, p1_bytes, f"perpetual info for symbol {perp.name}")
 
     ########################################
     # Dispatcher Functions
