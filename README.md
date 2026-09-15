@@ -237,7 +237,8 @@ Argus consists of several specialized modules, each providing access to differen
 ```bash
 git clone https://github.com/The-Sal/Argus.git
 cd Argus
-pip install -e .
+# uv automatically setups dependencies
+uv run runtime.py --help 
 ```
 
 ### Environment Setup
@@ -392,9 +393,10 @@ with NASDAQDataDownloader(headless=True) as downloader:
 
 ## Development Ecosystem
 - **argus-swift**: An experimental fork of Argus that's written in Swift (macOS/Linux only). It is far behind the main branch. Available [here](https://github.com/The-Sal/Argus/tree/argus-swift).
-- **WpDaemon**: A sidecar daemon that manages WireProxy processes, it works as a drop-in replacement for the internal WireProxyServer. Available [here](https://github.com/the-sal/WpDaemon).
+- **WpDaemon**: A sidecar daemon that manages WireProxy processes, it works as a drop-in replacement for the internal WireProxyServer. Requires manual startup. Available [here](https://github.com/the-sal/WpDaemon).
 - **argus-polymarket**: A Rust SDK for the Polymarket Dispatcher, available [here](https://github.com/the-sal/argus-polymarket).
-- **Argus Polymarket Database (APDB)**: A sidecar databases for storing Polymarket data effcicently. It's automatically installed and is a hard dependancy of this project.  Available [here](https://github.com/the-sal/argus-polymarket-db).
+- **argus-sdks**: Rust SDKs for perpetuals within Argus, available [here](https://github.com/the-sal/argus-sdks).
+- **Argus Polymarket Database (APDB)**: A sidecar databases for storing Polymarket data efficiently. It's automatically installed and is a hard dependency of the Polymarket Dipsatcher.  Available [here](https://github.com/the-sal/argus-polymarket-db).
 
 ## Support
 For questions, issues, or feature requests:
