@@ -316,6 +316,30 @@ class BaseDispatcher(Introspective, RoutingHelper):
         """
         raise ers.AbstractMethodNotImplementedError("Subclasses must implement _distribute_refreshed_perpetuals()")
 
+    def _send_packet_to_clients(self, clients: list[socket.socket], packet: bytes, context: str):
+        """
+        Send an already-encoded packet (P1 or P2 -- this doesn't care which) to a list of client
+        sockets, one at a time, cleaning up any socket that turns out to be dead. Shared by every
+        "broadcast this packet to subscribed clients" callback (order book updates, refreshed-perpetual
+        pushes, ...) so the send/error handling isn't duplicated per callback per venue.
+        :param clients: Sockets to send `packet` to.
+        :param packet: The already protocol-encoded bytes to send.
+        :param context: Human-readable description of what's being sent, used only for logging,
+        e.g. "perpetual info for coin BTC" or "order book update for coin BTC".
+        :return:
+        """
+        for sock in clients:
+            try:
+                with self.send_lock_for(sock):
+                    sock.sendall(packet)
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                self.remove_socket(sock)
+                self.pi.prt(f"Removed dead socket while sending {context}: {e}")
+            except Exception as e:
+                self.pi.prt(f"Unexpected error sending {context} to socket: {e}")
+                self.remove_socket(sock)
+                traceback.print_exc()
+
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks
     ########################################

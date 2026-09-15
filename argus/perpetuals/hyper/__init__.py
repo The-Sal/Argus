@@ -213,17 +213,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
             )
         )
 
-        for sock in clients_to_send:
-            try:
-                with self.send_lock_for(sock):
-                    sock.sendall(packet)
-            except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                self.remove_socket(sock)
-                pi.prt(f"Removed dead socket while sending order book update for coin {coin}: {e}")
-            except Exception as e:
-                pi.prt(f"Unexpected error sending order book update for coin {coin} to socket: {e}")
-                self.remove_socket(sock)
-                traceback.print_exc()
+        self._send_packet_to_clients(clients_to_send, packet, f"order book update for coin {coin}")
 
     @runAsThread
     def _distribute_refreshed_perpetuals(self):
@@ -256,17 +246,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
                 traceback.print_exc()
                 continue
 
-            for sock in clients_to_send:
-                try:
-                    with self.send_lock_for(sock):
-                        sock.sendall(p1_bytes)
-                except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                    self.remove_socket(sock)
-                    pi.prt(f"Removed dead socket while sending perpetual info for coin {perp.name}: {e}")
-                except Exception as e:
-                    pi.prt(f"Unexpected error sending perpetual info for coin {perp.name} to socket: {e}")
-                    self.remove_socket(sock)
-                    traceback.print_exc()
+            self._send_packet_to_clients(clients_to_send, p1_bytes, f"perpetual info for coin {perp.name}")
 
     ########################################
     # Dispatcher Functions
