@@ -82,6 +82,8 @@ class HyperLiquidDispatcher(BaseDispatcher):
             'get_perpetuals_for_dex': self._get_perpetual_for_dex,
             'get_funding_rates_for_all_perpetuals': self._get_funding_rates_for_all_perps,
             'perpetual_info': self._perp_info,
+            'search_perpetuals': self._search_perpetuals,
+            'get_funding_rate': self._get_funding_rate,
             # Market Data Streaming
             'subscribe': self._handle_subscribe,
             'unsubscribe': self._handle_unsubscribe,
@@ -341,4 +343,40 @@ class HyperLiquidDispatcher(BaseDispatcher):
             'category': category_entry.category if category_entry is not None else None,
             'concise_annotation': concise_entry.to_pair()[1] if concise_entry is not None else None,
             'predicted_funding': [v.to_pair() for v in predicted_entry.venues] if predicted_entry is not None else None,
+        }
+
+    def _search_perpetuals(self, args: ArgsObject) -> dict:
+        """
+        Fuzzy-search perpetual symbols, mirroring Polymarket's `search_markets`.
+        Runs against the in-memory perpetual index (refreshed hourly by the base
+        dispatcher), so it is a cheap, network-free lookup.
+        :param args: Expects arguments:
+            'keyword': str (required) -- the ticker/name fragment to search for.
+            'limit': int (default: 10)
+        :return: {'perpetuals': [<symbol>, ...]}, best match first.
+        """
+        keyword = args.args.get('keyword')
+        if keyword is None:
+            raise _shared_ers.MissingArgumentError("Missing argument: 'keyword'")
+        limit = args.args.get('limit', 10)
+        return {'perpetuals': self._all_perps.value.search(keyword, limit)}
+
+    def _get_funding_rate(self, args: ArgsObject) -> dict:
+        """
+        Returns the live funding rate for a single perpetual.
+        :param args: Expects arguments:
+            'symbol': str (required) -- e.g. "BTC" for the default dex, or
+                "xyz:AAPL" for a HIP-3 dex asset.
+        :return: {'symbol', 'funding_rate', 'funding_rate_apr'}
+        """
+        symbol = args.args.get('symbol')
+        if symbol is None:
+            raise _shared_ers.MissingArgumentError("Missing argument: 'symbol'")
+        perp = next((p for p in self._all_perps.value if p.name == symbol), None)
+        if perp is None:
+            raise _shared_ers.InvalidCoinError(f"Unknown perpetual symbol: '{symbol}'")
+        return {
+            'symbol': perp.name,
+            'funding_rate': str(perp.funding_rate),
+            'funding_rate_apr': str(perp.funding_rate_apr()),
         }

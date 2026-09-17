@@ -328,6 +328,18 @@ class HyperArgusClient:
             raise Exception(f"perpetual_info failed: {resp['error']}")
         return dict(resp.get('data') or {}), dt
 
+    def search_perpetuals(self, keyword: str, limit: int = 10, timeout: int = 30) -> Tuple[List[str], float]:
+        resp, dt = self.send_request('search_perpetuals', {'keyword': keyword, 'limit': limit}, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"search_perpetuals failed: {resp['error']}")
+        return list((resp.get('data') or {}).get('perpetuals') or []), dt
+
+    def get_funding_rate(self, symbol: str, timeout: int = 30) -> Tuple[dict, float]:
+        resp, dt = self.send_request('get_funding_rate', {'symbol': symbol}, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"get_funding_rate failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
     def subscribe(self, coins: List[str], timeout: int = 30) -> Tuple[dict, float]:
         """Subscribe to live order book updates for one or more coins (e.g. ['BTC'])."""
         resp, dt = self.send_request('subscribe', coins, timeout=timeout)
@@ -527,6 +539,30 @@ def _gauntlet_get_funding_rates(client: 'HyperArgusClient', timeout: float) -> T
     return dt, f"{len(perps)} perp(s), top funding={fundings[0]:.6f}"
 
 
+def _gauntlet_search_perpetuals(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, _ = client.get_perpetuals_for_dex("", offset=0, timeout=int(timeout))
+    _check(len(perps) > 0, "expected at least one perpetual to search over")
+    coin = perps[0]['asset']['name']
+    matches, dt = client.search_perpetuals(coin, limit=10, timeout=int(timeout))
+    _check(isinstance(matches, list), "'perpetuals' search result is not a list")
+    _check(len(matches) > 0, f"search for {coin!r} returned no matches")
+    _check(all(isinstance(m, str) for m in matches), "search results contain non-string symbols")
+    _check(coin in matches, f"exact symbol {coin!r} missing from its own search results: {matches!r}")
+    return dt, f"keyword={coin!r} -> {len(matches)} match(es), best={matches[0]!r}"
+
+
+def _gauntlet_get_funding_rate(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, _ = client.get_perpetuals_for_dex("", offset=0, timeout=int(timeout))
+    _check(len(perps) > 0, "expected at least one perpetual to fetch a funding rate for")
+    coin = perps[0]['asset']['name']
+    data, dt = client.get_funding_rate(coin, timeout=int(timeout))
+    _check(isinstance(data, dict), "response is not an object")
+    _check(data.get('symbol') == coin, f"'symbol' = {data.get('symbol')!r} does not match requested {coin!r}")
+    _check(data.get('funding_rate') is not None, "missing 'funding_rate'")
+    float(data['funding_rate'])
+    return dt, f"symbol={coin} funding_rate={data.get('funding_rate')} apr={data.get('funding_rate_apr')}"
+
+
 # -----------------------------------------------------------------------------
 # Market-data streaming (P2) gauntlet check
 # -----------------------------------------------------------------------------
@@ -629,6 +665,8 @@ GAUNTLET_CHECKS: List[Tuple[str, Callable[['HyperArgusClient', float], Tuple[flo
     ("get_perpetuals_for_dex (HIP-3 dex)", _gauntlet_get_perpetuals_hip3_dex),
     ("get_funding_rates_for_all_perpetuals", _gauntlet_get_funding_rates),
     ("perpetual_info", _gauntlet_get_perpetual_info),
+    ("search_perpetuals", _gauntlet_search_perpetuals),
+    ("get_funding_rate", _gauntlet_get_funding_rate),
     ("market_data (subscribe/P2 lifecycle)", _gauntlet_market_data_stream),
 ]
 
@@ -759,6 +797,24 @@ def format_perp_info(info: dict) -> str:
     else:
         output.append("  Predicted funding: (none)")
 
+    output.append("=" * 60)
+    return "\n".join(output)
+
+
+def format_search_results(symbols: List[str]) -> str:
+    output = ["\n" + "=" * 60, "SEARCH RESULTS", "=" * 60]
+    if not symbols:
+        output.append("  (no matches)")
+    for i, symbol in enumerate(symbols):
+        output.append(f"  {i + 1:>2}. {symbol}")
+    output.append("=" * 60)
+    return "\n".join(output)
+
+
+def format_funding_rate(data: dict) -> str:
+    output = ["\n" + "=" * 60, f"FUNDING RATE: {data.get('symbol')}", "=" * 60]
+    output.append(f"  Hourly:       {data.get('funding_rate')}")
+    output.append(f"  Annualized:   {data.get('funding_rate_apr')}")
     output.append("=" * 60)
     return "\n".join(output)
 
@@ -894,6 +950,8 @@ def print_help():
     print("  perps [dex_name] [offset] [limit] - List perpetuals for a dex (default: \"\" main dex, offset 0, limit set by server)")
     print("  funding [N]                - Show top N perpetuals by funding rate (default: 20)")
     print("  info <coin>                - Show annotation/category/keywords/predicted funding for one coin")
+    print("  search <keyword>           - Fuzzy-search perpetual symbols (e.g. search BTC)")
+    print("  rate <symbol>              - Show the live hourly + annualized funding rate for one symbol")
     print("  sub <coin>                 - Subscribe to live order book + system pushes (e.g. funding rate updates), Ctrl+C to stop")
     print("  test | gauntlet            - Call every known read-only action and validate the responses")
     print("  clear                      - Clear screen")
@@ -906,6 +964,8 @@ def print_help():
     print("  funding 10                 # top 10 perpetuals by hourly funding rate")
     print("  info BTC                   # info for the default-dex BTC perpetual")
     print("  info xyz:AAPL              # info for a HIP-3 dex perpetual")
+    print("  search BTC                 # fuzzy-search perpetual symbols for 'BTC'")
+    print("  rate BTC                   # live funding rate for BTC")
     print("  sub BTC                    # stream BTC's live order book")
     print()
 
@@ -977,6 +1037,32 @@ def interactive_loop(client: HyperArgusClient):
                         print(format_perp_info(info))
                     except Exception as e:
                         print(f"✗ Failed to fetch perpetual info: {e}")
+            elif query.lower().startswith('search'):
+                parts = query.split()[1:]
+                if not parts:
+                    print("Usage: search <keyword>")
+                else:
+                    keyword = " ".join(parts)
+                    try:
+                        print(f"Searching perpetuals for '{keyword}'...")
+                        symbols, dt = client.search_perpetuals(keyword)
+                        print(f"✓ Searched in {dt*1000:.1f}ms")
+                        print(format_search_results(symbols))
+                    except Exception as e:
+                        print(f"✗ Search failed: {e}")
+            elif query.lower().startswith('rate'):
+                parts = query.split()[1:]
+                if not parts:
+                    print("Usage: rate <symbol>")
+                else:
+                    symbol = parts[0].strip()
+                    try:
+                        print(f"Fetching funding rate for '{symbol}'...")
+                        data, dt = client.get_funding_rate(symbol)
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_funding_rate(data))
+                    except Exception as e:
+                        print(f"✗ Failed to fetch funding rate: {e}")
             elif query.lower().startswith('sub '):
                 coin = query[4:].strip()
                 if not coin:

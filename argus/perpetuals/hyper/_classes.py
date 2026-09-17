@@ -1,4 +1,5 @@
 import json
+import difflib
 from enum import Enum
 from decimal import Decimal
 from datetime import datetime, timezone
@@ -538,6 +539,25 @@ class PerpetualsIndex:
 
     def get(self, name: str, dex: str = "") -> Optional[Perpetual]:
         return next((p for p in self.perpetuals if p.name == name and p.dex == dex), None)
+
+    def search(self, keyword: str, limit: int = 10) -> List[str]:
+        """Return the names of the perpetuals most similar to `keyword`, best first.
+
+        Mirrors PolymarketDispatcher's search_markets (a case-insensitive
+        difflib.SequenceMatcher ratio over names, sorted descending) so clients
+        get the same fuzzy-ticker behaviour across venues. Runs entirely off the
+        already-refreshed in-memory index, so there is no network round-trip per
+        query.
+        """
+        if limit <= 0:
+            return []
+        needle = keyword.lower()
+        ranked = sorted(
+            self.perpetuals,
+            key=lambda p: difflib.SequenceMatcher(None, needle, p.name.lower()).ratio(),
+            reverse=True,
+        )
+        return [p.name for p in ranked[:limit]]
 
 
 # --- funding rate history / predictions ---------------------------------------
