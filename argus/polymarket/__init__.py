@@ -23,6 +23,7 @@ import json
 import time
 import tqdm
 import zlib
+import pickle
 import atexit
 import base64
 import socket
@@ -30,7 +31,6 @@ import difflib
 import logging
 import threading
 import traceback
-import subprocess
 import dataclasses
 from collections import deque
 from datetime import datetime
@@ -41,7 +41,6 @@ from utils3.networking.sockets import Server
 from argus import __version__ as ARGUS_VERSION
 from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus.satellite_sys import ArgusPolymarketDB
-from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
 from argus.polymarket.apdb_client import APDBClient, APDBError
@@ -49,14 +48,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
+from argus._argus_utils import (
+    Introspective,
+    throw_fuss,
+    RoutingHelper,
+    ArgsObject,
+    CorrelationIDChecker,
+)
 from argus.polymarket._classes import (
     PolyMarketDispatcherError,
     InvalidArgumentError,
-    RoutingHelper,
-    ArgsObject,
     P2ConvertClass,
     print_with_name,
-    CorrelationIDChecker,
     OrderExecutionDisabledError,
 )
 
@@ -249,8 +252,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             os.environ.get("POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL", 300)
         )
 
-        # Make sure asset_id routing is ready before we start receiving market data
-        self._build_asset_id_to_ticker_mapping()
 
         # Start background tasks
         self.market_data.run(main_thread=False)
@@ -260,6 +261,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         self._log_file = os.environ.get(
             "POLYMARKET_DISPATCHER_LOG_FILE",
             os.path.expanduser("~/.argus/polymarket_dispatcher.log"),
+        )
+        self._python_state_file = os.environ.get(
+            "POLYMARKET_DISPATCHER_PYTHON_STATE_FILE",
+            os.path.expanduser("~/.argus/polymarket_dispatcher_state.pkl"),
         )
 
         self.rtds_magic_asset_id = "RTDS_MAGIC_ID"
@@ -285,6 +290,31 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             "Asset-id mapping refresh interval set to %d seconds",
             self._market_cache_refresh_interval,
         )
+
+        # Make sure asset_id routing is ready before we start receiving market data
+        self._bootstrap_id_to_ticker()
+
+    def _bootstrap_id_to_ticker(self):
+        """
+        Bootstrap the state of the dispatcher by loading from the
+        POLYMARKET_DISPATCHER_PYTHON_STATE_FILE if it exists applying the market cache
+        refresh interval. otherwise calls _build_asset_id_to_ticker_mapping.
+        :return:
+        """
+        if os.path.exists(self._python_state_file):
+            with open(self._python_state_file, "rb") as f:
+                state = pickle.load(f)
+                if (
+                    state.get("ts")
+                    and time.time() - state.get("ts") < self._market_cache_refresh_interval
+                ):
+                    self._asset_id_to_ticker = state["asset_id_to_ticker"]
+                    self._ticker_market_index_to_slug = state["ticker_market_index_to_slug"]
+                    self._asset_id_to_neg_risk = state["asset_id_to_neg_risk"]
+                    print_with_name("Loaded asset_id to ticker mapping from state file. Time since last refresh: %d seconds", time.time() - state.get("ts"))
+                    return # exit early since we have valid state now
+        # fall through to build the mapping
+        self._build_asset_id_to_ticker_mapping()
 
     @runAsThread
     def async_write_log(self, message: str):
@@ -355,6 +385,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             self._asset_id_to_ticker.update(dict_asset_id_to_ticker)
             self._ticker_market_index_to_slug.update(dict_ticker_index_to_slug)
             self._asset_id_to_neg_risk.update(dict_asset_id_to_neg_risk)
+
+        with open(self._python_state_file, "wb") as f:
+            pickle.dump({
+                "ts": time.time(),
+                "asset_id_to_ticker": self._asset_id_to_ticker,
+                "ticker_market_index_to_slug": self._ticker_market_index_to_slug,
+                "asset_id_to_neg_risk": self._asset_id_to_neg_risk,
+            }, f)
 
     #######################################
     # Callbacks
@@ -894,15 +932,15 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     ########################################
     # Subscription
     ########################################
-    def subscription_expired(self, clob_id):
+    def subscription_expired(self, channel_id):
         """
         Handle subscription expiration logic.
-        :param clob_id:
+        :param channel_id:
         :return:
         """
-        if clob_id == self.rtds_magic_asset_id:
+        if channel_id == self.rtds_magic_asset_id:
             return
-        self.market_data.unsubscribe_from_asset_id(clob_id)
+        self.market_data.unsubscribe_from_asset_id(channel_id)
 
     def _warm_clob_caches_for_subscribed_asset(self, clob_id: str) -> None:
         """
@@ -2227,7 +2265,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 ),
                 "Clear console": (
                     "Clear the console output",
-                    lambda: subprocess.check_call(["clear"]),
+                    self.clear,
                 ),
                 "Clear correlation ids": (
                     "Clear all correlation IDs from the dispatcher cache",

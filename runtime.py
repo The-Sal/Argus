@@ -1,14 +1,14 @@
 #! /usr/bin/env python3
 """
 Argus runtime entrypoint.
-- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance
+- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance | hyperliquid | lighter
 - Optional --host/--port are accepted and forwarded only to dispatchers that support them.
   Dispatchers have their own defaults; if not provided, nothing is passed.
-- Supports: macOS, Linux, (almost anything UNIX-based or UNIX-like) does NOT support Windows.
+- Supports: macOS, Linux (tested on Debian) does NOT support Windows.
 - IB Dispatchers work on all platforms (Linux, macOS)
 - Push Notifications requires macOS due to the use of osascript to notify on machine-local notifications
 - Capital.com, Polymarket, Binance, TradingView (Chart+Quote), etc... work on all platforms.
-- DO NOT PASS AUTH CREDENTIALS VIA COMMAND LINE ARGS, use environment variables or .env file instead.
+- Use .env (or Environment Variables) to configure dispatcher behavior (see docs)
 - Automatically loads .env file if present in a working directory.
 """
 import sys
@@ -16,13 +16,10 @@ import argus
 import logging
 import platform
 import argparse
-from dotenv import load_dotenv
+from argus import secure_load_dotenv, check_env_compatibility
 
 
-if not load_dotenv():
-    print("Warning: .env was not loaded")
-
-choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance']
+choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid', 'lighter']
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
@@ -44,6 +41,11 @@ def main(argv=None):
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+
+    if args.target is not None:
+        if not secure_load_dotenv():
+            print("Warning: .env was not loaded")
+        check_env_compatibility()
 
     if args.target == 'ib.forecast':
         from argus.ib.forecast import FXCDispatcher
@@ -107,6 +109,28 @@ def main(argv=None):
         dispatcher = BinanceMKTDispatcher(**binance_kwargs)
         dispatcher.interactive_mode()
         print("Exiting Binance dispatcher")
+    elif args.target == "hyperliquid":
+        from argus.perpetuals.hyper import HyperLiquidDispatcher
+        hyper_kwargs = {}
+        if args.host:
+            hyper_kwargs['host'] = args.host
+        if args.port is not None:
+            hyper_kwargs['port'] = args.port
+        dispatcher = HyperLiquidDispatcher(**hyper_kwargs)
+        dispatcher.run()
+        dispatcher.interactive_mode()
+        print("Exiting HyperLiquid dispatcher")
+    elif args.target == "lighter":
+        from argus.perpetuals.lighter import LighterDispatcher
+        lighter_kwargs = {}
+        if args.host:
+            lighter_kwargs['host'] = args.host
+        if args.port is not None:
+            lighter_kwargs['port'] = args.port
+        dispatcher = LighterDispatcher(**lighter_kwargs)
+        dispatcher.run()
+        dispatcher.interactive_mode()
+        print("Exiting Lighter dispatcher")
     else:
         parser.error('Unknown target')
 

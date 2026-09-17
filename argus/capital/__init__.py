@@ -4,7 +4,7 @@ import time
 import tqdm
 import socket
 import logging
-from dotenv import load_dotenv
+from argus._argus_utils import load_dotenv
 from utils3 import runAsThread, assertTypes
 from utils3.networking.sockets import UDSServer
 from argus.cache_sys import DomainCache as _DomainCache
