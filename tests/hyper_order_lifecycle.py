@@ -21,7 +21,6 @@ import os
 import sys
 import time
 from decimal import Decimal, ROUND_CEILING
-from typing import Optional
 
 from argus._argus_utils import load_dotenv
 from argus.perpetuals.hyper.exchange import HyperLiquidExchange
