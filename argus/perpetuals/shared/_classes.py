@@ -15,6 +15,21 @@ def compress(data: dict) -> str:
 
 
 
+def paginate(items: list, offset: int, limit: int) -> list:
+    """
+    The dispatcher-wide pagination primitive behind every `offset` / `limit` action.
+    Exists because Protocol 1 caps a single response at 9990 bytes after compression
+    (see OutboundMessage), so any collection that can grow past a few dozen records
+    must be served in pages. An offset past the end yields [] rather than raising;
+    negative values are rejected.
+    """
+    if offset < 0 or limit < 0:
+        raise ers.MissingArgumentError("'offset' and 'limit' must be non-negative")
+    if offset >= len(items):
+        return []
+    return items[offset: offset + limit]
+
+
 class OutboundMessage:
     """
     This class enforces the following structure for outbound messages:

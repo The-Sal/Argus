@@ -13,6 +13,7 @@ from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
 from argus.perpetuals.hyper.rest import HyperLiquidRest
 from argus.protocol import transmit_mkt_data_with_protocol_2
+from argus.perpetuals.hyper.exchange import HyperLiquidExchange
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate
 
 
@@ -55,6 +56,26 @@ class HyperLiquidDispatcher(BaseDispatcher):
     the PolymarketDispatcher, which had some non-paginated functions (for large data sets), Hl will only expose
     paginated functions for large data sets.
 
+    Account data follows PolymarketDispatcher's action names (get_balance, get_positions, get_orders,
+    get_order_status, get_trades) plus get_funding_payments, all served by the shared handlers in
+    argus/perpetuals/shared/account.py against the read-only, unsigned `info` endpoint keyed by
+    HYPERLIQUID_WALLET_ADDRESS (which must be the master account address, not an API wallet). The
+    positions/orders actions read every dex by default (each record is tagged with its 'dex'; pass 'dex' to
+    narrow), because Hyperliquid keeps one clearinghouse per dex. get_balance resolves the account mode
+    (userAbstraction): unified / portfolio-margin accounts keep their collateral in the spot ledger, so it
+    is derived from spot + every dex and 'dex' is ignored. Every list action is paginated (offset/limit)
+    because each record carries the full venue payload under "venue" -- see shared/account.py.
+
+    Trading (place_order, cancel_order) is served by argus/perpetuals/hyper/exchange.py against the
+    signed `exchange` endpoint, using HYPERLIQUID_WALLET_ADDRESS + HYPERLIQUID_PRIVATE_KEY (the private
+    key must belong to the master address). Order modification is intentionally not part of this surface,
+    and neither is a cancel-all: Hyperliquid's only bulk cancel is a scheduled trigger (scheduleCancel),
+    not an immediate action. place_order takes coin/side/price/size plus optional order_type
+    (GTC|IOC|ALO), reduce_only and cloid; cancel_order takes an order_id (a numeric oid or a 0x-prefixed
+    cloid) and resolves the coin itself via orderStatus when the caller omits it. A venue-level rejection
+    of one order (e.g. insufficient margin) is reported in the response's 'error' field, not as a packet
+    error.
+
     The inbound underlying JSON structure of Hl follows polymarket:
     {
         "action": "<command_name>",
@@ -87,11 +108,15 @@ class HyperLiquidDispatcher(BaseDispatcher):
             # Market Data Streaming
             'subscribe': self._handle_subscribe,
             'unsubscribe': self._handle_unsubscribe,
-            # Account Info
-            # 'get_account_info': self._get_account_info,
-            # 'get_account_balance': self._get_account_balance,
-            # 'get_account_positions': self._get_account_positions
-            # Trading Functions (TBD)
+            # Account Info (shared handlers -- see argus/perpetuals/shared/account.py):
+            #   get_balance, get_positions, get_orders, get_order_status, get_trades, get_funding_payments
+            **self.account_routing_table(),
+            # Account Info (Hyperliquid-only)
+            'get_account_fees': self._get_account_fees,
+            'get_rate_limit_usage': self._get_rate_limit_usage,
+            # Trading Functions (signed `exchange` endpoint -- see argus/perpetuals/hyper/exchange.py):
+            'place_order': self._place_order,
+            'cancel_order': self._cancel_order,
         }
 
         if wallet_address is None:
@@ -100,6 +125,7 @@ class HyperLiquidDispatcher(BaseDispatcher):
             private_key = os.environ["HYPERLIQUID_PRIVATE_KEY"]
 
         rest_client = HyperLiquidRest(wallet_address, private_key)
+        exchange_client = HyperLiquidExchange(wallet_address, private_key)
         super().__init__(
             host=host,
             port=port,
@@ -108,9 +134,11 @@ class HyperLiquidDispatcher(BaseDispatcher):
             common_rest=rest_client,
             configurations={
                 'distribute_refreshed_perps': True
-            }
+            },
+            account_rest=rest_client,
         )
         self.rest = rest_client
+        self.exchange = exchange_client
         self._all_perps = LockedState(self.rest.get_all_perpetuals())
         self._refresh_perpetuals()
 
@@ -360,6 +388,121 @@ class HyperLiquidDispatcher(BaseDispatcher):
             raise _shared_ers.MissingArgumentError("Missing argument: 'keyword'")
         limit = args.args.get('limit', 10)
         return {'perpetuals': self._all_perps.value.search(keyword, limit)}
+
+    ########################################
+    # Trading (signed `exchange` endpoint)
+    ########################################
+
+    def _place_order(self, args: ArgsObject) -> dict:
+        """
+        Place a single limit order on the account's master wallet.
+
+        :param args: Accepts 'coin' (required, e.g. "BTC" or "xyz:AAPL"), 'side' (required,
+            "buy" or "sell"), 'price' (required, limit price), 'size' (required, size in coins),
+            'order_type' (optional, "GTC" | "IOC" | "ALO", default "GTC"), 'reduce_only'
+            (optional bool, default False), 'cloid' (optional client order id: 0x + 32 hex chars).
+        :return: {'coin', 'oid', 'status', 'avgPx', 'error'} -- `status` is "resting" or
+            "filled" and `oid` the venue order id; a venue-level rejection of the order (e.g.
+            insufficient margin) comes back with `error` set and `oid` null instead of a packet error.
+        """
+        data = self._read_args(
+            args, 'coin', 'side', 'price', 'size', 'order_type', 'reduce_only', 'cloid'
+        )
+        for required in ('coin', 'side', 'price', 'size'):
+            if data.get(required) is None:
+                raise _shared_ers.MissingArgumentError(f"Missing required argument {required!r}")
+        coin = data['coin']
+        order_type = str(data.get('order_type') or 'GTC').upper()
+        tif = {'GTC': 'Gtc', 'IOC': 'Ioc', 'ALO': 'Alo'}.get(order_type)
+        if tif is None:
+            raise _shared_ers.MissingArgumentError(
+                f"Invalid order_type {order_type!r}: expected GTC, IOC or ALO"
+            )
+        result = self.exchange.place_order(
+            coin=coin,
+            side=str(data['side']),
+            price=data['price'],
+            size=data['size'],
+            tif=tif,
+            reduce_only=bool(data.get('reduce_only') or False),
+            cloid=data.get('cloid'),
+        )
+        return result.to_dict()
+
+    @staticmethod
+    def _parse_order_id(value: Any) -> tuple:
+        """
+        Split an order id into ('oid', int) or ('cloid', str). Oids are venue-assigned
+        integers; cloids are client ids (0x + 32 hex chars, 16 bytes). Anything else is
+        rejected here rather than surfaced later as an opaque venue error.
+        """
+        if isinstance(value, bool):
+            raise _shared_ers.DispatcherError(f"Invalid order_id {value!r}")
+        if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+            return 'oid', int(value)
+        if isinstance(value, str) and value.startswith('0x') and len(value) == 34:
+            try:
+                int(value[2:], 16)
+            except ValueError:
+                raise _shared_ers.DispatcherError(f"Invalid cloid {value!r}: not hex")
+            return 'cloid', value
+        raise _shared_ers.DispatcherError(
+            f"Invalid order_id {value!r}: expected a numeric oid or a 0x-prefixed 16-byte cloid"
+        )
+
+    def _cancel_order(self, args: ArgsObject) -> dict:
+        """
+        Cancel one order by its venue oid or client cloid.
+
+        :param args: Accepts 'order_id' (required: a numeric oid or a 0x-prefixed 16-byte
+            cloid) and an optional 'coin'. When 'coin' is omitted it is resolved from the
+            order itself via orderStatus -- which also fails cleanly if the order no longer
+            exists. Note the resolution costs one extra info call per cancel.
+        :return: {'coin', 'canceledOids', 'errors'} -- the venue reports per-id statuses,
+            so an id it could not cancel (already filled/canceled, or unknown) appears in
+            'errors' and `canceledOids` stays empty; callers must check for that rather
+            than assume a submitted cancel worked.
+        """
+        data = self._read_args(args, 'order_id', 'coin')
+        if data.get('order_id') is None:
+            raise _shared_ers.MissingArgumentError("Missing required argument 'order_id'")
+        kind, identifier = self._parse_order_id(data['order_id'])
+        coin = data.get('coin')
+        if coin is None:
+            status = self.account_rest.get_order_status_detail(identifier)
+            if status.order is None:
+                raise _shared_ers.DispatcherError(
+                    f"Order {identifier} not found (and no 'coin' given to skip the lookup)"
+                )
+            coin = status.order.coin
+        result = (
+            self.exchange.cancel_by_oid(coin, identifier)
+            if kind == 'oid'
+            else self.exchange.cancel_by_cloid(coin, identifier)
+        )
+        return result.to_dict()
+
+    def _get_account_fees(self, args: ArgsObject) -> dict:
+        """
+        Hyperliquid-only: the account's current maker/taker fee rates, fee schedule and rolling
+        daily volume (`userFees`). No Lighter analog (Lighter's tier/fee data lives behind an
+        auth-gated `accountLimits` endpoint with a different shape), so this is not a shared action.
+        :param args: No arguments.
+        :return: The `userFees` payload with the typed rate fields normalised (see _classes.UserFees).
+        """
+        _ = args
+        return self.rest.get_user_fees().to_dict()
+
+    def _get_rate_limit_usage(self, args: ArgsObject) -> dict:
+        """
+        Hyperliquid-only: the address-based rate-limit budget (`userRateLimit`). Signed actions
+        (order placement, once implemented) draw down `nRequestsCap`, which grows with traded
+        volume, so clients can watch it here before trading lands.
+        :param args: No arguments.
+        :return: {'cumVlm', 'nRequestsUsed', 'nRequestsCap', 'nRequestsSurplus'}
+        """
+        _ = args
+        return self.rest.get_user_rate_limit().to_dict()
 
     def _get_funding_rate(self, args: ArgsObject) -> dict:
         """

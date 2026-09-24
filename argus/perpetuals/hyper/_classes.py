@@ -4,6 +4,8 @@ from enum import Enum
 from decimal import Decimal
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
+from argus.perpetuals.hyper import _errors as _ers
+from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.shared import P2OrderBookConvertClass
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple
 
@@ -754,6 +756,884 @@ class PerpConciseAnnotation:
 
     def to_pair(self) -> List[Any]:
         return [self.coin, {"category": self.category, "keywords": list(self.keywords)}]
+
+
+# --- account / user state (read-only, `user`-keyed info requests) -----------
+#
+# Everything below is returned by info requests that take the account's
+# *master* wallet address as `user` (`clearinghouseState`, `frontendOpenOrders`,
+# `orderStatus`, `userFillsByTime`, `userFunding`, `userFees`, `userRateLimit`).
+# None of them need a signature -- they are public reads keyed by address -- so
+# they only depend on HYPERLIQUID_WALLET_ADDRESS, never on the private key.
+# Order placement/cancellation (which does need signing) is out of scope here.
+#
+# As with the market-data classes above, `from_dict` parses Hyperliquid's
+# camelCase payloads into Decimal-typed dataclasses and `to_dict` renders them
+# back in the same camelCase shape (Decimals as strings). Each record that has a
+# venue-agnostic counterpart in `argus.perpetuals.shared.account` also has a
+# `to_common()` adapter; the dispatcher only ever emits the homogenous record,
+# which nests this venue record under "venue" (see shared/account.py).
+
+
+_dec_or_none = _acct.dec_or_none
+_str_or_none = _acct.str_or_none
+_decimal_str = _acct.decimal_str
+
+
+@dataclass
+class MarginSummary:
+    """Account-level margin totals (both `marginSummary` and `crossMarginSummary` use this shape)."""
+
+    account_value: Decimal
+    total_margin_used: Decimal
+    total_ntl_pos: Decimal
+    total_raw_usd: Decimal
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MarginSummary":
+        return cls(
+            account_value=Decimal(data["accountValue"]),
+            total_margin_used=Decimal(data["totalMarginUsed"]),
+            total_ntl_pos=Decimal(data["totalNtlPos"]),
+            total_raw_usd=Decimal(data["totalRawUsd"]),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "accountValue": _decimal_str(self.account_value),
+            "totalMarginUsed": _decimal_str(self.total_margin_used),
+            "totalNtlPos": _decimal_str(self.total_ntl_pos),
+            "totalRawUsd": _decimal_str(self.total_raw_usd),
+        }
+
+
+@dataclass
+class PositionLeverage:
+    """Leverage applied to one position. `raw_usd` is only present for isolated margin."""
+
+    type: Literal["cross", "isolated"]
+    value: int
+    raw_usd: Optional[Decimal] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PositionLeverage":
+        return cls(
+            type=data["type"],
+            value=int(data["value"]),
+            raw_usd=_dec_or_none(data.get("rawUsd")),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"type": self.type, "value": self.value}
+        if self.raw_usd is not None:
+            out["rawUsd"] = _decimal_str(self.raw_usd)
+        return out
+
+
+@dataclass
+class CumulativeFunding:
+    """Cumulative funding paid/received on one position."""
+
+    all_time: Decimal
+    since_change: Decimal
+    since_open: Decimal
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CumulativeFunding":
+        return cls(
+            all_time=Decimal(data["allTime"]),
+            since_change=Decimal(data["sinceChange"]),
+            since_open=Decimal(data["sinceOpen"]),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "allTime": _decimal_str(self.all_time),
+            "sinceChange": _decimal_str(self.since_change),
+            "sinceOpen": _decimal_str(self.since_open),
+        }
+
+
+@dataclass
+class Position:
+    """One open perp position from `clearinghouseState.assetPositions[].position`.
+
+    `szi` is the signed size: positive == long, negative == short. `entry_px` and
+    `liquidation_px` are null for positions Hyperliquid reports without them
+    (e.g. cross positions with no liquidation price)."""
+
+    coin: str
+    szi: Decimal
+    position_value: Decimal
+    unrealized_pnl: Decimal
+    return_on_equity: Decimal
+    margin_used: Decimal
+    max_leverage: int
+    leverage: PositionLeverage
+    cum_funding: CumulativeFunding
+    entry_px: Optional[Decimal] = None
+    liquidation_px: Optional[Decimal] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Position":
+        return cls(
+            coin=data["coin"],
+            szi=Decimal(data["szi"]),
+            position_value=Decimal(data["positionValue"]),
+            unrealized_pnl=Decimal(data["unrealizedPnl"]),
+            return_on_equity=Decimal(data["returnOnEquity"]),
+            margin_used=Decimal(data["marginUsed"]),
+            max_leverage=int(data["maxLeverage"]),
+            leverage=PositionLeverage.from_dict(data["leverage"]),
+            cum_funding=CumulativeFunding.from_dict(data["cumFunding"]),
+            entry_px=_dec_or_none(data.get("entryPx")),
+            liquidation_px=_dec_or_none(data.get("liquidationPx")),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "coin": self.coin,
+            "szi": _decimal_str(self.szi),
+            "entryPx": _str_or_none(self.entry_px),
+            "positionValue": _decimal_str(self.position_value),
+            "unrealizedPnl": _decimal_str(self.unrealized_pnl),
+            "returnOnEquity": _decimal_str(self.return_on_equity),
+            "liquidationPx": _str_or_none(self.liquidation_px),
+            "marginUsed": _decimal_str(self.margin_used),
+            "maxLeverage": self.max_leverage,
+            "leverage": self.leverage.to_dict(),
+            "cumFunding": self.cum_funding.to_dict(),
+        }
+
+    @property
+    def is_long(self) -> bool:
+        return self.szi > 0
+
+    @property
+    def is_short(self) -> bool:
+        return self.szi < 0
+
+    @property
+    def size(self) -> Decimal:
+        """Unsigned position size."""
+        return abs(self.szi)
+
+    def to_common(self, dex: str = "") -> _acct.Position:
+        return _acct.Position(
+            name=self.coin,
+            signed_size=self.szi,
+            notional=self.position_value,
+            unrealized_pnl=self.unrealized_pnl,
+            entry_price=self.entry_px,
+            liquidation_price=self.liquidation_px,
+            leverage=Decimal(self.leverage.value),
+            margin_used=self.margin_used,
+            dex=dex,
+            venue=self,
+        )
+
+
+@dataclass
+class AssetPosition:
+    """Wrapper Hyperliquid puts around each position (`type` is currently always "oneWay")."""
+
+    type: str
+    position: Position
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AssetPosition":
+        return cls(type=data["type"], position=Position.from_dict(data["position"]))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"type": self.type, "position": self.position.to_dict()}
+
+
+@dataclass
+class ClearinghouseState:
+    """A user's perp account state on one dex, from `clearinghouseState`.
+
+    Hyperliquid keeps a separate clearinghouse per dex: the default dex (`dex=""`)
+    and each HIP-3 dex have their own margin summary and positions. `dex` records
+    which one this snapshot is for."""
+
+    dex: str
+    margin_summary: MarginSummary
+    cross_margin_summary: MarginSummary
+    cross_maintenance_margin_used: Decimal
+    withdrawable: Decimal
+    time: int
+    asset_positions: List[AssetPosition] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, dex: str, data: Dict[str, Any]) -> "ClearinghouseState":
+        return cls(
+            dex=dex,
+            margin_summary=MarginSummary.from_dict(data["marginSummary"]),
+            cross_margin_summary=MarginSummary.from_dict(data["crossMarginSummary"]),
+            cross_maintenance_margin_used=Decimal(data["crossMaintenanceMarginUsed"]),
+            withdrawable=Decimal(data["withdrawable"]),
+            time=int(data["time"]),
+            asset_positions=[AssetPosition.from_dict(p) for p in data.get("assetPositions", [])],
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "dex": self.dex,
+            "marginSummary": self.margin_summary.to_dict(),
+            "crossMarginSummary": self.cross_margin_summary.to_dict(),
+            "crossMaintenanceMarginUsed": _decimal_str(self.cross_maintenance_margin_used),
+            "withdrawable": _decimal_str(self.withdrawable),
+            "time": self.time,
+            "assetPositions": [p.to_dict() for p in self.asset_positions],
+        }
+
+    @property
+    def positions(self) -> List[Position]:
+        return [ap.position for ap in self.asset_positions]
+
+    @property
+    def account_value(self) -> Decimal:
+        return self.margin_summary.account_value
+
+    def to_balance(self, account_mode: Optional[str] = None) -> _acct.AccountBalance:
+        """`marginSummary` is the whole account (cross + isolated); `withdrawable` is what is free.
+        Only meaningful for accounts that keep perp collateral in the perps ledger; see
+        `AccountMode.uses_spot_collateral` and `unified_balance` for the others."""
+        return _acct.AccountBalance(
+            account_value=self.margin_summary.account_value,
+            available_balance=self.withdrawable,
+            total_margin_used=self.margin_summary.total_margin_used,
+            total_position_notional=self.margin_summary.total_ntl_pos,
+            venue=self,
+            account_mode=account_mode,
+        )
+
+
+# --- account mode / spot ledger ------------------------------------------------
+
+class AccountMode(str, Enum):
+    """How the account keeps its books, from the `userAbstraction` info request (the
+    values are the wire strings). It decides where collateral lives:
+
+      - `DEFAULT` / `DISABLED`: standard accounts with separate perp and spot balances.
+      - `DEX_ABSTRACTION`: discontinued mode; USDC in perps, other collateral in spot.
+      - `UNIFIED` / `PORTFOLIO_MARGIN`: one collateral pool in the *spot* ledger backs spot
+        and every perp dex. Hyperliquid's docs say the perps `accountValue`/`withdrawable`
+        are "not meaningful" for these accounts (they read 0) and spot is the source of truth.
+    """
+
+    DEFAULT = "default"
+    DISABLED = "disabled"
+    DEX_ABSTRACTION = "dexAbstraction"
+    UNIFIED = "unifiedAccount"
+    PORTFOLIO_MARGIN = "portfolioMargin"
+
+    @classmethod
+    def from_wire(cls, value: Any) -> "AccountMode":
+        try:
+            return cls(value)
+        except ValueError:
+            raise _ers.UnsupportedAccountModeError(
+                f"Unrecognised Hyperliquid account mode {value!r} from `userAbstraction`; "
+                f"known modes: {[m.value for m in cls]}."
+            ) from None
+
+    @property
+    def uses_spot_collateral(self) -> bool:
+        return self in (AccountMode.UNIFIED, AccountMode.PORTFOLIO_MARGIN)
+
+
+@dataclass
+class SpotBalance:
+    """One token's line in `spotClearinghouseState.balances`. `hold` is the part locked
+    (e.g. by resting spot orders); `token` is the spot token index (USDC is 0)."""
+
+    coin: str
+    token: int
+    total: Decimal
+    hold: Decimal
+    entry_ntl: Decimal
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SpotBalance":
+        return cls(
+            coin=data["coin"],
+            token=int(data["token"]),
+            total=Decimal(data["total"]),
+            hold=Decimal(data["hold"]),
+            entry_ntl=Decimal(data["entryNtl"]),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "coin": self.coin,
+            "token": self.token,
+            "total": _decimal_str(self.total),
+            "hold": _decimal_str(self.hold),
+            "entryNtl": _decimal_str(self.entry_ntl),
+        }
+
+
+USDC_TOKEN = 0
+
+
+@dataclass
+class SpotClearinghouseState:
+    """A user's spot balances, from `spotClearinghouseState`. For unified / portfolio-margin
+    accounts this is the account's collateral pool (see `AccountMode`).
+    `available_after_maintenance` maps token index -> amount free after maintenance margin."""
+
+    balances: List[SpotBalance]
+    available_after_maintenance: Dict[int, Decimal] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SpotClearinghouseState":
+        return cls(
+            balances=[SpotBalance.from_dict(b) for b in data.get("balances", [])],
+            available_after_maintenance={
+                int(token): Decimal(amount)
+                for token, amount in data.get("tokenToAvailableAfterMaintenance", [])
+            },
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "balances": [b.to_dict() for b in self.balances],
+            "tokenToAvailableAfterMaintenance": [
+                [token, _decimal_str(amount)] for token, amount in self.available_after_maintenance.items()
+            ],
+        }
+
+    @property
+    def usdc(self) -> Optional[SpotBalance]:
+        return next((b for b in self.balances if b.token == USDC_TOKEN), None)
+
+
+@dataclass
+class UnifiedAccountState:
+    """Everything a unified / portfolio-margin balance is derived from: the spot ledger
+    (collateral) plus each perp dex's clearinghouse (positions, PnL, margin). Stored as
+    the balance's `venue` record so no ledger read is lost."""
+
+    mode: AccountMode
+    spot: SpotClearinghouseState
+    perps: List[ClearinghouseState]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode.value,
+            "spot": self.spot.to_dict(),
+            "perps": [state.to_dict() for state in self.perps],
+        }
+
+    def to_balance(self) -> _acct.AccountBalance:
+        """
+        Equity = spot USDC + unrealized PnL across every perp dex; available = spot's own
+        `tokenToAvailableAfterMaintenance` for USDC (else USDC total minus hold); margin and
+        notional are summed over the perp dexes. Per Hyperliquid's docs the per-dex
+        `accountValue` / `withdrawable` are not meaningful here, so they are never added in.
+
+        The docs give no equity formula, so "USDC + unrealized PnL" is inferred; it matched a live
+        account holding a small open ETH position (tests/hyper_order_lifecycle.py). Other collateral tokens (USDT0, ...) are
+        listed in `assets` but not priced into `account_value`, and portfolio-margin borrowing
+        is not modelled.
+        """
+        usdc = self.spot.usdc
+        usdc_total = usdc.total if usdc else Decimal(0)
+        usdc_hold = usdc.hold if usdc else Decimal(0)
+        unrealized_pnl = sum((p.unrealized_pnl for s in self.perps for p in s.positions), Decimal(0))
+        available = self.spot.available_after_maintenance.get(USDC_TOKEN, usdc_total - usdc_hold)
+        assets = tuple(
+            _acct.AssetBalance(
+                asset=b.coin,
+                total=b.total,
+                available=b.total - b.hold,
+                usd_value=b.total if b.token == USDC_TOKEN else None,
+            )
+            for b in self.spot.balances
+            if b.total != 0
+        )
+        return _acct.AccountBalance(
+            account_value=usdc_total + unrealized_pnl,
+            available_balance=available,
+            total_margin_used=sum((s.margin_summary.total_margin_used for s in self.perps), Decimal(0)),
+            total_position_notional=sum((s.margin_summary.total_ntl_pos for s in self.perps), Decimal(0)),
+            venue=self,
+            account_mode=self.mode.value,
+            assets=assets,
+        )
+
+
+@dataclass
+class OpenOrder:
+    """One resting order, in the richer `frontendOpenOrders` shape (which is also
+    the shape nested inside `orderStatus` responses). `side` is "B" (bid/buy) or
+    "A" (ask/sell), as on the wire. `sz` is the remaining size, `orig_sz` the
+    size at placement. `cloid` is the client order id, if one was set."""
+
+    coin: str
+    side: Literal["A", "B"]
+    limit_px: Decimal
+    sz: Decimal
+    oid: int
+    timestamp: int
+    orig_sz: Decimal
+    order_type: str
+    trigger_condition: str
+    is_trigger: bool
+    trigger_px: Decimal
+    reduce_only: bool
+    is_position_tpsl: bool
+    cloid: Optional[str] = None
+    tif: Optional[str] = None
+    children: List[Any] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OpenOrder":
+        return cls(
+            coin=data["coin"],
+            side=data["side"],
+            limit_px=Decimal(data["limitPx"]),
+            sz=Decimal(data["sz"]),
+            oid=int(data["oid"]),
+            timestamp=int(data["timestamp"]),
+            # `openOrders` (the slim variant) omits these; default them so both parse.
+            orig_sz=Decimal(data.get("origSz", data["sz"])),
+            order_type=data.get("orderType", "Limit"),
+            trigger_condition=data.get("triggerCondition", "N/A"),
+            is_trigger=bool(data.get("isTrigger", False)),
+            trigger_px=Decimal(data.get("triggerPx", "0.0")),
+            reduce_only=bool(data.get("reduceOnly", False)),
+            is_position_tpsl=bool(data.get("isPositionTpsl", False)),
+            cloid=data.get("cloid"),
+            tif=data.get("tif"),
+            children=list(data.get("children", [])),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "coin": self.coin,
+            "side": self.side,
+            "limitPx": _decimal_str(self.limit_px),
+            "sz": _decimal_str(self.sz),
+            "oid": self.oid,
+            "timestamp": self.timestamp,
+            "origSz": _decimal_str(self.orig_sz),
+            "orderType": self.order_type,
+            "triggerCondition": self.trigger_condition,
+            "isTrigger": self.is_trigger,
+            "triggerPx": _decimal_str(self.trigger_px),
+            "reduceOnly": self.reduce_only,
+            "isPositionTpsl": self.is_position_tpsl,
+            "cloid": self.cloid,
+            "tif": self.tif,
+            "children": list(self.children),
+        }
+
+    @property
+    def is_buy(self) -> bool:
+        return self.side == "B"
+
+    def to_common(self, status: str = "open", dex: str = "") -> _acct.Order:
+        """`status` is "open" for a resting order from `frontendOpenOrders`, or the
+        lifecycle string `orderStatus` reported alongside the order. `dex` tags the
+        ledger the order was read from (`orderStatus` does not say, so it stays "")."""
+        return _acct.Order(
+            order_id=_decimal_str(self.oid),
+            client_order_id=self.cloid,
+            name=self.coin,
+            is_buy=self.is_buy,
+            price=self.limit_px,
+            original_size=self.orig_sz,
+            remaining_size=self.sz,
+            order_type=self.order_type,
+            status=status,
+            reduce_only=self.reduce_only,
+            timestamp_ms=self.timestamp,
+            dex=dex,
+            venue=self,
+        )
+
+
+@dataclass
+class OrderStatus:
+    """Result of an `orderStatus` lookup by oid/cloid.
+
+    `found` is False when Hyperliquid answers `{"status": "unknownOid"}`; then
+    `order`, `status` and `status_timestamp` are all None. Otherwise `status` is
+    the order's lifecycle state (e.g. "open", "filled", "canceled", "rejected",
+    "triggered", "marginCanceled", ...)."""
+
+    found: bool
+    order: Optional[OpenOrder] = None
+    status: Optional[str] = None
+    status_timestamp: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OrderStatus":
+        if data.get("status") != "order":
+            return cls(found=False)
+        wrapper = data["order"]
+        return cls(
+            found=True,
+            order=OpenOrder.from_dict(wrapper["order"]),
+            status=wrapper["status"],
+            status_timestamp=int(wrapper["statusTimestamp"]),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "found": self.found,
+            "order": self.order.to_dict() if self.order is not None else None,
+            "status": self.status,
+            "statusTimestamp": self.status_timestamp,
+        }
+
+    def to_common(self) -> Optional[_acct.Order]:
+        """None for an `unknownOid` lookup. Keyed off `order` rather than `found` so the
+        "found implies an order" invariant is enforced here instead of assumed."""
+        if self.order is None:
+            return None
+        return self.order.to_common(status=self.status or "open")
+
+
+# --- trading results (`exchange` endpoint) -----------------------------------
+
+@dataclass
+class OrderPlacementResult:
+    """The per-order outcome of a `place_order` submission.
+
+    The exchange answers an ok envelope even when the order itself is rejected at the
+    venue (e.g. insufficient margin): such rejections arrive as ``{"error": "..."}``
+    entries in ``data.statuses`` rather than as an err envelope. Exactly one of `oid`
+    (with `status` "resting" or "filled") and `error` is set; `avg_px` is present only
+    for an immediately-filled order.
+    """
+
+    coin: str
+    oid: Optional[int] = None
+    status: Optional[str] = None  # "resting" | "filled" | None (when errored)
+    avg_px: Optional[Decimal] = None
+    error: Optional[str] = None
+
+    @classmethod
+    def from_response(cls, coin: str, data: Dict[str, Any]) -> "OrderPlacementResult":
+        statuses = (data.get("data") or {}).get("statuses") or []
+        if not statuses:
+            raise _ers.HyperLiquidError(f"Unexpected order response shape (no statuses): {data!r}")
+        entry = statuses[0]  # this client submits one order per action
+        if "resting" in entry:
+            return cls(coin=coin, oid=int(entry["resting"]["oid"]), status="resting")
+        if "filled" in entry:
+            filled = entry["filled"]
+            return cls(
+                coin=coin,
+                oid=int(filled["oid"]),
+                status="filled",
+                avg_px=Decimal(filled["avgPx"]) if filled.get("avgPx") is not None else None,
+            )
+        if "error" in entry:
+            return cls(coin=coin, error=entry["error"])
+        raise _ers.HyperLiquidError(f"Unrecognized order status entry: {entry!r}")
+
+    @property
+    def ok(self) -> bool:
+        """True when the venue accepted the order (resting or filled)."""
+        return self.error is None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "coin": self.coin,
+            "oid": self.oid,
+            "status": self.status,
+            "avgPx": _acct.str_or_none(self.avg_px),
+            "error": self.error,
+        }
+        return out
+
+
+@dataclass
+class CancelResult:
+    """Outcome of a cancel action.
+
+    The venue answers a cancel with per-id statuses (``data.statuses``), each either the
+    bare string ``"success"`` (confirmed live) or a rejection
+    (``{"error": "Order was never placed, already canceled, or filled."}``). Ids it could
+    not cancel (already filled/canceled, or unknown) therefore come back as errors, so
+    callers must check `ok` rather than assume a submitted cancel worked.
+    """
+
+    coin: str
+    canceled_oids: List[int] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_response(cls, coin: str, data: Dict[str, Any], requested_oids: Optional[List[int]] = None) -> "CancelResult":
+        """`requested_oids` are the oids asked for, in order: a ``"success"`` status carries no
+        id of its own, so it is matched to the request at the same position."""
+        statuses = (data.get("data") or {}).get("statuses") or []
+        canceled_oids: List[int] = []
+        errors: List[str] = []
+        for i, entry in enumerate(statuses):
+            if isinstance(entry, dict) and "error" in entry:
+                errors.append(entry["error"])
+                continue
+            oid = None
+            if isinstance(entry, dict):
+                for key in ("resting", "filled"):
+                    if isinstance(entry.get(key), dict) and entry[key].get("oid") is not None:
+                        oid = int(entry[key]["oid"])
+                        break
+            elif requested_oids is not None and i < len(requested_oids):
+                oid = int(requested_oids[i])
+            # An acknowledgement whose oid we cannot recover (e.g. a cancel by cloid) is still an
+            # acknowledgement; record -1 so `ok` reflects it without inventing an id.
+            canceled_oids.append(oid if oid is not None else -1)
+        return cls(coin=coin, canceled_oids=canceled_oids, errors=errors)
+
+    @property
+    def ok(self) -> bool:
+        """True only when the venue acknowledged canceling every requested id."""
+        return not self.errors and bool(self.canceled_oids)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "coin": self.coin,
+            "canceledOids": list(self.canceled_oids),
+            "errors": list(self.errors),
+        }
+
+
+@dataclass
+class UserFill:
+    """One of the account's fills, from `userFills` / `userFillsByTime`.
+
+    `dir` is Hyperliquid's human-readable direction ("Open Long", "Close Short",
+    "Buy", ...). `crossed` is True for taker fills. `fee` is in `fee_token`
+    (USDC on perps). `builder_fee` is only present when a builder fee applied."""
+
+    coin: str
+    px: Decimal
+    sz: Decimal
+    side: Literal["A", "B"]
+    time: int
+    start_position: Decimal
+    dir: str
+    closed_pnl: Decimal
+    hash: str
+    oid: int
+    crossed: bool
+    fee: Decimal
+    tid: int
+    fee_token: str = "USDC"
+    builder_fee: Optional[Decimal] = None
+    cloid: Optional[str] = None
+    twap_id: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UserFill":
+        return cls(
+            coin=data["coin"],
+            px=Decimal(data["px"]),
+            sz=Decimal(data["sz"]),
+            side=data["side"],
+            time=int(data["time"]),
+            start_position=Decimal(data["startPosition"]),
+            dir=data["dir"],
+            closed_pnl=Decimal(data["closedPnl"]),
+            hash=data["hash"],
+            oid=int(data["oid"]),
+            crossed=bool(data["crossed"]),
+            fee=Decimal(data["fee"]),
+            tid=int(data["tid"]),
+            fee_token=data.get("feeToken", "USDC"),
+            builder_fee=_dec_or_none(data.get("builderFee")),
+            cloid=data.get("cloid"),
+            twap_id=data.get("twapId"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "coin": self.coin,
+            "px": _decimal_str(self.px),
+            "sz": _decimal_str(self.sz),
+            "side": self.side,
+            "time": self.time,
+            "startPosition": _decimal_str(self.start_position),
+            "dir": self.dir,
+            "closedPnl": _decimal_str(self.closed_pnl),
+            "hash": self.hash,
+            "oid": self.oid,
+            "crossed": self.crossed,
+            "fee": _decimal_str(self.fee),
+            "feeToken": self.fee_token,
+            "tid": self.tid,
+            "cloid": self.cloid,
+            "twapId": self.twap_id,
+        }
+        if self.builder_fee is not None:
+            out["builderFee"] = _decimal_str(self.builder_fee)
+        return out
+
+    @property
+    def is_buy(self) -> bool:
+        return self.side == "B"
+
+    def to_common(self) -> _acct.Trade:
+        """`crossed` is Hyperliquid's "this fill crossed the spread", i.e. the account took liquidity."""
+        return _acct.Trade(
+            trade_id=_decimal_str(self.tid),
+            order_id=_decimal_str(self.oid),
+            name=self.coin,
+            is_buy=self.is_buy,
+            price=self.px,
+            size=self.sz,
+            fee=self.fee,
+            is_maker=not self.crossed,
+            realized_pnl=self.closed_pnl,
+            timestamp_ms=self.time,
+            venue=self,
+        )
+
+
+@dataclass
+class UserFundingPayment:
+    """One funding payment applied to the account, from `userFunding`.
+
+    `usdc` is the signed amount: negative == the account paid funding, positive
+    == it received funding. `szi` is the signed position size the payment was
+    computed on and `funding_rate` the hourly rate applied."""
+
+    time: int
+    hash: str
+    coin: str
+    funding_rate: Decimal
+    szi: Decimal
+    usdc: Decimal
+    type: str = "funding"
+    n_samples: Optional[int] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UserFundingPayment":
+        delta = data["delta"]
+        return cls(
+            time=int(data["time"]),
+            hash=data["hash"],
+            coin=delta["coin"],
+            funding_rate=Decimal(delta["fundingRate"]),
+            szi=Decimal(delta["szi"]),
+            usdc=Decimal(delta["usdc"]),
+            type=delta.get("type", "funding"),
+            n_samples=delta.get("nSamples"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "time": self.time,
+            "hash": self.hash,
+            "delta": {
+                "type": self.type,
+                "coin": self.coin,
+                "fundingRate": _decimal_str(self.funding_rate),
+                "szi": _decimal_str(self.szi),
+                "usdc": _decimal_str(self.usdc),
+                "nSamples": self.n_samples,
+            },
+        }
+
+    def to_common(self) -> _acct.FundingPayment:
+        return _acct.FundingPayment(
+            name=self.coin,
+            timestamp_ms=self.time,
+            rate=self.funding_rate,
+            position_size=self.szi,
+            payment=self.usdc,
+            venue=self,
+        )
+
+
+@dataclass
+class UserFees:
+    """The account's current fee rates and rolling volume, from `userFees`.
+
+    Only the perp-relevant rates are typed; the remainder of the (large, evolving)
+    payload -- fee schedule tiers, referral/staking discounts, trial state -- is
+    kept verbatim in `raw` so nothing is lost on the wire."""
+
+    user_cross_rate: Decimal
+    user_add_rate: Decimal
+    user_spot_cross_rate: Decimal
+    user_spot_add_rate: Decimal
+    active_referral_discount: Decimal
+    daily_user_vlm: List[Dict[str, Any]] = field(default_factory=list)
+    raw: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UserFees":
+        return cls(
+            user_cross_rate=Decimal(data["userCrossRate"]),
+            user_add_rate=Decimal(data["userAddRate"]),
+            user_spot_cross_rate=Decimal(data.get("userSpotCrossRate", "0")),
+            user_spot_add_rate=Decimal(data.get("userSpotAddRate", "0")),
+            active_referral_discount=Decimal(data.get("activeReferralDiscount", "0")),
+            daily_user_vlm=list(data.get("dailyUserVlm", [])),
+            raw=dict(data),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out = dict(self.raw)
+        out.update({
+            "userCrossRate": _decimal_str(self.user_cross_rate),
+            "userAddRate": _decimal_str(self.user_add_rate),
+            "userSpotCrossRate": _decimal_str(self.user_spot_cross_rate),
+            "userSpotAddRate": _decimal_str(self.user_spot_add_rate),
+            "activeReferralDiscount": _decimal_str(self.active_referral_discount),
+            "dailyUserVlm": list(self.daily_user_vlm),
+        })
+        return out
+
+    @property
+    def taker_rate(self) -> Decimal:
+        return self.user_cross_rate
+
+    @property
+    def maker_rate(self) -> Decimal:
+        return self.user_add_rate
+
+
+@dataclass
+class UserRateLimit:
+    """The account's address-based rate-limit budget, from `userRateLimit`.
+
+    Hyperliquid grants 1 request per 1 USDC of cumulative traded volume (plus an
+    initial buffer) for *signed* actions; this is the budget order placement will
+    draw down, so it is surfaced now so clients can watch it before trading lands."""
+
+    cum_vlm: Decimal
+    n_requests_used: int
+    n_requests_cap: int
+    n_requests_surplus: int = 0
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "UserRateLimit":
+        return cls(
+            cum_vlm=Decimal(data["cumVlm"]),
+            n_requests_used=int(data["nRequestsUsed"]),
+            n_requests_cap=int(data["nRequestsCap"]),
+            n_requests_surplus=int(data.get("nRequestsSurplus", 0)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "cumVlm": _decimal_str(self.cum_vlm),
+            "nRequestsUsed": self.n_requests_used,
+            "nRequestsCap": self.n_requests_cap,
+            "nRequestsSurplus": self.n_requests_surplus,
+        }
+
+    @property
+    def n_requests_remaining(self) -> int:
+        return max(self.n_requests_cap - self.n_requests_used, 0)
 
 
 # --- websocket market-data wire encoding -------------------------------------

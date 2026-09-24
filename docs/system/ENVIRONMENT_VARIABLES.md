@@ -225,10 +225,10 @@ This document lists all environment variables used throughout the Argus project 
 ## Hyperliquid Perpetuals
 
 ### `HYPERLIQUID_WALLET_ADDRESS`
-- **Purpose**: Wallet address for Hyperliquid authentication
+- **Purpose**: Wallet address for Hyperliquid authentication and account data
 - **Required**: Yes (for the Hyperliquid dispatcher)
 - **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/hyper/rest.py`
-- **Behavior**: Read at startup when no `wallet_address` is passed to `HyperLiquidDispatcher`; used to construct `HyperLiquidRest`
+- **Behavior**: Read at startup when no `wallet_address` is passed to `HyperLiquidDispatcher`; used to construct `HyperLiquidRest`. It is the `user` on every account read (`get_balance`, `get_positions`, `get_orders`, `get_order_status`, `get_trades`, `get_funding_payments`, `get_account_fees`, `get_rate_limit_usage`), which are unsigned `info` requests. **It must be the master account address**: querying with an API/agent wallet address returns an empty account. See `docs/PERPETUALS_ACCOUNT.md`.
 
 ### `HYPERLIQUID_PRIVATE_KEY`
 - **Purpose**: Private key for Hyperliquid authentication
@@ -274,6 +274,18 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `perpetuals/hyper/wss.py`
 
 ## Lighter Perpetuals
+
+### `LIGHTER_ACCOUNT_INDEX`
+- **Purpose**: The integer Lighter account (master or sub-account) the account actions report on
+- **Required**: No (without it, and without `LIGHTER_AUTH_TOKEN`, the account actions answer with `AccountNotConfiguredError`; market data is unaffected)
+- **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/rest.py`
+- **Behavior**: `get_balance` / `get_positions` are public reads keyed by this index alone (`GET /api/v1/account`). Find the index for an L1 address with `LighterRest.get_accounts_by_l1_address(...)` or in the Lighter web UI. If omitted but `LIGHTER_AUTH_TOKEN` is set, the index embedded in the token is used.
+
+### `LIGHTER_AUTH_TOKEN`
+- **Purpose**: A Lighter **read-only API token** (`ro:<account_index>:<single|all>:<expiry_unix>:<hex>`) for the auth-gated account reads
+- **Required**: No (without it, `get_orders` / `get_order_status` / `get_trades` / `get_funding_payments` answer with `AccountNotConfiguredError`; `get_balance` / `get_positions` still work)
+- **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/rest.py`
+- **Behavior**: Sent verbatim in the `authorization` header of auth-gated requests. Mint one in the Lighter web UI (API keys page) or via `POST /api/v1/tokens_create`; read-only tokens live between 1 day and 10 years, so no signing library or API-key private key is needed for reads. The dispatcher refuses to start with a token that is malformed, expired, or scoped (`single`) to a different account than `LIGHTER_ACCOUNT_INDEX`. This is **not** the short-lived signed token the Lighter SDK mints for order execution; that comes with the trading work.
 
 ### `LIGHTER_ORDERBOOK_DEPTH`
 - **Purpose**: Controls the depth of orderbook data (number of bid/ask levels streamed in P2 packets)

@@ -8,10 +8,12 @@ import traceback
 from argus import protocol
 from utils3 import runAsThread
 from collections.abc import Mapping
+from argus.perpetuals.shared import account
 from utils3.networking.sockets import Server
 from datetime import datetime, timedelta, UTC
 from typing import Callable, Any, Generic, TypeVar
 from argus.perpetuals.shared import _classes as cls, _errors as ers
+from argus.perpetuals.shared.account import AccountHandlersMixin, BaseDispatcherCompatibleAccountRest
 from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage, NewFundingRate
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
 
@@ -125,7 +127,7 @@ class BaseDispatcherCompatibleRest:
         raise NotImplementedError("get_all_perpetuals() not implemented.")
 
 
-class BaseDispatcher(Introspective, RoutingHelper):
+class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
     """
     A base class designed for Argus v2's Perpetual Dispatchers. This dispatcher inherits almost all of PolymarketDispatcher's inbound
     and outbound message shapes. It uses Introspective, RoutingHelper, CorrelationIDChecker, Server (utils3.networking.sockets.Server),
@@ -186,6 +188,14 @@ class BaseDispatcher(Introspective, RoutingHelper):
     rest client and pass it to the superclass constructor. For guidance on this pattern, see:
     argus/perpetuals/hyper/__init__.py: HyperLiquidDispatcher
 
+    Account data (balance, positions, orders, trades, funding payments) is likewise shared: the handlers come from
+    argus.perpetuals.shared.account.AccountHandlersMixin and only ever talk to `self.account_rest`, a
+    BaseDispatcherCompatibleAccountRest. Pass the venue's account-capable REST client as `account_rest` (it may be
+    the same object as `common_rest`) and merge `self.account_routing_table()` into the routing table to expose the
+    actions. Leave `account_rest` as None for a dispatcher with no account configured; the actions then answer
+    with AccountNotConfiguredError instead of silently reporting an empty account. See shared/account.py for the
+    design and the wire format.
+
 
 
     """
@@ -195,7 +205,8 @@ class BaseDispatcher(Introspective, RoutingHelper):
                  pi: "PrintInterface" = _p,
                  common_rest: BaseDispatcherCompatibleRest = None,
                  configurations: dict = None,
-                 interactive_functions: dict = None):
+                 interactive_functions: dict = None,
+                 account_rest: BaseDispatcherCompatibleAccountRest = None):
         super().__init__()
         RoutingHelper.__init__(self)
         self._dispatcher_server = Server(
@@ -209,6 +220,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
         self.routing_table = routing_table
         self.pi = pi
         self.common_rest: BaseDispatcherCompatibleRest = common_rest
+        self.account_rest: BaseDispatcherCompatibleAccountRest | None = account_rest
         self._state = {
             "enable_routing": LockedState(True)
         }

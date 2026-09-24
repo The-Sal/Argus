@@ -61,10 +61,11 @@ import time
 from decimal import Decimal
 from dataclasses import dataclass
 from collections.abc import Mapping
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
-
 from argus._argus_utils import ArgsObject
 from argus.perpetuals.shared import _errors as ers
+from argus.perpetuals.shared._classes import paginate
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+
 
 
 DEFAULT_PAGE_SIZE = 25
@@ -98,9 +99,21 @@ def dec_or_none(value: Any) -> Optional[Decimal]:
     return Decimal(value) if value is not None else None
 
 
+def decimal_str(value: Decimal) -> str:
+    """
+    A Decimal rendered for the wire. `format(value)` with an empty format spec is
+    defined to return exactly `str(value)`, so this is byte-identical to `str()`;
+    it is spelled this way because the bundled `decimal` type stubs do not declare
+    `__str__`/`__repr__`, which makes every `str(<Decimal>)` call raise a spurious
+    "result might not be useful" inspection in JetBrains IDEs. One helper keeps that
+    noise out of the account records instead of scattering suppressions.
+    """
+    return format(value)
+
+
 def str_or_none(value: Optional[Decimal]) -> Optional[str]:
-    """str(value), or None for an absent Decimal. Shared by every venue's `to_dict`."""
-    return str(value) if value is not None else None
+    """`decimal_str(value)`, or None for an absent Decimal. Shared by every venue's `to_dict`."""
+    return decimal_str(value) if value is not None else None
 
 
 _s = str_or_none
@@ -116,16 +129,48 @@ class VenueRecord(Protocol):
 # --- homogenous records ------------------------------------------------------
 
 @dataclass(frozen=True)
+class AssetBalance:
+    """
+    One asset held in the account (collateral or otherwise), for clients that want more than the headline numbers.
+
+    Attributes:
+        asset: The asset's symbol as the venue names it (e.g. "USDC", "HYPE").
+        total: Amount held, in the asset's own units.
+        available: The part of `total` not on hold (e.g. against resting orders).
+        usd_value: `total` in USD when the dispatcher can price it without a market lookup (USDC), else None.
+    """
+
+    asset: str
+    total: Decimal
+    available: Decimal
+    usd_value: Optional[Decimal] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "asset": self.asset,
+            "total": decimal_str(self.total),
+            "available": decimal_str(self.available),
+            "usd_value": _s(self.usd_value),
+        }
+
+
+@dataclass(frozen=True)
 class AccountBalance:
     """
     Account-level equity and margin for one venue account.
 
+    The four headline fields mean the same thing however the venue keeps its books (separate
+    perp/spot ledgers, a unified collateral pool, ...): clients never need to know which.
+
     Attributes:
-        account_value: Total equity including unrealized PnL, in the venue's quote/collateral currency (USDC on both venues).
+        account_value: Total equity usable as collateral, including unrealized PnL, in the venue's quote currency (USDC on both venues).
         available_balance: What could be withdrawn or used to open new positions right now.
         total_margin_used: Collateral currently locked as margin across all positions.
         total_position_notional: Sum of |size| * mark price over all open positions.
         venue: The venue's native account record (e.g. Hyperliquid `ClearinghouseState`).
+        account_mode: Informational label for how the venue keeps this account (e.g. Hyperliquid "unifiedAccount"), or None.
+            Clients never need to branch on it; it is there for debugging and UI badges.
+        assets: Per-asset holdings, where the venue reports them. Empty when it does not.
     """
 
     account_value: Decimal
@@ -133,13 +178,17 @@ class AccountBalance:
     total_margin_used: Decimal
     total_position_notional: Decimal
     venue: VenueRecord
+    account_mode: Optional[str] = None
+    assets: Tuple[AssetBalance, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "account_value": str(self.account_value),
-            "available_balance": str(self.available_balance),
-            "total_margin_used": str(self.total_margin_used),
-            "total_position_notional": str(self.total_position_notional),
+            "account_value": decimal_str(self.account_value),
+            "available_balance": decimal_str(self.available_balance),
+            "total_margin_used": decimal_str(self.total_margin_used),
+            "total_position_notional": decimal_str(self.total_position_notional),
+            "account_mode": self.account_mode,
+            "assets": [a.to_dict() for a in self.assets],
             "venue": self.venue.to_dict(),
         }
 
@@ -158,6 +207,7 @@ class Position:
         liquidation_price: Estimated liquidation price, or None (e.g. no liquidation risk / not reported).
         leverage: Effective leverage as the venue reports it, or None if not reported as a plain number.
         margin_used: Collateral allocated to this position, or None if not reported.
+        dex: The venue sub-ledger the position lives on ("" for the primary one), so a client reading every ledger can tell them apart.
         venue: The venue's native position record.
     """
 
@@ -170,6 +220,7 @@ class Position:
     liquidation_price: Optional[Decimal] = None
     leverage: Optional[Decimal] = None
     margin_used: Optional[Decimal] = None
+    dex: str = ""
 
     @property
     def size(self) -> Decimal:
@@ -186,14 +237,15 @@ class Position:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "signed_size": str(self.signed_size),
+            "signed_size": decimal_str(self.signed_size),
             "side": "long" if self.is_long else "short",
             "entry_price": _s(self.entry_price),
-            "notional": str(self.notional),
-            "unrealized_pnl": str(self.unrealized_pnl),
+            "notional": decimal_str(self.notional),
+            "unrealized_pnl": decimal_str(self.unrealized_pnl),
             "liquidation_price": _s(self.liquidation_price),
             "leverage": _s(self.leverage),
             "margin_used": _s(self.margin_used),
+            "dex": self.dex,
             "venue": self.venue.to_dict(),
         }
 
@@ -215,6 +267,7 @@ class Order:
         reduce_only: Whether the order can only reduce a position.
         timestamp_ms: Placement time, unix ms.
         client_order_id: Client-assigned id if one was set, else None.
+        dex: The venue sub-ledger the order rests on ("" for the primary one).
         venue: The venue's native order record.
     """
 
@@ -230,6 +283,7 @@ class Order:
     timestamp_ms: int
     venue: VenueRecord
     client_order_id: Optional[str] = None
+    dex: str = ""
 
     @property
     def filled_size(self) -> Decimal:
@@ -241,13 +295,14 @@ class Order:
             "client_order_id": self.client_order_id,
             "name": self.name,
             "side": "buy" if self.is_buy else "sell",
-            "price": str(self.price),
-            "original_size": str(self.original_size),
-            "remaining_size": str(self.remaining_size),
+            "price": decimal_str(self.price),
+            "original_size": decimal_str(self.original_size),
+            "remaining_size": decimal_str(self.remaining_size),
             "order_type": self.order_type,
             "status": self.status,
             "reduce_only": self.reduce_only,
             "timestamp_ms": self.timestamp_ms,
+            "dex": self.dex,
             "venue": self.venue.to_dict(),
         }
 
@@ -289,9 +344,9 @@ class Trade:
             "order_id": self.order_id,
             "name": self.name,
             "side": "buy" if self.is_buy else "sell",
-            "price": str(self.price),
-            "size": str(self.size),
-            "fee": str(self.fee),
+            "price": decimal_str(self.price),
+            "size": decimal_str(self.size),
+            "fee": decimal_str(self.fee),
             "is_maker": self.is_maker,
             "realized_pnl": _s(self.realized_pnl),
             "timestamp_ms": self.timestamp_ms,
@@ -324,9 +379,9 @@ class FundingPayment:
         return {
             "name": self.name,
             "timestamp_ms": self.timestamp_ms,
-            "rate": str(self.rate),
-            "position_size": str(self.position_size),
-            "payment": str(self.payment),
+            "rate": decimal_str(self.rate),
+            "position_size": decimal_str(self.position_size),
+            "payment": decimal_str(self.payment),
             "venue": self.venue.to_dict(),
         }
 
@@ -339,44 +394,56 @@ class BaseDispatcherCompatibleAccountRest:
     in the same spirit as `BaseDispatcherCompatibleRest` for market data. A REST
     client may implement both (Hyperliquid's does).
 
-    Every method returns homogenous records built from the venue's own typed
-    records. Methods may accept venue-specific keyword arguments (e.g.
-    Hyperliquid's `dex`); the handlers forward any request args they do not
-    consume themselves as keyword arguments, so a venue that does not support a
-    given argument fails loudly with a TypeError that is relayed to the client.
+    Every method returns homogenous records built from the venue's own typed records.
+    Signatures are fixed -- there is deliberately no `**kwargs` escape hatch, so an
+    implementation cannot quietly diverge from the contract and every argument a
+    client can send is a declared, typed parameter.
 
-    Implementations raise `ers.AccountNotConfiguredError` when they cannot
-    answer because the account (or the credential a specific read needs) was
-    never configured, rather than returning empty data that looks like a flat
-    account.
+    `dex` is the one venue-scoping parameter, on the three reads that are per-ledger.
+    It names which of a venue's sub-ledgers to read, and `""` always means the venue's
+    primary one. Hyperliquid maps it to the HIP-3 dex whose clearinghouse holds the
+    positions/orders; Lighter has a single ledger per account today, so it accepts only
+    `""` (or None) and rejects anything else rather than silently reporting the wrong
+    account. Fills and funding are account-wide on both venues, so the remaining
+    methods take no scope at all.
+
+    Clients should not have to know which ledgers exist, so the list reads default to
+    *all* of them: `get_positions` / `get_open_orders` take `dex=None` (every ledger,
+    each record tagged with its `dex`) and `dex=""` / `dex="xyz"` to narrow. The balance
+    read takes `dex: str = ""` and answers for the account as a whole where the venue
+    keeps one pool of collateral (Hyperliquid unified accounts, where `dex` is ignored);
+    only on venues/modes with per-ledger balances does it select one.
+
+    Implementations raise `ers.AccountNotConfiguredError` when they cannot answer
+    because the account (or the credential a specific read needs) was never configured,
+    rather than returning empty data that looks like a flat account.
     """
 
     def account_identity(self) -> str:
         """A short, non-secret label for the account (address or index) echoed in responses."""
         raise NotImplementedError("account_identity() not implemented.")
 
-    def get_account_balance(self, **venue_args: Any) -> AccountBalance:
+    def get_account_balance(self, dex: str = "") -> AccountBalance:
         raise NotImplementedError("get_account_balance() not implemented.")
 
-    def get_positions(self, **venue_args: Any) -> List[Position]:
-        """Only positions with non-zero size."""
+    def get_positions(self, dex: Optional[str] = None) -> List[Position]:
+        """Only positions with non-zero size. `dex=None` reads every ledger; each Position carries its `dex`."""
         raise NotImplementedError("get_positions() not implemented.")
 
-    def get_open_orders(self, **venue_args: Any) -> List[Order]:
-        """Currently resting orders, newest first."""
+    def get_open_orders(self, dex: Optional[str] = None) -> List[Order]:
+        """Currently resting orders, newest first. `dex=None` reads every ledger; each Order carries its `dex`."""
         raise NotImplementedError("get_open_orders() not implemented.")
 
-    def get_order_status(self, order_id: str, **venue_args: Any) -> Optional[Order]:
+    def get_order_status(self, order_id: str) -> Optional[Order]:
         """The order with this venue id (any lifecycle state), or None if the venue does not know it."""
         raise NotImplementedError("get_order_status() not implemented.")
 
-    def get_recent_trades(self, max_count: int, **venue_args: Any) -> List[Trade]:
+    def get_recent_trades(self, max_count: int) -> List[Trade]:
         """Up to `max_count` most recent fills, newest first. Venues may return fewer
         (their own history caps apply) but must not return more."""
         raise NotImplementedError("get_recent_trades() not implemented.")
 
-    def get_funding_payments(self, start_time_ms: int, end_time_ms: Optional[int] = None,
-                             **venue_args: Any) -> List[FundingPayment]:
+    def get_funding_payments(self, start_time_ms: int, end_time_ms: Optional[int] = None) -> List[FundingPayment]:
         """Funding settlements in [start_time_ms, end_time_ms] (end defaults to now), newest first."""
         raise NotImplementedError("get_funding_payments() not implemented.")
 
@@ -392,24 +459,26 @@ class AccountHandlersMixin:
     """
     The dispatcher-side account actions, written once for every venue.
 
-    Host requirements (satisfied by `BaseDispatcher`):
-      - `self.account_rest`: a `BaseDispatcherCompatibleAccountRest`, or None if the
-        venue/dispatcher has no account configured. Every handler raises
-        `ers.AccountNotConfiguredError` in that case.
-      - `self._routine_paginate(items, args, default_limit)`: the dispatcher-wide
-        `offset` / `limit` slicer.
+    The only host requirement (satisfied by `BaseDispatcher`) is `self.account_rest`:
+    a `BaseDispatcherCompatibleAccountRest`, or None if the venue/dispatcher has no
+    account configured, in which case every handler raises
+    `ers.AccountNotConfiguredError`. Everything else the handlers need lives here, so
+    the mixin can be reasoned about (and tested) on its own.
 
     Subclasses merge `self.account_routing_table()` into their routing table.
-    Request `data` for every action is an object; unknown keys are forwarded to the
-    REST client as venue-specific keyword arguments (see
-    `BaseDispatcherCompatibleAccountRest`).
+
+    Request `data` is an object whose accepted keys are listed per handler below. An
+    unrecognised key is an error rather than being ignored: on a trading API a typo
+    like `dxe` silently reporting the primary ledger instead of the one the caller
+    asked for is worse than a rejected request.
     """
 
-    _PAGING_KEYS = ("offset", "limit")
+    #: Accepted by every list action; see `PAGING_KEYS` and DEFAULT_PAGE_SIZE.
+    PAGING_KEYS = ("offset", "limit")
 
     account_rest: Optional[BaseDispatcherCompatibleAccountRest]
 
-    def account_routing_table(self) -> Dict[str, Any]:
+    def account_routing_table(self) -> Dict[str, Callable[[ArgsObject], dict]]:
         """Action name -> handler, for merging into a dispatcher's routing table."""
         return {
             'get_balance': self._handle_get_balance,
@@ -428,91 +497,101 @@ class AccountHandlersMixin:
             )
         return rest
 
-    @classmethod
-    def _venue_args(cls, args: ArgsObject, *consumed: str) -> Dict[str, Any]:
-        """Request args minus the ones the handler itself consumed -- passed through to the venue."""
-        skip = set(cls._PAGING_KEYS) | set(consumed)
-        return {k: v for k, v in request_args(args).items() if k not in skip}
+    @staticmethod
+    def _read_args(args: ArgsObject, *accepted: str) -> Dict[str, Any]:
+        """The request's arguments, rejecting any key the handler does not accept."""
+        request = request_args(args)
+        unknown = sorted(set(request) - set(accepted))
+        if unknown:
+            raise ers.MissingArgumentError(
+                f"Unknown argument(s) {unknown}; accepted: {sorted(accepted)}"
+            )
+        return request
+
+    @staticmethod
+    def _page(items: list, request: Mapping) -> list:
+        """The requested page of `items`, per the dispatcher-wide offset/limit convention."""
+        return paginate(items, int(request.get('offset', 0)), int(request.get('limit', DEFAULT_PAGE_SIZE)))
 
     def _handle_get_balance(self, args: ArgsObject) -> dict:
         """
         Account equity and margin totals.
-        :param args: No required arguments. Venue-specific extras are forwarded (Hyperliquid: 'dex').
-        :return: {'account': <identity>, 'account_value', 'available_balance', 'total_margin_used',
-                  'total_position_notional', 'venue': {...}}
+        :param args: Accepts 'dex' (venue sub-ledger; Hyperliquid only, default "" = primary; ignored
+                     for accounts with a single pool of collateral, e.g. Hyperliquid unified accounts).
+        :return: {'account', 'account_value', 'available_balance', 'total_margin_used',
+                  'total_position_notional', 'account_mode', 'assets': [...], 'venue': {...}}
         """
         rest = self._require_account_rest()
-        balance = rest.get_account_balance(**self._venue_args(args))
+        request = self._read_args(args, 'dex')
+        balance = rest.get_account_balance(dex=request.get('dex', ""))
         return {'account': rest.account_identity(), **balance.to_dict()}
 
     def _handle_get_positions(self, args: ArgsObject) -> dict:
         """
-        Open positions (non-zero size only), paginated.
-        :param args: 'offset' (default 0), 'limit' (default DEFAULT_PAGE_SIZE). Venue extras forwarded.
-        :return: {'account': <identity>, 'positions': [Position.to_dict(), ...]}
+        Open positions (non-zero size only), paginated. Reads every ledger unless 'dex' narrows it.
+        :param args: Accepts 'offset' (default 0), 'limit' (default DEFAULT_PAGE_SIZE), 'dex' (default: all).
+        :return: {'account', 'positions': [Position.to_dict(), ...]}
         """
         rest = self._require_account_rest()
-        positions = rest.get_positions(**self._venue_args(args))
-        page = self._routine_paginate(positions, args, DEFAULT_PAGE_SIZE)
-        return {'account': rest.account_identity(), 'positions': [p.to_dict() for p in page]}
+        request = self._read_args(args, *self.PAGING_KEYS, 'dex')
+        positions = rest.get_positions(dex=request.get('dex'))
+        return {'account': rest.account_identity(), 'positions': [p.to_dict() for p in self._page(positions, request)]}
 
     def _handle_get_orders(self, args: ArgsObject) -> dict:
         """
-        Resting orders, newest first, paginated.
-        :param args: 'offset' (default 0), 'limit' (default DEFAULT_PAGE_SIZE). Venue extras forwarded.
-        :return: {'account': <identity>, 'orders': [Order.to_dict(), ...]}
+        Resting orders, newest first, paginated. Reads every ledger unless 'dex' narrows it.
+        :param args: Accepts 'offset' (default 0), 'limit' (default DEFAULT_PAGE_SIZE), 'dex' (default: all).
+        :return: {'account', 'orders': [Order.to_dict(), ...]}
         """
         rest = self._require_account_rest()
-        orders = rest.get_open_orders(**self._venue_args(args))
-        page = self._routine_paginate(orders, args, DEFAULT_PAGE_SIZE)
-        return {'account': rest.account_identity(), 'orders': [o.to_dict() for o in page]}
+        request = self._read_args(args, *self.PAGING_KEYS, 'dex')
+        orders = rest.get_open_orders(dex=request.get('dex'))
+        return {'account': rest.account_identity(), 'orders': [o.to_dict() for o in self._page(orders, request)]}
 
     def _handle_get_order_status(self, args: ArgsObject) -> dict:
         """
         Look up one order by its venue id, in any lifecycle state.
-        :param args: 'order_id' (required; int or string, always matched as a string). Venue extras forwarded.
+        :param args: Accepts 'order_id' (required; int or string, always matched as a string).
         :return: {'found': bool, 'order': Order.to_dict() | None}
         """
         rest = self._require_account_rest()
-        order_id = request_args(args).get('order_id')
+        order_id = self._read_args(args, 'order_id').get('order_id')
         if order_id is None:
             raise ers.MissingArgumentError("Missing argument: 'order_id'")
-        order = rest.get_order_status(str(order_id), **self._venue_args(args, 'order_id'))
+        order = rest.get_order_status(str(order_id))
         return {'found': order is not None, 'order': order.to_dict() if order is not None else None}
 
     def _handle_get_trades(self, args: ArgsObject) -> dict:
         """
         The account's most recent fills, newest first, paginated. Only as much history
         as the page needs is requested from the venue (offset + limit).
-        :param args: 'offset' (default 0), 'limit' (default DEFAULT_PAGE_SIZE). Venue extras forwarded.
-        :return: {'account': <identity>, 'trades': [Trade.to_dict(), ...]}
+        :param args: Accepts 'offset' (default 0), 'limit' (default DEFAULT_PAGE_SIZE).
+        :return: {'account', 'trades': [Trade.to_dict(), ...]}
         """
         rest = self._require_account_rest()
-        req = request_args(args)
-        max_count = int(req.get('offset', 0)) + int(req.get('limit', DEFAULT_PAGE_SIZE))
-        trades = rest.get_recent_trades(max_count, **self._venue_args(args))
-        page = self._routine_paginate(trades, args, DEFAULT_PAGE_SIZE)
-        return {'account': rest.account_identity(), 'trades': [t.to_dict() for t in page]}
+        request = self._read_args(args, *self.PAGING_KEYS)
+        max_count = int(request.get('offset', 0)) + int(request.get('limit', DEFAULT_PAGE_SIZE))
+        trades = rest.get_recent_trades(max_count)
+        return {'account': rest.account_identity(), 'trades': [t.to_dict() for t in self._page(trades, request)]}
 
     def _handle_get_funding_payments(self, args: ArgsObject) -> dict:
         """
         Funding settlements applied to the account in a time window, newest first, paginated.
-        :param args: 'start_time' (unix ms; default now - 7 days), 'end_time' (unix ms; default now),
-                     'offset' (default 0), 'limit' (default DEFAULT_PAGE_SIZE). Venue extras forwarded.
-        :return: {'account': <identity>, 'start_time', 'end_time', 'funding_payments': [FundingPayment.to_dict(), ...]}
+        :param args: Accepts 'start_time' (unix ms; default now - 7 days), 'end_time' (unix ms;
+                     default now), 'offset' (default 0), 'limit' (default DEFAULT_PAGE_SIZE).
+        :return: {'account', 'start_time', 'end_time', 'funding_payments': [FundingPayment.to_dict(), ...]}
         """
         rest = self._require_account_rest()
-        req = request_args(args)
+        request = self._read_args(args, *self.PAGING_KEYS, 'start_time', 'end_time')
         now_ms = int(time.time() * 1000)
-        end_time = int(req.get('end_time', now_ms))
-        start_time = int(req.get('start_time', end_time - DEFAULT_FUNDING_LOOKBACK_MS))
+        end_time = int(request.get('end_time', now_ms))
+        start_time = int(request.get('start_time', end_time - DEFAULT_FUNDING_LOOKBACK_MS))
         if start_time > end_time:
             raise ers.MissingArgumentError("'start_time' must not be after 'end_time'")
-        payments = rest.get_funding_payments(start_time, end_time, **self._venue_args(args, 'start_time', 'end_time'))
-        page = self._routine_paginate(payments, args, DEFAULT_PAGE_SIZE)
+        payments = rest.get_funding_payments(start_time, end_time)
         return {
             'account': rest.account_identity(),
             'start_time': start_time,
             'end_time': end_time,
-            'funding_payments': [p.to_dict() for p in page],
+            'funding_payments': [p.to_dict() for p in self._page(payments, request)],
         }

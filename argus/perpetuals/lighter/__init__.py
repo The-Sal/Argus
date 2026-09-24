@@ -44,9 +44,17 @@ class LighterDispatcher(BaseDispatcher):
     docstring for the general Argus v2 perpetuals-dispatcher design (P1 protocol,
     enforced correlation IDs, "products_version" component versioning).
 
-    All endpoints exposed here are backed by Lighter's public REST API (no signing
-    required). Account/trading functions are not yet implemented, matching HyperLiquid's
-    current state.
+    Market-data endpoints are backed by Lighter's public REST API (no signing required).
+
+    Account data follows PolymarketDispatcher's action names (get_balance, get_positions,
+    get_orders, get_order_status, get_trades) plus get_funding_payments, served by the shared
+    handlers in argus/perpetuals/shared/account.py. Configuration is by environment:
+    LIGHTER_ACCOUNT_INDEX selects the account (balance/positions are public reads) and
+    LIGHTER_AUTH_TOKEN, a long-lived read-only API token, unlocks orders/trades/funding
+    payments. Both are optional: without them the market-data side is unaffected and the
+    account actions answer with AccountNotConfiguredError. Every list action is paginated
+    (offset/limit) because each record carries the full venue payload under "venue".
+    Trading functions are not yet implemented.
     """
 
     def __init__(self, host: str = "localhost", port: int = 9974):
@@ -64,14 +72,22 @@ class LighterDispatcher(BaseDispatcher):
             # Market Data Streaming
             'subscribe': self._handle_subscribe,
             'unsubscribe': self._handle_unsubscribe,
-            # Account Info
-            # 'get_account_info': self._get_account_info,
-            # 'get_account_balance': self._get_account_balance,
-            # 'get_account_positions': self._get_account_positions
+            # Account Info (shared handlers -- see argus/perpetuals/shared/account.py):
+            #   get_balance, get_positions, get_orders, get_order_status, get_trades, get_funding_payments
+            **self.account_routing_table(),
             # Trading Functions (TBD)
         }
 
-        rest_client = LighterRest()
+        account_index = os.environ.get("LIGHTER_ACCOUNT_INDEX")
+        rest_client = LighterRest(
+            account_index=int(account_index) if account_index else None,
+            auth_token=os.environ.get("LIGHTER_AUTH_TOKEN"),
+        )
+        if rest_client.account_index is None:
+            pi.prt("No LIGHTER_ACCOUNT_INDEX / LIGHTER_AUTH_TOKEN set; account actions will report AccountNotConfiguredError")
+        elif rest_client.auth_token is None:
+            pi.prt(f"Lighter account {rest_client.account_index} configured without LIGHTER_AUTH_TOKEN; "
+                   f"get_balance/get_positions work, orders/trades/funding payments will report AccountNotConfiguredError")
         super().__init__(
             host=host,
             port=port,
@@ -80,7 +96,8 @@ class LighterDispatcher(BaseDispatcher):
             common_rest=rest_client,
             configurations={
                 'distribute_refreshed_perps': True
-            }
+            },
+            account_rest=rest_client,
         )
         self.rest = rest_client
         self._all_perps = LockedState(self.rest.get_all_perpetuals())

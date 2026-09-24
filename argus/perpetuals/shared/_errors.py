@@ -46,3 +46,13 @@ class AbstractMethodNotImplementedError(FatalDispatcherError, NotImplementedErro
     logic can specifically exempt it instead of swallowing it.
     """
     pass
+
+class AccountNotConfiguredError(DispatcherError):
+    """
+    Raised by an account-data action when the dispatcher has no account to query
+    (e.g. LIGHTER_ACCOUNT_INDEX unset) or the venue needs an auth token for that
+    particular read and none was configured (e.g. LIGHTER_AUTH_TOKEN). This is a
+    per-request client-facing error, not a FatalDispatcherError: market-data actions
+    keep working on a dispatcher whose account side is unconfigured.
+    """
+    pass

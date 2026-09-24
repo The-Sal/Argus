@@ -9,17 +9,20 @@ userFunding / userRateLimit; Lighter: /account, /accountActiveOrders, /trades,
 
 Run with: pytest tests/test_perpetuals_account.py
 """
-import json
+import dataclasses
 import time
 import unittest
+from unittest import mock
+from json import dumps as json_dumps
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from argus._argus_utils import ArgsObject
-from argus.perpetuals.shared import BaseDispatcher, ers
+from argus.perpetuals.shared import ers
 from argus.perpetuals.shared import account as acct
-from argus.perpetuals.shared._classes import OutboundMessage
+from argus.perpetuals.shared import OutboundMessage
 from argus.perpetuals.hyper import _classes as hyper_cls
+from argus.perpetuals.hyper import _errors as hyper_ers
 from argus.perpetuals.hyper import rest as hyper_rest
 from argus.perpetuals.lighter import _classes as lighter_cls
 from argus.perpetuals.lighter import rest as lighter_rest
@@ -27,7 +30,7 @@ from argus.perpetuals.lighter import rest as lighter_rest
 
 # --- fixtures (from the venues' API docs) ------------------------------------
 
-HL_CLEARINGHOUSE = {
+HL_CLEARINGHOUSE: Dict[str, Any] = {
     "assetPositions": [
         {
             "position": {
@@ -69,6 +72,38 @@ HL_CLEARINGHOUSE = {
     "withdrawable": "13104.514502",
 }
 
+HL_EMPTY_CLEARINGHOUSE: Dict[str, Any] = {
+    "assetPositions": [], "crossMaintenanceMarginUsed": "0.0", "time": 1790243679609, "withdrawable": "0.0",
+    "crossMarginSummary": {"accountValue": "0.0", "totalMarginUsed": "0.0", "totalNtlPos": "0.0", "totalRawUsd": "0.0"},
+    "marginSummary": {"accountValue": "0.0", "totalMarginUsed": "0.0", "totalNtlPos": "0.0", "totalRawUsd": "0.0"},
+}
+
+# A HIP-3 dex clearinghouse holding one long AAPL position.
+HL_XYZ_CLEARINGHOUSE: Dict[str, Any] = {
+    **HL_EMPTY_CLEARINGHOUSE,
+    "assetPositions": [{"type": "oneWay", "position": {
+        **HL_CLEARINGHOUSE["assetPositions"][0]["position"],
+        "coin": "xyz:AAPL", "szi": "1.0", "unrealizedPnl": "0.5", "marginUsed": "2.0", "positionValue": "30.0",
+    }}],
+    "marginSummary": {"accountValue": "0.0", "totalMarginUsed": "2.0", "totalNtlPos": "30.0", "totalRawUsd": "0.0"},
+}
+
+# Real response shape for a unified account funded with 15 USDC (perps clearinghouse reads 0).
+HL_SPOT_UNIFIED: Dict[str, Any] = {
+    "balances": [
+        {"coin": "USDC", "token": 0, "total": "15.0", "hold": "0.0", "entryNtl": "0.0"},
+        {"coin": "USDT0", "token": 268, "total": "0.0", "hold": "0.0", "entryNtl": "0.0"},
+        {"coin": "HYPE", "token": 150, "total": "2.0", "hold": "0.5", "entryNtl": "0.0"},
+    ],
+    "tokenToAvailableAfterMaintenance": [[0, "15.0"]],
+}
+
+HL_PERP_DEXS: List[Any] = [None, {
+    "name": "xyz", "fullName": "XYZ", "deployer": "0xd", "oracleUpdater": None, "feeRecipient": "0xf",
+    "assetToStreamingOiCap": [], "subDeployers": [], "assetToFundingMultiplier": [], "assetToFundingInterestRate": [],
+}]
+
+
 HL_FRONTEND_ORDER = {
     "coin": "BTC", "isPositionTpsl": False, "isTrigger": False, "limitPx": "29792.0", "oid": 91490942,
     "orderType": "Limit", "origSz": "5.0", "reduceOnly": False, "side": "A", "sz": "5.0",
@@ -76,7 +111,7 @@ HL_FRONTEND_ORDER = {
 }
 HL_SLIM_ORDER = {"coin": "BTC", "limitPx": "29792.0", "oid": 91490943, "side": "B", "sz": "1.0", "timestamp": 1681247412574}
 
-HL_ORDER_STATUS = {
+HL_ORDER_STATUS: Dict[str, Any] = {
     "status": "order",
     "order": {
         "order": {
@@ -102,7 +137,7 @@ HL_FUNDING = {
     "time": 1681222254710,
 }
 
-LIGHTER_ACCOUNT = {
+LIGHTER_ACCOUNT: Dict[str, Any] = {
     "code": 200, "message": "", "total": 1,
     "accounts": [{
         "account_type": 1, "account_trading_mode": 1, "index": 6, "l1_address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
@@ -130,6 +165,33 @@ LIGHTER_ACCOUNT = {
     }],
     "next_cursor": "",
 }
+
+def _lighter_market_row(symbol: str, market_id: int) -> Dict[str, Any]:
+    """One `orderBookDetails` row. Perpetual.from_dict reads Market and MarketContext
+    fields off the same flat dict, so both sets live here."""
+    return {
+        "symbol": symbol, "market_id": market_id, "market_type": "perp", "base_asset_id": 1,
+        "quote_asset_id": 0, "status": "active", "taker_fee": "0", "is_taker_fee_enabled": False,
+        "maker_fee": "0", "is_maker_fee_enabled": False, "liquidation_fee": "0",
+        "min_base_amount": "0.001", "min_quote_amount": "1", "order_quote_limit": "1",
+        "supported_size_decimals": 3, "supported_price_decimals": 2, "supported_quote_decimals": 2,
+        "created_at": 0, "multiplier": "1", "size_decimals": 3, "price_decimals": 2,
+        "quote_multiplier": 1, "default_initial_margin_fraction": 100,
+        "min_initial_margin_fraction": 50, "maintenance_margin_fraction": 25,
+        "closeout_margin_fraction": 10,
+        "market_config": {
+            "market_margin_mode": 0, "insurance_fund_account_index": 0, "liquidation_mode": 0,
+            "force_reduce_only": False, "trading_hours": "24/7",
+            "funding_fee_discounts_enabled": False, "hidden": False, "rfq_enabled": False,
+        },
+        "strategy_index": 0, "market_flags": 0, "funding_premium_multiplier": 1,
+        "funding_clamp_small": "0", "funding_clamp_big": "0", "base_interest_rate": "0",
+        "mark_price": "100", "index_price": "100", "last_trade_price": "100",
+        "daily_trades_count": 0, "daily_base_token_volume": "0", "daily_quote_token_volume": "0",
+        "daily_price_low": "100", "daily_price_high": "100", "daily_price_change": "0",
+        "open_interest": "0",
+    }
+
 
 LIGHTER_ORDER = {
     "order_index": 1, "client_order_index": 234, "order_id": "1", "client_order_id": "234", "market_index": 1,
@@ -211,28 +273,33 @@ class _StubAccountRest(acct.BaseDispatcherCompatibleAccountRest):
     def account_identity(self):
         return "0xmaster"
 
-    def get_account_balance(self, **kw):
-        self.calls.append(("balance", kw)); return self._balance
+    def get_account_balance(self, dex: str = ""):
+        self.calls.append(("balance", dex))
+        return self._balance
 
-    def get_positions(self, **kw):
-        self.calls.append(("positions", kw)); return self._positions
+    def get_positions(self, dex=None):
+        self.calls.append(("positions", dex))
+        return self._positions
 
-    def get_open_orders(self, **kw):
-        self.calls.append(("orders", kw)); return self._orders
+    def get_open_orders(self, dex=None):
+        self.calls.append(("orders", dex))
+        return self._orders
 
-    def get_order_status(self, order_id, **kw):
-        self.calls.append(("status", order_id, kw))
+    def get_order_status(self, order_id: str):
+        self.calls.append(("status", order_id))
         return self._orders[0] if order_id == "91490942" else None
 
-    def get_recent_trades(self, max_count, **kw):
-        self.calls.append(("trades", max_count, kw)); return self._trades[:max_count]
+    def get_recent_trades(self, max_count: int):
+        self.calls.append(("trades", max_count))
+        return self._trades[:max_count]
 
-    def get_funding_payments(self, start_time_ms, end_time_ms=None, **kw):
-        self.calls.append(("funding", start_time_ms, end_time_ms, kw)); return self._funding
+    def get_funding_payments(self, start_time_ms: int, end_time_ms=None):
+        self.calls.append(("funding", start_time_ms, end_time_ms))
+        return self._funding
 
 
 class _StubDispatcher(acct.AccountHandlersMixin):
-    _routine_paginate = staticmethod(BaseDispatcher._routine_paginate)
+    """The mixin has no host requirement beyond `account_rest`, so this is the whole host."""
 
     def __init__(self, rest):
         self.account_rest = rest
@@ -251,6 +318,20 @@ class NormalizeTimestampTest(unittest.TestCase):
         self.assertEqual(acct.normalize_timestamp_ms(1771943742851429), 1771943742851)    # us
 
 
+class DecimalStrTest(unittest.TestCase):
+    """decimal_str must stay a drop-in for str(); it exists only to dodge a type-stub wart."""
+
+    def test_identical_to_str_including_exponent_forms(self):
+        # The bare str() below is the thing being compared against, so it is also the one
+        # place the IDE's "Decimal has no __str__" wart is expected to show up.
+        for raw in ("0", "-0", "0.0000125", "1E+2", "1e-7", "-3.625312", "13109.482328",
+                    "100000000000000000000.00000001", "NaN", "Infinity", "-Infinity"):
+            value = Decimal(raw)
+            self.assertEqual(acct.decimal_str(value), str(value), raw)
+        self.assertIsNone(acct.str_or_none(None))
+        self.assertEqual(acct.str_or_none(Decimal("1E+2")), "1E+2")
+
+
 class HomogenousRecordsTest(unittest.TestCase):
     def test_position_side_helpers(self):
         pos = hyper_cls.Position.from_dict(HL_CLEARINGHOUSE["assetPositions"][0]["position"]).to_common()
@@ -263,8 +344,8 @@ class HomogenousRecordsTest(unittest.TestCase):
 
     def test_records_are_frozen(self):
         pos = hyper_cls.Position.from_dict(HL_CLEARINGHOUSE["assetPositions"][0]["position"]).to_common()
-        with self.assertRaises(Exception):
-            pos.name = "X"  # type: ignore[misc]
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            setattr(pos, "name", "X")
 
 
 # --- Hyperliquid venue records ----------------------------------------------
@@ -308,6 +389,7 @@ class HyperRecordsTest(unittest.TestCase):
         self.assertTrue(found.found)
         self.assertEqual(found.status, "filled")
         common = found.to_common()
+        assert common is not None
         self.assertEqual(common.status, "filled")
         self.assertEqual(common.order_type, "Market")
         self.assertTrue(common.reduce_only)
@@ -348,8 +430,16 @@ class HyperRestAccountTest(unittest.TestCase):
     def _router(self, body):
         t = body["type"]
         self._seen.append(body)
+        if t == "userAbstraction":
+            return self._mode
+        if t == "perpDexs":
+            return HL_PERP_DEXS
+        if t == "spotClearinghouseState":
+            return HL_SPOT_UNIFIED
         if t == "clearinghouseState":
-            return HL_CLEARINGHOUSE
+            if self._mode == "unifiedAccount":
+                return HL_XYZ_CLEARINGHOUSE if body.get("dex") == "xyz" else HL_EMPTY_CLEARINGHOUSE
+            return HL_XYZ_CLEARINGHOUSE if body.get("dex") == "xyz" else HL_CLEARINGHOUSE
         if t == "frontendOpenOrders":
             return [HL_FRONTEND_ORDER, {**HL_FRONTEND_ORDER, "oid": 5, "timestamp": HL_FRONTEND_ORDER["timestamp"] + 10}]
         if t == "orderStatus":
@@ -362,6 +452,10 @@ class HyperRestAccountTest(unittest.TestCase):
 
     def setUp(self):
         self._seen = []
+        self._mode = "default"
+        patcher = mock.patch.object(hyper_rest, "_DEX_READ_SPACING_S", 0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.rest = _hyper(self._router)
 
     def test_user_keyed_bodies(self):
@@ -373,15 +467,85 @@ class HyperRestAccountTest(unittest.TestCase):
         self.assertEqual(self._seen[-1], {"type": "userFunding", "user": "0xmaster", "startTime": 100, "endTime": 200})
 
     def test_positions_drop_flat(self):
-        positions = self.rest.get_positions()
+        positions = self.rest.get_positions(dex="")
         self.assertEqual([p.name for p in positions], ["ETH"])
+        self.assertEqual(positions[0].dex, "")
+
+    def test_positions_default_to_every_dex_tagged(self):
+        positions = self.rest.get_positions()
+        self.assertEqual([(p.name, p.dex) for p in positions], [("ETH", ""), ("xyz:AAPL", "xyz")])
+        self.assertEqual(positions[1].to_dict()["dex"], "xyz")
+        dex_bodies = [b.get("dex") for b in self._seen if b["type"] == "clearinghouseState"]
+        self.assertEqual(dex_bodies, [None, "xyz"])
+        self.rest.get_positions(dex="xyz")
+        self.assertEqual([p.name for p in self.rest.get_positions(dex="xyz")], ["xyz:AAPL"])
+
+    def test_dex_names_are_cached(self):
+        self.rest.get_positions()
+        self.rest.get_positions()
+        self.assertEqual([b["type"] for b in self._seen].count("perpDexs"), 1)
+
+    def test_default_mode_balance_reads_perps_and_labels_mode(self):
+        bal = self.rest.get_account_balance()
+        self.assertEqual(bal.account_value, Decimal("13109.482328"))
+        self.assertEqual(bal.account_mode, "default")
+        self.assertNotIn("spotClearinghouseState", [b["type"] for b in self._seen])
+
+    def test_account_mode_is_cached(self):
+        self.rest.get_account_balance()
+        self.rest.get_account_balance()
+        self.assertEqual([b["type"] for b in self._seen].count("userAbstraction"), 1)
+
+    def test_unified_balance_comes_from_spot_and_ignores_dex(self):
+        self._mode = "unifiedAccount"
+        for dex in ("", "xyz"):
+            bal = self.rest.get_account_balance(dex=dex)
+            self.assertEqual(bal.account_value, Decimal("15.5"))         # 15 USDC + 0.5 xyz unrealized PnL
+            self.assertEqual(bal.available_balance, Decimal("15.0"))
+            self.assertEqual(bal.total_margin_used, Decimal("2.0"))
+            self.assertEqual(bal.total_position_notional, Decimal("30.0"))
+            self.assertEqual(bal.account_mode, "unifiedAccount")
+        d = bal.to_dict()
+        self.assertEqual([a["asset"] for a in d["assets"]], ["USDC", "HYPE"])   # zero balances dropped
+        self.assertEqual(d["assets"][0]["usd_value"], "15.0")
+        self.assertIsNone(d["assets"][1]["usd_value"])
+        self.assertEqual(d["assets"][1]["available"], "1.5")
+        self.assertEqual(d["venue"]["mode"], "unifiedAccount")
+        self.assertEqual(len(d["venue"]["perps"]), 2)
+
+    def test_unified_available_falls_back_to_usdc_minus_hold(self):
+        state = hyper_cls.SpotClearinghouseState.from_dict({
+            "balances": [{"coin": "USDC", "token": 0, "total": "10.0", "hold": "3.0", "entryNtl": "0.0"}],
+        })
+        bal = hyper_cls.UnifiedAccountState(hyper_cls.AccountMode.UNIFIED, state, []).to_balance()
+        self.assertEqual((bal.account_value, bal.available_balance), (Decimal("10.0"), Decimal("7.0")))
+
+    def test_unknown_mode_raises_instead_of_guessing(self):
+        self._mode = "quantumAccount"
+        with self.assertRaises(hyper_ers.UnsupportedAccountModeError):
+            self.rest.get_account_balance()
+
+    def test_account_mode_wire_values(self):
+        for wire in ("default", "disabled", "dexAbstraction", "unifiedAccount", "portfolioMargin"):
+            hyper_cls.AccountMode.from_wire(wire)
+        self.assertTrue(hyper_cls.AccountMode.PORTFOLIO_MARGIN.uses_spot_collateral)
+        self.assertFalse(hyper_cls.AccountMode.DEX_ABSTRACTION.uses_spot_collateral)
 
     def test_open_orders_newest_first(self):
-        orders = self.rest.get_open_orders()
+        orders = self.rest.get_open_orders(dex="")
         self.assertEqual([o.order_id for o in orders], ["5", "91490942"])
 
+    def test_open_orders_default_to_every_dex_merged_newest_first(self):
+        orders = self.rest.get_open_orders()
+        self.assertEqual(len(orders), 4)                       # same stub orders answered for "" and "xyz"
+        self.assertEqual(sorted(o.dex for o in orders), ["", "", "xyz", "xyz"])
+        stamps = [o.timestamp_ms for o in orders]
+        self.assertEqual(stamps, sorted(stamps, reverse=True))
+
     def test_order_status_numeric_vs_cloid(self):
-        self.assertEqual(self.rest.get_order_status("1").status, "filled")
+        filled = self.rest.get_order_status("1")
+        assert filled is not None
+        self.assertEqual(filled.status, "filled")
         self.assertEqual(self._seen[-1]["oid"], 1)
         self.assertIsNotNone(self.rest.get_order_status("0xcloid"))
         self.assertEqual(self._seen[-1]["oid"], "0xcloid")
@@ -459,11 +623,15 @@ class LighterRecordsTest(unittest.TestCase):
 
 
 class LighterRestAccountTest(unittest.TestCase):
+    def setUp(self):
+        self.market_list_fetches = 0
+
     def _router(self, url, params):
         if url.endswith("/api/v1/account"):
             return LIGHTER_ACCOUNT
         if url.endswith("/api/v1/orderBookDetails"):
-            return {"code": 200, "order_book_details": []}
+            self.market_list_fetches += 1
+            return {"code": 200, "order_book_details": [_lighter_market_row("BTC", 0), _lighter_market_row("ETH", 1)]}
         if url.endswith("/api/v1/accountActiveOrders"):
             return {"code": 200, "orders": [LIGHTER_ORDER, {**LIGHTER_ORDER, "order_id": "2", "order_index": 2, "timestamp": 1640995300}]}
         if url.endswith("/api/v1/accountInactiveOrders"):
@@ -511,12 +679,30 @@ class LighterRestAccountTest(unittest.TestCase):
         self.assertEqual(call["params"]["account_index"], 6)
         self.assertEqual(call["params"]["market_id"], lighter_rest.ALL_MARKETS)
         self.assertEqual([o.order_id for o in orders], ["2", "1"])                       # newest first
-        self.assertEqual(orders[0].name, "market:1")                                     # unknown market -> placeholder symbol
+        self.assertEqual(orders[0].name, "ETH")                                          # market_index 1 resolved via the market list
+
+    def test_symbol_resolution_is_cached_and_falls_back(self):
+        rest = _lighter(self._router, auth_token="ro:6:all:9999999999:abcdef")
+        self.assertEqual(rest._symbol_for(0), "BTC")
+        self.assertEqual(rest._symbol_for(1), "ETH")
+        self.assertEqual(self.market_list_fetches, 1)                                    # cached after the first miss
+        self.assertEqual(rest._symbol_for(999), "market:999")                             # unlisted market -> placeholder
+        self.assertEqual(self.market_list_fetches, 2)                                    # ... after one refresh attempt
+
+    def test_dex_scope_is_rejected(self):
+        """Lighter has one ledger per account; a HIP-3-style dex must not be silently ignored."""
+        rest = _lighter(self._router, auth_token="ro:6:all:9999999999:abcdef")
+        for name in ("get_account_balance", "get_positions", "get_open_orders"):
+            with self.assertRaises(ers.InvalidCoinError):
+                getattr(rest, name)(dex="xyz")
+            getattr(rest, name)(dex="")                                                   # the primary ledger is fine
 
     def test_order_status_scans_active_then_inactive(self):
         rest = _lighter(self._router, auth_token="ro:6:all:9999999999:abcdef")
-        self.assertEqual(rest.get_order_status("2").status, "open")
-        self.assertEqual(rest.get_order_status("9").status, "filled")
+        resting, historical = rest.get_order_status("2"), rest.get_order_status("9")
+        assert resting is not None and historical is not None
+        self.assertEqual(resting.status, "open")
+        self.assertEqual(historical.status, "filled")
         self.assertIsNone(rest.get_order_status("404"))
 
     def test_trades_walk_cursor_only_as_far_as_needed(self):
@@ -561,18 +747,41 @@ class AccountHandlersTest(unittest.TestCase):
         with self.assertRaises(ers.AccountNotConfiguredError):
             d._handle_get_balance(_args({}))
 
-    def test_balance_and_venue_arg_passthrough(self):
+    def test_balance_threads_the_dex_scope(self):
         out = self.d._handle_get_balance(_args({"dex": "xyz"}))
         self.assertEqual(out["account"], "0xmaster")
         self.assertEqual(out["account_value"], "13109.482328")
-        self.assertEqual(self.rest.calls[-1], ("balance", {"dex": "xyz"}))
+        self.assertEqual(self.rest.calls[-1], ("balance", "xyz"))
         self.d._handle_get_balance(_args(None))        # null data == no args
-        self.assertEqual(self.rest.calls[-1], ("balance", {}))
+        self.assertEqual(self.rest.calls[-1], ("balance", ""))
+        self.d._handle_get_positions(_args({"dex": "xyz", "limit": 1}))
+        self.assertEqual(self.rest.calls[-1], ("positions", "xyz"))
+        self.d._handle_get_orders(_args({"dex": "xyz"}))
+        self.assertEqual(self.rest.calls[-1], ("orders", "xyz"))
+
+    def test_list_reads_default_to_every_ledger(self):
+        self.d._handle_get_positions(_args({}))
+        self.assertEqual(self.rest.calls[-1], ("positions", None))
+        self.d._handle_get_orders(_args(None))
+        self.assertEqual(self.rest.calls[-1], ("orders", None))
+        self.d._handle_get_positions(_args({"dex": ""}))          # explicit "" still means primary only
+        self.assertEqual(self.rest.calls[-1], ("positions", ""))
+
+    def test_unknown_arguments_are_rejected(self):
+        """A typo'd scope key must not silently answer from the primary ledger."""
+        for handler, data in (
+            (self.d._handle_get_balance, {"dxe": "xyz"}),
+            (self.d._handle_get_positions, {"offset": 0, "nope": 1}),
+            (self.d._handle_get_trades, {"dex": "xyz"}),             # trades are account-wide
+            (self.d._handle_get_order_status, {"order_id": "1", "limit": 5}),
+        ):
+            with self.assertRaises(ers.MissingArgumentError):
+                handler(_args(data))
 
     def test_pagination_defaults_and_offsets(self):
         out = self.d._handle_get_positions(_args({}))
         self.assertEqual(len(out["positions"]), acct.DEFAULT_PAGE_SIZE)
-        self.assertEqual(self.rest.calls[-1], ("positions", {}))              # offset/limit are not forwarded
+        self.assertEqual(self.rest.calls[-1], ("positions", None))             # offset/limit are not forwarded
         out = self.d._handle_get_orders(_args({"offset": 50, "limit": 100}))
         self.assertEqual(len(out["orders"]), 10)
         self.assertEqual(self.d._handle_get_orders(_args({"offset": 999}))["orders"], [])
@@ -584,13 +793,13 @@ class AccountHandlersTest(unittest.TestCase):
             self.d._handle_get_order_status(_args({}))
         out = self.d._handle_get_order_status(_args({"order_id": 91490942}))
         self.assertTrue(out["found"])
-        self.assertEqual(self.rest.calls[-1], ("status", "91490942", {}))     # ids are always strings
+        self.assertEqual(self.rest.calls[-1], ("status", "91490942"))         # ids are always strings
         self.assertEqual(self.d._handle_get_order_status(_args({"order_id": "nope"})), {"found": False, "order": None})
 
     def test_trades_request_only_the_page(self):
         out = self.d._handle_get_trades(_args({"offset": 10, "limit": 5}))
         self.assertEqual(len(out["trades"]), 5)
-        self.assertEqual(self.rest.calls[-1], ("trades", 15, {}))
+        self.assertEqual(self.rest.calls[-1], ("trades", 15))
 
     def test_funding_window_defaults(self):
         before = int(time.time() * 1000)
@@ -599,7 +808,7 @@ class AccountHandlersTest(unittest.TestCase):
         self.assertEqual(out["end_time"] - out["start_time"], acct.DEFAULT_FUNDING_LOOKBACK_MS)
         self.assertEqual(len(out["funding_payments"]), acct.DEFAULT_PAGE_SIZE)
         out = self.d._handle_get_funding_payments(_args({"start_time": 5, "end_time": 10, "limit": 2}))
-        self.assertEqual(self.rest.calls[-1], ("funding", 5, 10, {}))
+        self.assertEqual(self.rest.calls[-1], ("funding", 5, 10))
         self.assertEqual(len(out["funding_payments"]), 2)
         with self.assertRaises(ers.MissingArgumentError):
             self.d._handle_get_funding_payments(_args({"start_time": 10, "end_time": 5}))
@@ -626,7 +835,7 @@ class WireBudgetTest(unittest.TestCase):
     def test_oversized_page_is_rejected_not_truncated(self):
         trade = lighter_cls.LighterTrade.from_dict({**LIGHTER_TRADE, "tx_hash": "0x" + "f" * 64}).to_common(6, "ETH")
         page = [trade.to_dict() for _ in range(2000)]
-        raw = len(json.dumps(page))
+        raw = len(json_dumps(page))
         self.assertGreater(raw, 9500)
         with self.assertRaises(ers.PacketTooLargeError):
             OutboundMessage(action="response", data={"trades": page}, correlation_id="x").convert_to_protocol_1()
