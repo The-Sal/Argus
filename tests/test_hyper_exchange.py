@@ -23,8 +23,8 @@ from argus.perpetuals.hyper.exchange import (
     _to_wire_number,
     validate_cloid,
 )
-from argus.perpetuals.shared import _errors as shared_ers
-from argus.perpetuals.shared._errors import InvalidCoinError
+from argus.perpetuals.shared import errors as shared_ers
+from argus.perpetuals.shared.errors import InvalidCoinError
 
 # Well-known hardhat/anvil test key: 0xac09...ff80 -> 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
 TEST_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"

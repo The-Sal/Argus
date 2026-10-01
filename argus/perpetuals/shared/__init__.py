@@ -12,7 +12,7 @@ from argus.perpetuals.shared import account
 from utils3.networking.sockets import Server
 from datetime import datetime, timedelta, UTC
 from typing import Callable, Any, Generic, TypeVar
-from argus.perpetuals.shared import _classes as cls, _errors as ers
+from argus.perpetuals.shared import _classes as cls, errors as ers
 from argus.perpetuals.shared.account import AccountHandlersMixin, BaseDispatcherCompatibleAccountRest
 from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage, NewFundingRate
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
@@ -132,7 +132,7 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
     A base class designed for Argus v2's Perpetual Dispatchers. This dispatcher inherits almost all of PolymarketDispatcher's inbound
     and outbound message shapes. It uses Introspective, RoutingHelper, CorrelationIDChecker, Server (utils3.networking.sockets.Server),
     etc... to provide the foundation for a trading-enabled dispatcher. The common data shapes for this dispatcher
-    can be found in shared/_classes.py & shared/_errors.py
+    can be found in shared/_classes.py & shared/errors.py
 
     This base class supports runtime.py's .interactive_mode() [to Introspective._interactive_ui].
     Subclasses should NOT override this function to provide custom functionality. Rather provide custom

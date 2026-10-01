@@ -67,7 +67,7 @@ from typing import Any, Dict, Optional
 from eth_account.messages import encode_typed_data
 from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
-from argus.perpetuals.shared import _errors as _shared_ers
+from argus.perpetuals.shared import errors as _shared_ers
 
 
 

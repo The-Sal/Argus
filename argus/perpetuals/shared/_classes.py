@@ -6,7 +6,7 @@ from argus import protocol
 from decimal import Decimal
 from collections.abc import Mapping
 from typing import Any, Dict, Optional
-from argus.perpetuals.shared import _errors as ers
+from argus.perpetuals.shared import errors as ers
 
 
 def compress(data: dict) -> str:

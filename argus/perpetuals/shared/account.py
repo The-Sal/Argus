@@ -62,7 +62,7 @@ from decimal import Decimal
 from dataclasses import dataclass
 from collections.abc import Mapping
 from argus._argus_utils import ArgsObject
-from argus.perpetuals.shared import _errors as ers
+from argus.perpetuals.shared import errors as ers
 from argus.perpetuals.shared._classes import paginate
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 

@@ -33,8 +33,11 @@ name = "argus"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "eth-account" },
+    { name = "eth-utils" },
     { name = "httpx", extra = ["socks"] },
     { name = "msgpack" },
+    { name = "msgpack-python" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pandas-stubs" },
@@ -53,8 +56,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "eth-account", specifier = ">=0.13.7" },
+    { name = "eth-utils", specifier = ">=5.3.1" },
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.1" },
     { name = "msgpack", specifier = ">=1.1" },
+    { name = "msgpack-python", specifier = ">=0.5.6" },
     { name = "numpy", specifier = "==2.5.3" },
     { name = "pandas", specifier = "==3.0.5" },
     { name = "pandas-stubs", specifier = "~=3.0.3" },
@@ -535,6 +541,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/9d/1d02994c7ae2603c98100984428ff0f67443572133bc18eca6058f732c1b/msgpack-1.2.2-cp315-cp315t-win_amd64.whl", hash = "sha256:6f53285f20d592ed309ee19e509cc4c77a3bda1db02ad67e8a0949bb227a5a6d", size = 78766, upload-time = "2026-08-27T10:03:45.036Z" },
     { url = "https://files.pythonhosted.org/packages/60/54/89ed16e6f966a050dc78b0e94a545025211b07ce9f4bdfe07dff70c03fc2/msgpack-1.2.2-cp315-cp315t-win_arm64.whl", hash = "sha256:a378e12ccc06d76efde115caf4073b7e5ff3cc18291d1341f9e65fb882e3f754", size = 71819, upload-time = "2026-08-27T10:03:46.375Z" },
 ]
+
+[[package]]
+name = "msgpack-python"
+version = "0.5.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/20/6eca772d1a5830336f84aca1d8198e5a3f4715cd1c7fc36d3cc7f7185091/msgpack-python-0.5.6.tar.gz", hash = "sha256:378cc8a6d3545b532dfd149da715abae4fda2a3adb6d74e525d0d5e51f46909b", size = 138996, upload-time = "2018-03-10T09:22:56.493Z" }
 
 [[package]]
 name = "numpy"
