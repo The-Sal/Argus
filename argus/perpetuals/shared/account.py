@@ -308,6 +308,61 @@ class Order:
 
 
 @dataclass(frozen=True)
+class OrderUpdate:
+    """
+    One order lifecycle transition pushed by a venue's account stream (`account_update`, event "order").
+
+    Deliberately not `Order`: a streamed update carries only what the venue's websocket sends (no order
+    type, reduce-only flag or time-in-force on Hyperliquid), and `Order` requires those. Forcing them in
+    would mean inventing values, so the push has its own record and a client that needs the rest reads
+    `get_order_status`. Field names match `Order` wherever the meaning is the same.
+
+    Attributes:
+        order_id: The venue's order id, always as a string.
+        name: The perpetual's symbol (HIP-3 coins keep their "dex:" prefix).
+        is_buy: True for a bid/long-opening order.
+        price: Limit price.
+        original_size: Size at placement, base units.
+        remaining_size: Unfilled size at the time of this update, base units.
+        status: The venue's lifecycle string, untranslated (e.g. "open", "canceled", "marginCanceled").
+        status_timestamp_ms: When the venue recorded this transition, unix ms.
+        timestamp_ms: Placement time, unix ms.
+        venue: The venue's native update record.
+        client_order_id: Client-assigned id if one was set, else None.
+        dex: The venue sub-ledger the order rests on ("" for the primary one), derived from the coin prefix.
+    """
+
+    order_id: str
+    name: str
+    is_buy: bool
+    price: Decimal
+    original_size: Decimal
+    remaining_size: Decimal
+    status: str
+    status_timestamp_ms: int
+    timestamp_ms: int
+    venue: VenueRecord
+    client_order_id: Optional[str] = None
+    dex: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "order_id": self.order_id,
+            "client_order_id": self.client_order_id,
+            "name": self.name,
+            "side": "buy" if self.is_buy else "sell",
+            "price": decimal_str(self.price),
+            "original_size": decimal_str(self.original_size),
+            "remaining_size": decimal_str(self.remaining_size),
+            "status": self.status,
+            "status_timestamp_ms": self.status_timestamp_ms,
+            "timestamp_ms": self.timestamp_ms,
+            "dex": self.dex,
+            "venue": self.venue.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class Trade:
     """
     One fill of one of the account's orders.

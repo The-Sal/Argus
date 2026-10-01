@@ -1,5 +1,8 @@
 """
-Hyperliquid market-data (order book) websocket streaming.
+Hyperliquid websocket streaming: market data (order books) and the account's order/fill events.
+
+The account stream (`HyperLiquidAccountWss`, bottom of this module) is a separate connection from the
+order-book one; see its docstring. The rest of this docstring describes the market-data side.
 
 The reconnect/ping-pong/threading-event skeleton and the roster/restore-on-
 reconnect machinery live in `argus.perpetuals.shared.wss` (`VenueWSSBase` /
@@ -48,7 +51,26 @@ import json
 import time
 import logging
 import threading
-from argus.perpetuals.shared.wss import MarketDataWssBase
+from typing import Callable, Optional, Union
+from argus.perpetuals.hyper import _classes as _cls
+from argus.perpetuals.shared import account as _acct
+from argus.perpetuals.shared.wss import MarketDataWssBase, VenueWSSBase
+
+WS_URL = 'wss://api.hyperliquid.xyz/ws'
+
+
+class HyperLiquidFramingMixin:
+    """
+    Hyperliquid's keepalive framing, shared by every Hyperliquid websocket class (market data and account)
+    so it is defined once. List it *before* the `VenueWSSBase` subclass in the bases so these override the
+    base's abstract hooks.
+    """
+
+    def _ping_frame(self) -> str:
+        return json.dumps({"method": "ping"})
+
+    def _is_pong_frame(self, parsed) -> bool:
+        return parsed.get('channel') == 'pong'
 
 
 class HyperLiquidOrderBookStore:
@@ -168,7 +190,7 @@ class HyperLiquidOrderBookStore:
         return list(self._coin_to_order_book.keys())
 
 
-class HyperLiquidMarketDataWss(MarketDataWssBase):
+class HyperLiquidMarketDataWss(HyperLiquidFramingMixin, MarketDataWssBase):
     """
     Single-connection order book streamer for Hyperliquid.
 
@@ -185,22 +207,12 @@ class HyperLiquidMarketDataWss(MarketDataWssBase):
     def __init__(self, order_book_update_callback=None):
         super().__init__(
             name="Hyperliquid Order Book",
-            url='wss://api.hyperliquid.xyz/ws',
+            url=WS_URL,
             env_prefix='HYPERLIQUID',
             proxy_idx='HYPERLIQUID',
             default_ping_interval_s=20,
         )
         self._store = HyperLiquidOrderBookStore(order_book_update_callback=order_book_update_callback)
-
-    ########################################
-    # Venue framing (shared base hooks)
-    ########################################
-
-    def _ping_frame(self) -> str:
-        return json.dumps({"method": "ping"})
-
-    def _is_pong_frame(self, parsed) -> bool:
-        return parsed.get('channel') == 'pong'
 
     ########################################
     # Subscription ops
@@ -249,6 +261,161 @@ class HyperLiquidMarketDataWss(MarketDataWssBase):
     # pool isn't itself a WSSBase and has to reach into its shards' store, whereas
     # this class's `MarketDataWssBase._on_message_base` already sets the plain
     # attribute on `self` and it is accurate as-is.
+
+
+AccountUpdateCallback = Callable[[Union[_acct.OrderUpdate, _acct.Trade]], None]
+"""Receives one `_acct.OrderUpdate` or one `_acct.Trade` per call."""
+
+GapCallback = Callable[[int], None]
+"""Receives `since_ms`: when the previous connection was lost (unix ms)."""
+
+
+class HyperLiquidAccountStream:
+    """
+    Pure parser/state for the account websocket (no socket, so it unit-tests offline). Mirrors the role
+    `HyperLiquidOrderBookStore` plays for market data.
+
+    Two subscriptions feed it (both keyed by the wallet address, no signature needed):
+      - `orderUpdates` (channel "orderUpdates"): a list of `{order, status, statusTimestamp}`, one frame
+        possibly mixing statuses. Becomes one `_acct.OrderUpdate` per element.
+      - `userEvents` (channel "user", *not* "userEvents"): `{"fills": [...]}` and `{"twapSliceFills": [...]}`.
+        Becomes one `_acct.Trade` per fill. Other keys (funding, liquidation, nonUserCancel) are logged and
+        skipped until a later phase.
+    `userFills` is deliberately not used: it would deliver every fill a second time and opens with a
+    ~2000-fill snapshot.
+
+    Neither channel replays history on (re)subscribe, so after a reconnect anything that happened while
+    down is lost. `note_disconnect()` / `begin_connection()` track that: once both subscription acks of a
+    *re*connection are in, `gap_callback(since_ms)` fires exactly once. The first connection never gaps.
+
+    Every record is delivered through its own callback call (never batched; see `AccountUpdate`). A
+    malformed frame or a raising callback is logged and skipped: this runs on the websocket thread and
+    must never kill it.
+    """
+
+    SUBSCRIPTION_TYPES = ("orderUpdates", "userEvents")
+
+    def __init__(self, update_callback: AccountUpdateCallback, gap_callback: Optional[GapCallback] = None):
+        self._update_callback = update_callback
+        self._gap_callback = gap_callback
+        self._lock = threading.Lock()
+        self._acked: set = set()
+        self._gap_since_ms: Optional[int] = None
+
+    def note_disconnect(self) -> None:
+        """The socket dropped. Remember the *earliest* drop time of this outage (a failed reconnect
+        attempt closes again before any ack, and must not move the gap's start forward)."""
+        with self._lock:
+            if self._gap_since_ms is None:
+                self._gap_since_ms = int(time.time() * 1000)
+
+    def begin_connection(self) -> None:
+        """A socket just opened; the new connection has no acks yet."""
+        with self._lock:
+            self._acked = set()
+
+    def apply_message(self, message: str) -> None:
+        try:
+            content = json.loads(message)
+        except (json.JSONDecodeError, TypeError):
+            logging.warning('Non-JSON message from Hyperliquid Account WebSocket (ignored): "%s"', message)
+            return
+        if not isinstance(content, dict):
+            logging.warning('Unexpected Hyperliquid Account WebSocket frame (ignored): %s', content)
+            return
+
+        channel = content.get('channel')
+        data = content.get('data')
+        try:
+            if channel == 'orderUpdates':
+                self._handle_order_updates(data)
+            elif channel == 'user':
+                self._handle_user_event(data)
+            elif channel == 'subscriptionResponse':
+                self._handle_subscription_response(data)
+            elif channel == 'error':
+                logging.warning('Hyperliquid Account WebSocket error frame: %s', content)
+        except Exception:
+            logging.exception('Failed to process Hyperliquid Account WebSocket frame: %s', message)
+
+    def _deliver(self, record) -> None:
+        try:
+            self._update_callback(record)
+        except Exception:
+            logging.exception('Account update callback raised for %s', record)
+
+    def _handle_order_updates(self, data) -> None:
+        for raw in data or []:
+            # Per element so one malformed order does not swallow the rest of the frame.
+            try:
+                update = _cls.WsOrderUpdate.from_dict(raw)
+            except Exception:
+                logging.exception('Malformed orderUpdates element (skipped): %s', raw)
+                continue
+            self._deliver(update.to_common())
+
+    def _handle_user_event(self, data) -> None:
+        event = _cls.WsUserEvent.from_dict(data or {})
+        for key in event.ignored:
+            logging.info('Hyperliquid userEvents key not supported yet (ignored): %s', key)
+        for fill in event.fills:
+            self._deliver(fill.to_common())
+
+    def _handle_subscription_response(self, data) -> None:
+        logging.info('Hyperliquid Account WebSocket subscription ack: %s', data)
+        sub_type = ((data or {}).get('subscription') or {}).get('type')
+        if sub_type not in self.SUBSCRIPTION_TYPES:
+            return
+        since_ms = None
+        with self._lock:
+            self._acked.add(sub_type)
+            if self._gap_since_ms is not None and self._acked.issuperset(self.SUBSCRIPTION_TYPES):
+                since_ms, self._gap_since_ms = self._gap_since_ms, None
+        if since_ms is not None and self._gap_callback:
+            try:
+                self._gap_callback(since_ms)
+            except Exception:
+                logging.exception('Account gap callback raised')
+
+
+class HyperLiquidAccountWss(HyperLiquidFramingMixin, VenueWSSBase):
+    """
+    Authenticated-by-address websocket for the account's order and fill events. A separate connection from
+    `HyperLiquidMarketDataWss` (that class is built around a per-coin roster and an order-book store, and the
+    account stream must not be able to take market data down). Costs 1 of the 10 per-IP connections and 1 of
+    the 10 per-IP unique users. The subscription set is fixed (two), so it is simply re-sent on every open,
+    including reconnects; none of the market-data roster/restore machinery is needed.
+
+    `update_callback` gets one `_acct.OrderUpdate` or `_acct.Trade` per call; `gap_callback(since_ms)` fires
+    once after a reconnect re-establishes both subscriptions (see `HyperLiquidAccountStream`). Reconnect,
+    ping/pong and proxy handling, and the `HYPERLIQUID_*` env knobs, come from `VenueWSSBase`.
+    """
+
+    def __init__(self, wallet_address: str, update_callback: AccountUpdateCallback,
+                 gap_callback: Optional[GapCallback] = None):
+        super().__init__(
+            name="Hyperliquid Account",
+            url=WS_URL,
+            env_prefix='HYPERLIQUID',
+            proxy_idx='HYPERLIQUID',
+            default_ping_interval_s=20,
+        )
+        self._wallet_address = wallet_address
+        self._stream = HyperLiquidAccountStream(update_callback, gap_callback)
+
+    def _on_open_impl(self):
+        self._stream.begin_connection()
+        for sub_type in HyperLiquidAccountStream.SUBSCRIPTION_TYPES:
+            self._ws.send(json.dumps({
+                "method": "subscribe",
+                "subscription": {"type": sub_type, "user": self._wallet_address},
+            }))
+
+    def _on_message_impl(self, message: str):
+        self._stream.apply_message(message)
+
+    def _on_reconnect_start(self):
+        self._stream.note_disconnect()
 
 
 if __name__ == '__main__':

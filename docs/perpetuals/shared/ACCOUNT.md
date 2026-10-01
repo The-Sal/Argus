@@ -5,7 +5,7 @@ orders, fills and funding payments. Both `HyperLiquidDispatcher` (port `9972`) a
 `LighterDispatcher` (port `9974`) expose the **same six actions with the same request
 and response shapes**, served by one shared implementation
 (`argus/perpetuals/shared/account.py`). Order execution is a separate, Hyperliquid-only
-surface described in `docs/HYPERLIQUID_TRADING.md`; Lighter remains read-only for now.
+surface described in `docs/perpetuals/hyperliquid/DISPATCHER.md`; Lighter remains read-only for now.
 
 The actions are named after `PolymarketDispatcher`'s (`docs/POLYMARKET.md`) so a client
 that already speaks to Polymarket needs no new vocabulary:
@@ -20,9 +20,9 @@ that already speaks to Polymarket needs no new vocabulary:
 | `get_funding_payments` | Funding settlements in a time window, newest first | yes |
 
 Hyperliquid additionally exposes `get_account_fees` and `get_rate_limit_usage`
-(no Lighter analog). Transport, framing, correlation IDs and error envelopes are exactly
-as for every other perps action (see `HyperLiquidDispatcher`'s docstring): Protocol 1
-request/response over the dispatcher's TCP socket.
+(no Lighter analog; specified in `docs/perpetuals/hyperliquid/DISPATCHER.md`). Transport, framing,
+correlation IDs and error envelopes are exactly as for every other perps action
+(`docs/perpetuals/shared/PROTOCOL.md`): Protocol 1 request/response over the dispatcher's TCP socket.
 
 ## Design
 
@@ -281,18 +281,22 @@ days before `end_time`.
 Lighter is capped at 500 settlements per request (about three weeks of hourly funding) so a
 wide window cannot turn into an unbounded number of upstream calls.
 
+### Push (Hyperliquid)
+
+Order lifecycle changes and fills are also pushed as `account_update` (no polling needed to learn about a
+fill or cancel); see `docs/perpetuals/hyperliquid/DISPATCHER.md#account_update`. The records reuse the shapes
+above (`fill` is a `get_trades` record). Lighter does not push yet.
+
 ### Hyperliquid-only
 
-- `get_account_fees` (`data: {}`) → the `userFees` payload: `userCrossRate` (taker),
-  `userAddRate` (maker), fee schedule, referral/staking discounts, `dailyUserVlm`.
-- `get_rate_limit_usage` (`data: {}`) → `{"cumVlm", "nRequestsUsed", "nRequestsCap", "nRequestsSurplus"}`;
-  the address-based budget that signed actions (order placement, once implemented) draw down.
+`get_account_fees` and `get_rate_limit_usage` have no Lighter analog and are specified in
+`docs/perpetuals/hyperliquid/DISPATCHER.md`.
 
 ## CLI
 
 `tests/hyper_cli.py` and `tests/lighter_cli.py` have matching commands: `balance`,
 `positions`, `orders`, `order <id>`, `trades`, `fundingpay [days]` (plus `fees` and
-`ratelimit` on Hyperliquid), and their `test` / `--test` gauntlet validates every account
+`ratelimit` on Hyperliquid, and `watch` for live `account_update` pushes), and their `test` / `--test` gauntlet validates every account
 action's shape live. Account checks report `SKIP` rather than `FAIL` on a dispatcher whose
 account side is unconfigured.
 

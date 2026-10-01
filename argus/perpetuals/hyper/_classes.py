@@ -31,6 +31,7 @@ class SubDeployerAction(str, Enum):
     SET_DEPLOYER_FEES = "setDeployerFees"
     SET_FUNDING_INTEREST_RATES = "setFundingInterestRates"
     SET_PERP_ANNOTATION = "setPerpAnnotation"
+    SET_FUNDING_CLAMPS = "setFundingClamps"
 
 
 # --- pair-shaped entries (JSON encodes these as 2-element lists) -----------
@@ -1507,6 +1508,117 @@ class UserFill:
             timestamp_ms=self.time,
             venue=self,
         )
+
+
+@dataclass
+class WsBasicOrder:
+    """The order inside an `orderUpdates` websocket frame (`WsBasicOrder` in Hyperliquid's docs).
+
+    Much slimmer than `OpenOrder`: no order type, reduce-only flag, tif or dex field, which is why the
+    stream has its own common record (`_acct.OrderUpdate`) instead of `_acct.Order`. `side` is "B"
+    (bid/buy) or "A" (ask/sell); `sz` is the *remaining* size, `orig_sz` the size at placement. HIP-3
+    coins keep their "dex:" prefix (e.g. "xyz:SOXL")."""
+
+    coin: str
+    side: Literal["A", "B"]
+    limit_px: Decimal
+    sz: Decimal
+    oid: int
+    timestamp: int
+    orig_sz: Decimal
+    cloid: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WsBasicOrder":
+        return cls(
+            coin=data["coin"],
+            side=data["side"],
+            limit_px=Decimal(data["limitPx"]),
+            sz=Decimal(data["sz"]),
+            oid=int(data["oid"]),
+            timestamp=int(data["timestamp"]),
+            orig_sz=Decimal(data["origSz"]),
+            cloid=data.get("cloid"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "coin": self.coin,
+            "side": self.side,
+            "limitPx": _decimal_str(self.limit_px),
+            "sz": _decimal_str(self.sz),
+            "oid": self.oid,
+            "timestamp": self.timestamp,
+            "origSz": _decimal_str(self.orig_sz),
+            "cloid": self.cloid,
+        }
+
+
+@dataclass
+class WsOrderUpdate:
+    """One element of an `orderUpdates` frame: an order and the lifecycle `status` it just entered
+    ("open", "filled", "canceled", "marginCanceled", any `*Rejected`, ...), passed through untranslated
+    like `Order.status`. A single frame can mix statuses (a replacement is one "open" plus one "canceled")."""
+
+    order: WsBasicOrder
+    status: str
+    status_timestamp: int
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WsOrderUpdate":
+        return cls(
+            order=WsBasicOrder.from_dict(data["order"]),
+            status=data["status"],
+            status_timestamp=int(data["statusTimestamp"]),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "order": self.order.to_dict(),
+            "status": self.status,
+            "statusTimestamp": self.status_timestamp,
+        }
+
+    def to_common(self) -> _acct.OrderUpdate:
+        """`dex` comes from the coin prefix ("xyz:SOXL" -> "xyz", "BTC" -> "")."""
+        o = self.order
+        return _acct.OrderUpdate(
+            order_id=_decimal_str(o.oid),
+            client_order_id=o.cloid,
+            name=o.coin,
+            is_buy=o.side == "B",
+            price=o.limit_px,
+            original_size=o.orig_sz,
+            remaining_size=o.sz,
+            status=self.status,
+            status_timestamp_ms=self.status_timestamp,
+            timestamp_ms=o.timestamp,
+            dex=o.coin.split(":")[0] if ":" in o.coin else "",
+            venue=self,
+        )
+
+
+@dataclass
+class WsUserEvent:
+    """The `data` object of a `user` channel frame (the `userEvents` subscription).
+
+    Only fills are supported for now: `fills` plus `twapSliceFills`, whose `{"fill": ..., "twapId": ...}`
+    wrappers are unwrapped (the fill already carries `twapId`) and appended after the plain fills. Any other
+    key (`funding`, `liquidation`, `nonUserCancel`, ...) is recorded in `ignored` so the caller can log it
+    instead of silently dropping it."""
+
+    fills: List[UserFill] = field(default_factory=list)
+    ignored: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WsUserEvent":
+        fills = [UserFill.from_dict(f) for f in data.get("fills", [])]
+        fills.extend(UserFill.from_dict(s["fill"]) for s in data.get("twapSliceFills", []))
+        ignored = [k for k in data if k not in ("fills", "twapSliceFills")]
+        return cls(fills=fills, ignored=ignored)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"fills": [f.to_dict() for f in self.fills], "ignored": list(self.ignored)}
 
 
 @dataclass

@@ -12,15 +12,16 @@ from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
 from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
+from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.hyper.rest import HyperLiquidRest
 from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.hyper.exchange import HyperLiquidExchange
-from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate
+from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate, AccountUpdate
 
 
 
 
-__version__ = [1, 0, 0, 0]
+__version__ = [1, 1, 0, 0]
 pi = PrintInterface('HyperLiquid')
 
 
@@ -77,6 +78,11 @@ class HyperLiquidDispatcher(BaseDispatcher):
     cloid) and resolves the coin itself via orderStatus when the caller omits it. A venue-level rejection
     of one order (e.g. insufficient margin) is reported in the response's 'error' field, not as a packet
     error.
+
+    Account push: the master wallet's order transitions and fills are pushed to every connected client as
+    `account_update` (events "order", "fill", "gap"), one record per message, with no `subscribe` required.
+    Served by argus/perpetuals/hyper/wss.py HyperLiquidAccountWss on its own websocket so a failure there
+    never affects market data. See docs/perpetuals/hyperliquid/DISPATCHER.md.
 
     The inbound underlying JSON structure of Hl follows polymarket:
     {
@@ -152,6 +158,25 @@ class HyperLiquidDispatcher(BaseDispatcher):
         )
         self.market_data.run(main_thread=False)
 
+        # Account push stream (orders + fills for HYPERLIQUID_WALLET_ADDRESS). Isolated from market data:
+        # if it cannot start we shout and keep serving everything else, like AccountNotConfiguredError does.
+        self.account_updates = None
+        try:
+            self.account_updates = wss.HyperLiquidAccountWss(
+                wallet_address,
+                update_callback=self._account_update_callback,
+                gap_callback=self._account_gap_callback,
+            )
+            self.account_updates.run(main_thread=False)
+        except Exception as e:
+            pi.throw_fuss(
+                f"Failed to start the Hyperliquid account update stream: {e}. "
+                f"account_update pushes are unavailable; everything else keeps running.",
+                title="Account Stream Failure",
+                notify=True,
+            )
+            traceback.print_exc()
+
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks
     ########################################
@@ -166,6 +191,37 @@ class HyperLiquidDispatcher(BaseDispatcher):
         :param channel_id: The coin whose last subscriber just went away.
         """
         self.market_data.unsubscribe_from_coin(channel_id)
+
+    def _account_update_callback(self, record) -> None:
+        """
+        Called on the account websocket thread with one `OrderUpdate` or one `Trade` per call. Wraps it in
+        an `AccountUpdate` ("order" / "fill") and pushes it to every connected client; clients do not need
+        to `subscribe` first (unlike Polymarket). Never raises: an exception here would kill the websocket
+        thread, so failures are logged instead.
+        """
+        try:
+            if isinstance(record, _acct.OrderUpdate):
+                update = AccountUpdate.order(record)
+            elif isinstance(record, _acct.Trade):
+                update = AccountUpdate.fill(record)
+            else:
+                raise TypeError(f"unsupported account record {type(record).__name__}")
+            self._routine_push_account_update(update)
+        except Exception as e:
+            pi.prt(f"Error pushing account update: {e}")
+            traceback.print_exc()
+
+    def _account_gap_callback(self, since_ms: int) -> None:
+        """
+        Called once after the account websocket reconnected and resubscribed. Events between `since_ms` and
+        now may have been missed (the channels do not replay), so tell every client to reconcile with
+        `get_orders` / `get_trades`. Never raises, for the same reason as `_account_update_callback`.
+        """
+        try:
+            self._routine_push_account_update(AccountUpdate.gap("reconnected", since_ms))
+        except Exception as e:
+            pi.prt(f"Error pushing account gap: {e}")
+            traceback.print_exc()
 
     def _handle_subscribe(self, args: ArgsObject) -> dict:
         """

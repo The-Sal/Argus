@@ -14,6 +14,8 @@ Protocol:
     Once a client has subscribed, the same socket also carries unsolicited P1
     system pushes (e.g. the hourly refreshed funding rate, action "perpetual_info";
     see HyperLiquidDispatcher._distribute_refreshed_perpetuals).
+    Every connected client (subscribed or not) also receives "account_update" pushes for the
+    master wallet's order transitions, fills and stream gaps; the `watch` command prints them.
     - P2 (async market-data push): ~<packet-length><symbol-length>|<symbol><csv-data>L
     Pushed unsolicited once a client has `subscribe`d to one or more coins (see
     HyperLiquidDispatcher._order_book_update_callback / argus/perpetuals/hyper/wss.py).
@@ -1182,6 +1184,51 @@ def format_rate_limit(data: dict) -> str:
     ])
 
 
+def format_account_update(data: dict) -> str:
+    """Format one `account_update` push (events: order, fill, gap; see HyperLiquidDispatcher)."""
+    event = data.get('event')
+    if event == 'order':
+        o = data.get('order', {})
+        return (f"[account] ORDER {o.get('status')}: {o.get('name')} {o.get('side')} "
+                f"{o.get('remaining_size')}/{o.get('original_size')} @ {o.get('price')} "
+                f"oid={o.get('order_id')} cloid={o.get('client_order_id')}")
+    if event == 'fill':
+        t = data.get('trade', {})
+        return (f"[account] FILL: {t.get('name')} {t.get('side')} {t.get('size')} @ {t.get('price')} "
+                f"fee={t.get('fee')} {'maker' if t.get('is_maker') else 'taker'} "
+                f"pnl={t.get('realized_pnl')} oid={t.get('order_id')} tid={t.get('trade_id')}")
+    if event == 'gap':
+        return (f"[account] GAP ({data.get('reason')}) since "
+                f"{datetime.fromtimestamp(data.get('since_ms', 0) / 1000):%H:%M:%S}: "
+                f"events may be missing, reconcile with `orders` / `trades`")
+    return f"[account] {data}"
+
+
+def watch_account_mode(client: HyperArgusClient):
+    """
+    Print live `account_update` pushes (order transitions, fills, gaps) until Ctrl+C. No `subscribe`
+    is needed: the dispatcher registers any client that has made a request, so one cheap request
+    (`products_version`) is sent first.
+    """
+    try:
+        client.products_version()
+    except Exception as e:
+        print(f"✗ Could not register with the dispatcher: {e}")
+        return
+    print("\n👀 Watching account updates (orders, fills, gaps)... Press Ctrl+C to stop.")
+    count = 0
+    try:
+        while True:
+            _, pushes = client.receive_packets(timeout=0.1)
+            for push in pushes:
+                if push.get('action') == 'account_update':
+                    count += 1
+                    print(f"{datetime.now():%H:%M:%S} {format_system_push(push)}")
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        print(f"\n🛑 Stopped. {count} account updates received.")
+
+
 def format_system_push(push: Dict[str, Any]) -> str:
     """
     Format one P1 system push (e.g. a funding-rate update sent by
@@ -1189,6 +1236,8 @@ def format_system_push(push: Dict[str, Any]) -> str:
     """
     action = push.get('action', 'unknown')
     data = push.get('data')
+    if action == 'account_update' and isinstance(data, dict):
+        return format_account_update(data)
     if isinstance(data, dict) and 'funding_rate' in data:
         subject = data.get('coin') or data.get('symbol') or '?'
         return f"[push] {action}: {subject} funding_rate={data.get('funding_rate')}"
@@ -1300,6 +1349,7 @@ def print_help():
     print("  search <keyword>           - Fuzzy-search perpetual symbols (e.g. search BTC)")
     print("  rate <symbol>              - Show the live hourly + annualized funding rate for one symbol")
     print("  sub <coin>                 - Subscribe to live order book + system pushes (e.g. funding rate updates), Ctrl+C to stop")
+    print("  watch                      - Live account_update pushes (orders, fills, gaps), Ctrl+C to stop")
     print("  balance [dex]              - Account equity/margin (optional HIP-3 dex name)")
     print("  positions [offset] [limit] - Open positions (add 'dex=<name>' for a HIP-3 dex)")
     print("  orders [offset] [limit]    - Resting orders, newest first")
@@ -1504,6 +1554,8 @@ def interactive_loop(client: HyperArgusClient):
                         print(format_funding_rate(data))
                     except Exception as e:
                         print(f"✗ Failed to fetch funding rate: {e}")
+            elif query.lower() == 'watch':
+                watch_account_mode(client)
             elif query.lower().startswith('sub '):
                 coin = query[4:].strip()
                 if not coin:

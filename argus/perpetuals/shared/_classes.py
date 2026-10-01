@@ -5,8 +5,11 @@ import base64
 from argus import protocol
 from decimal import Decimal
 from collections.abc import Mapping
-from typing import Any, Dict, Optional
 from argus.perpetuals.shared import errors as ers
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:  # account.py imports this module, so these are annotation-only
+    from argus.perpetuals.shared.account import OrderUpdate, Trade
 
 
 def compress(data: dict) -> str:
@@ -198,3 +201,48 @@ class NewFundingRate:
             "funding_rate": self.funding_rate
         }
         return OutboundMessage(action="funding_rate_update", data=payload).convert_to_protocol_1()
+
+
+class AccountUpdate:
+    """
+    An unsolicited account event pushed to every connected client under the action "account_update".
+    Can directly be converted to bytes through `convert_to_protocol_1()`, exactly like `NewFundingRate`,
+    so the envelope and auto-compression stay identical to every other push. Every dispatcher that
+    pushes account events must build them with this class; the downstream SDK depends on the shape:
+
+        {"event": "order", "order": <OrderUpdate.to_dict()>}
+        {"event": "fill",  "trade": <Trade.to_dict()>}
+        {"event": "gap",   "reason": <str>, "since_ms": <int>}
+
+    One record per message, never a batch: a venue frame can hold many records and a batch could exceed the
+    Protocol 1 byte cap (OutboundMessage raises PacketTooLargeError). Build instances through the
+    `order` / `fill` / `gap` constructors rather than `__init__`, which only stores the finished payload.
+    """
+
+    def __init__(self, event: str, payload: dict):
+        self.event = event
+        self.payload = payload
+
+    @classmethod
+    def order(cls, update: "OrderUpdate") -> "AccountUpdate":
+        """An order lifecycle transition (open, canceled, filled, rejected, ...)."""
+        return cls("order", {"order": update.to_dict()})
+
+    @classmethod
+    def fill(cls, trade: "Trade") -> "AccountUpdate":
+        """One fill of one of the account's orders."""
+        return cls("fill", {"trade": trade.to_dict()})
+
+    @classmethod
+    def gap(cls, reason: str, since_ms: int) -> "AccountUpdate":
+        """
+        The account stream was interrupted and events since `since_ms` (unix ms) may have been missed;
+        clients should reconcile with `get_orders` / `get_trades`.
+        """
+        return cls("gap", {"reason": reason, "since_ms": since_ms})
+
+    def to_dict(self) -> dict:
+        return {"event": self.event, **self.payload}
+
+    def convert_to_protocol_1(self):
+        return OutboundMessage(action="account_update", data=self.to_dict()).convert_to_protocol_1()

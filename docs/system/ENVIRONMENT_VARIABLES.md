@@ -228,7 +228,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: Wallet address for Hyperliquid authentication and account data
 - **Required**: Yes (for the Hyperliquid dispatcher)
 - **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/hyper/rest.py`
-- **Behavior**: Read at startup when no `wallet_address` is passed to `HyperLiquidDispatcher`; used to construct `HyperLiquidRest`. It is the `user` on every account read (`get_balance`, `get_positions`, `get_orders`, `get_order_status`, `get_trades`, `get_funding_payments`, `get_account_fees`, `get_rate_limit_usage`), which are unsigned `info` requests. **It must be the master account address**: querying with an API/agent wallet address returns an empty account. See `docs/PERPETUALS_ACCOUNT.md`.
+- **Behavior**: Read at startup when no `wallet_address` is passed to `HyperLiquidDispatcher`; used to construct `HyperLiquidRest`. It is the `user` on every account read (`get_balance`, `get_positions`, `get_orders`, `get_order_status`, `get_trades`, `get_funding_payments`, `get_account_fees`, `get_rate_limit_usage`), which are unsigned `info` requests. **It must be the master account address**: querying with an API/agent wallet address returns an empty account. See `docs/perpetuals/shared/ACCOUNT.md`.
 
 ### `HYPERLIQUID_PRIVATE_KEY`
 - **Purpose**: Private key for Hyperliquid authentication
@@ -243,7 +243,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `perpetuals/hyper/__init__.py`, `tests/hyper_cli.py`
 
 ### `HYPERLIQUID_MAX_SOCKET_RETRIES`
-- **Purpose**: Maximum number of socket connection retries
+- **Purpose**: Maximum number of socket connection retries (applies to both the order-book and the account-update websocket)
 - **Default**: `50`
 - **Required**: No
 - **Used in**: `perpetuals/hyper/wss.py`
@@ -259,7 +259,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Default**: `20`
 - **Required**: No
 - **Used in**: `perpetuals/hyper/wss.py`
-- **Behavior**: Hyperliquid closes connections silent for 60s; the default pings comfortably under that
+- **Behavior**: Hyperliquid closes connections silent for 60s; the default pings comfortably under that (also used by the account-update websocket)
 
 ### `HYPERLIQUID_DISABLE_PING_PONG_LOGS`
 - **Purpose**: Disable ping-pong logging to reduce noise

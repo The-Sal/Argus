@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, UTC
 from typing import Callable, Any, Generic, TypeVar
 from argus.perpetuals.shared import _classes as cls, errors as ers
 from argus.perpetuals.shared.account import AccountHandlersMixin, BaseDispatcherCompatibleAccountRest
-from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage, NewFundingRate
+from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage, NewFundingRate, AccountUpdate
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
 
 
@@ -357,6 +357,11 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
         _ = address  # this will be used later for logging. However, for now the logging functionality
         # is not implemented.
 
+        # Any client that talks to us receives unsolicited account_update pushes. This is done here rather
+        # than via Server(on_connect=...) because utils3's Server treats on_connect as a *replacement* for
+        # its receive loop, which would stop on_recv from ever being called. add_socket is idempotent.
+        self.add_socket(client)
+
         try:
             packets = protocol.decode_multiple_packets(data)
         except ValueError:
@@ -460,6 +465,19 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
                 self.pi.prt(f"Unexpected error sending {context} to socket: {e}")
                 self.remove_socket(sock)
                 traceback.print_exc()
+
+    def _routine_push_account_update(self, update: AccountUpdate):
+        """
+        Push one account event (order transition, fill, gap) to every connected client, whether or not
+        it has subscribed to any market. Unlike Polymarket, where `self.sockets` only holds clients that
+        subscribed, account events are not tied to a coin, so recipients are every socket that has made
+        a request (`_on_recv` registers it). Callers run on a venue websocket thread: this encodes once,
+        sends per socket under its send lock and prunes dead sockets, and never raises on a bad client.
+        :param update: The AccountUpdate to broadcast; one record per call (see AccountUpdate).
+        :return:
+        """
+        packet = update.convert_to_protocol_1()
+        self._routine_send_packet_to_clients(self.sockets, packet, context=f"account update ({update.event})")
 
     @runAsThread
     def _routine_push_funding_rates_for_client(self, client: socket.socket, PerpObject):
