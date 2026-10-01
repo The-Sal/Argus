@@ -283,9 +283,9 @@ This document lists all environment variables used throughout the Argus project 
 
 ### `LIGHTER_AUTH_TOKEN`
 - **Purpose**: A Lighter **read-only API token** (`ro:<account_index>:<single|all>:<expiry_unix>:<hex>`) for the auth-gated account reads
-- **Required**: No (without it, `get_orders` / `get_order_status` / `get_trades` / `get_funding_payments` answer with `AccountNotConfiguredError`; `get_balance` / `get_positions` still work)
+- **Required**: No (when *unset*, `get_orders` / `get_order_status` / `get_trades` / `get_funding_payments` answer with `AccountNotConfiguredError`; `get_balance` / `get_positions` still work). When *set* it must be valid: see the startup failure below
 - **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/rest.py`
-- **Behavior**: Sent verbatim in the `authorization` header of auth-gated requests. Mint one in the Lighter web UI (API keys page) or via `POST /api/v1/tokens_create`; read-only tokens live between 1 day and 10 years, so no signing library or API-key private key is needed for reads. The dispatcher refuses to start with a token that is malformed, expired, or scoped (`single`) to a different account than `LIGHTER_ACCOUNT_INDEX`. This is **not** the short-lived signed token the Lighter SDK mints for order execution; that comes with the trading work.
+- **Behavior**: Sent verbatim in the `authorization` header of auth-gated requests. Mint one in the Lighter web UI (API keys page) or via `POST /api/v1/tokens_create`; read-only tokens live between 1 day and 10 years, so no signing library or API-key private key is needed for reads. **Startup failure:** the Lighter dispatcher refuses to start (`ValueError` from `LighterRest.__init__`, market data included) with a token that is malformed, expired, or scoped (`single`) to a different account than `LIGHTER_ACCOUNT_INDEX`. An unset token is fine; a set-but-bad one is fatal by design, so an expired credential cannot masquerade as "not configured". This is **not** the short-lived signed token the Lighter SDK mints for order execution; that comes with the trading work.
 
 ### `LIGHTER_ORDERBOOK_DEPTH`
 - **Purpose**: Controls the depth of orderbook data (number of bid/ask levels streamed in P2 packets)

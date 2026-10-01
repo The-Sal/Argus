@@ -403,7 +403,9 @@ class HyperLiquidDispatcher(BaseDispatcher):
             "buy" or "sell"), 'price' (required, limit price), 'size' (required, size in coins),
             'order_type' (optional, "GTC" | "IOC" | "ALO", default "GTC"), 'reduce_only'
             (optional bool, default False), 'cloid' (optional client order id: 0x + 32 hex chars).
-        :return: {'coin', 'oid', 'status', 'avgPx', 'error'} -- `status` is "resting" or
+        :return: {'coin', 'oid', 'status', 'avgPx', 'price', 'requestedPrice', 'priceAdjusted',
+            'error'} -- `price` is the tick-rounded limit price actually submitted, `requestedPrice`
+            what the caller sent, `priceAdjusted` whether they differ. `status` is "resting" or
             "filled" and `oid` the venue order id; a venue-level rejection of the order (e.g.
             insufficient margin) comes back with `error` set and `oid` null instead of a packet error.
         """

@@ -108,6 +108,56 @@ class TestActionHash:
         assert h.hex() == "596e6d327491c26b700932f4ee29d1c71dd63ba183ecd2a82cb1f0fdd62d7f77"
 
 
+class TestMsgpackEncoding:
+    def test_installed_msgpack_is_modern(self):
+        # Guards against the legacy `msgpack-python` package (0.5.6) shadowing `msgpack`: it ships the
+        # same module name with different string encoding and corrupts any signed action with a cloid.
+        import msgpack
+        assert msgpack.version >= (1, 0, 0)
+
+    def test_pinned_vector_with_cloid(self):
+        # A cloid is 34 chars, so it packs as str8 (0xd9) under msgpack 1.x but raw16 (0xda) under
+        # 0.5.6 -- different bytes, different hash, venue rejects the signature. Pin the 1.x hash.
+        import msgpack
+        action = {"type": "cancelByCloid", "cancels": [{"asset": 0, "cloid": CLOID}]}
+        modern = msgpack.packb(action, use_bin_type=True)
+        assert b"\xd9\x22" + CLOID.encode() in modern
+        assert HyperLiquidExchange.action_hash(action, nonce=1_700_000_000_000).hex() == (
+            "31a999a50decc69e7a8ddc13d71ce19268945f6c5f84b1a44b6dbf4fa3b683be"
+        )
+
+
+class TestNonce:
+    def test_strictly_increasing_even_within_one_millisecond(self, monkeypatch):
+        monkeypatch.setattr(_exch.time, "time", lambda: 1_700_000_000.0)
+        addr = "0xNonceTestWallet"
+        nonces = [_exch._next_nonce(addr) for _ in range(5)]
+        assert nonces == sorted(set(nonces)) and len(nonces) == 5
+
+    def test_unique_across_threads(self):
+        import threading
+        addr = "0xNonceThreads"
+        out, lock = [], threading.Lock()
+
+        def work():
+            for _ in range(200):
+                n = _exch._next_nonce(addr)
+                with lock:
+                    out.append(n)
+
+        threads = [threading.Thread(target=work) for _ in range(8)]
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        assert len(out) == len(set(out)) == 1600
+
+    def test_wallets_do_not_share_a_counter_and_case_is_ignored(self, monkeypatch):
+        monkeypatch.setattr(_exch.time, "time", lambda: 1_800_000_000.0)
+        a1 = _exch._next_nonce("0xAbC")
+        a2 = _exch._next_nonce("0xabc")
+        assert a2 == a1 + 1
+        assert _exch._next_nonce("0xOther") == a1
+
+
 # --- EIP-712 signing round trip -----------------------------------------------------
 
 class TestSignAction:
@@ -159,6 +209,17 @@ class TestRoundPrice:
     def test_perp_rules(self, price, expected):
         assert self._ex().round_price("BTC", price) == expected
 
+    @pytest.mark.parametrize("price, expected", [
+        ("105432", Decimal("105432")),        # whole numbers are valid at any length: never rounded
+        (105432, Decimal("105432")),
+        (105432.0, Decimal("105432")),
+        ("1234567", Decimal("1234567")),
+        ("105432.4", Decimal("105432")),      # fractional with 6 integer digits: nearest integer
+        ("99999.5", Decimal("100000")),
+    ])
+    def test_whole_numbers_pass_through(self, price, expected):
+        assert self._ex().round_price("BTC", price) == expected
+
     def test_more_decimals_for_low_precision_size(self):
         # szDecimals=2 -> up to 4 price decimals; szDecimals=0 -> up to 6.
         ex = StubInfoExchange()
@@ -167,6 +228,30 @@ class TestRoundPrice:
     def test_unknown_coin(self):
         with pytest.raises(InvalidCoinError):
             self._ex().round_price("DOGE", 1)
+
+
+class TestPlaceOrderReportsRoundedPrice:
+    def _ex(self, price):
+        ex = StubInfoExchange()
+        ex.session.post = lambda url, json=None: type("R", (), {"json": lambda s: {
+            "status": "ok", "response": {"data": {"statuses": [{"resting": {"oid": 5}}]}}}})()
+        return ex.place_order("BTC", "buy", price, 1)
+
+    def test_adjusted_price_is_reported(self):
+        r = self._ex("30000.123456")
+        d = r.to_dict()
+        assert d["price"] == "30000" and d["requestedPrice"] == "30000.123456" and d["priceAdjusted"] is True
+
+    def test_unadjusted_price(self):
+        d = self._ex("105432").to_dict()
+        assert d["price"] == "105432" and d["requestedPrice"] == "105432" and d["priceAdjusted"] is False
+
+    def test_error_result_still_carries_prices(self):
+        ex = StubInfoExchange()
+        ex.session.post = lambda url, json=None: type("R", (), {"json": lambda s: {
+            "status": "ok", "response": {"data": {"statuses": [{"error": "nope"}]}}}})()
+        d = ex.place_order("BTC", "buy", "1.23456789", 1).to_dict()
+        assert d["error"] == "nope" and d["price"] is not None and d["priceAdjusted"] is True
 
 
 # --- asset-id resolution (stubbed info endpoint) -----------------------------------
@@ -241,7 +326,8 @@ class TestResults:
     def test_placement_resting(self):
         r = OrderPlacementResult.from_response("BTC", {"data": {"statuses": [{"resting": {"oid": 42}}]}})
         assert (r.ok, r.oid, r.status, r.error, r.avg_px) == (True, 42, "resting", None, None)
-        assert r.to_dict() == {"coin": "BTC", "oid": 42, "status": "resting", "avgPx": None, "error": None}
+        assert r.to_dict() == {"coin": "BTC", "oid": 42, "status": "resting", "avgPx": None,
+                                "price": None, "requestedPrice": None, "priceAdjusted": False, "error": None}
 
     def test_placement_filled(self):
         r = OrderPlacementResult.from_response(

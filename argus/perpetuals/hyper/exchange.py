@@ -59,6 +59,7 @@ itself still "ok". See `_classes.OrderPlacementResult`.
 """
 import time
 import msgpack
+import threading
 from decimal import Decimal
 from eth_utils import keccak
 from eth_account import Account
@@ -99,6 +100,29 @@ _L1_TYPES = {
 _HIP3_ASSET_OFFSET = 110_000
 _HIP3_ASSET_SLOT_WIDTH = 10_000
 
+# Nonce allocation. Hyperliquid keys replay protection on (signer address, nonce), so two actions
+# from the same wallet in the same millisecond -- e.g. two dispatcher client threads placing orders
+# at once -- would collide and the venue would reject the second one. Nonces are therefore handed
+# out from one process-wide counter per wallet: unix ms, bumped to last + 1 when the clock has not
+# advanced. It is module-level and keyed by address (not per instance) so that several
+# HyperLiquidExchange objects over one wallet still share it. Only the *allocation* is serialised;
+# the HTTP POST happens outside the lock, which is fine because the venue accepts nonces out of
+# order within its window (it only needs them unique, above the lowest of its 100 highest stored
+# nonces, and within roughly -2d/+1d of its clock). Multiple *processes* signing for one wallet are
+# not coordinated -- give each its own API wallet if you ever need that.
+_nonce_lock = threading.Lock()
+_last_nonce: Dict[str, int] = {}
+
+
+def _next_nonce(wallet_address: str) -> int:
+    """A nonce for `wallet_address` that is strictly greater than any this process issued before."""
+    key = wallet_address.lower()
+    with _nonce_lock:
+        nonce = max(int(time.time() * 1000), _last_nonce.get(key, 0) + 1)
+        _last_nonce[key] = nonce
+        return nonce
+
+
 #: Time-in-force values the exchange accepts on limit orders ("Alo" = auction limit order).
 VALID_TIFS = ("Gtc", "Ioc", "Alo")
 
@@ -109,6 +133,11 @@ def _split_coin(coin: str) -> tuple:
         dex, bare = coin.split(":", 1)
         return dex, bare
     return "", coin
+
+
+def _to_decimal(value: Any) -> Decimal:
+    """Decimal from int/float/str/Decimal; floats go through ``str()`` so binary artifacts don't leak."""
+    return value if isinstance(value, Decimal) else Decimal(value if isinstance(value, (str, int)) else str(value))
 
 
 def _to_wire_number(value: Any) -> str:
@@ -148,10 +177,10 @@ def validate_cloid(cloid: str) -> str:
 class HyperLiquidExchange:
     """
     Signed client for Hyperliquid's `exchange` endpoint: place limit orders, cancel by
-    oid or cloid, cancel all.
+    oid or cloid (there is no cancel-all; see the module docstring).
 
-    Complements `HyperLiquidRest`, which holds the same wallet credentials but only signs
-    nothing (its reads are unsigned). Instantiate one per wallet; it is safe to share
+    Complements `HyperLiquidRest`, which holds the same wallet credentials but never signs
+    (its reads are unsigned). Instantiate one per wallet; it is safe to share
     across threads for the meta caches (they are TTL-guarded, worst case a redundant
     fetch) -- order submission itself is a single HTTP POST.
 
@@ -244,14 +273,22 @@ class HyperLiquidExchange:
 
     def round_price(self, coin: str, price: Any, is_spot: bool = False) -> Decimal:
         """
-        Round `price` to the venue's tick rules: 5 significant figures, then at most
-        ``6 - szDecimals`` decimal places for perps (``8 - szDecimals`` for spot). The
-        venue rejects anything finer-grained ("Order has invalid price"), so limit prices
-        must go through this before they reach the wire.
+        Round `price` to the venue's tick rules. A price with a fractional part is rounded to
+        5 significant figures (to the nearest integer once the integer part already has 5+ digits) and then to at most ``6 - szDecimals`` decimal places for perps
+        (``8 - szDecimals`` for spot); the venue rejects anything finer ("Order has invalid
+        price"). A whole-number price is always valid on Hyperliquid whatever its length, so it
+        is passed through untouched -- rounding 105432 to 5 significant figures would silently
+        move the order to 105430. Done in `Decimal`, so no binary-float artifacts. Ties round
+        half-even.
         """
-        rounded = float(f"{float(price):.5g}")
-        decimals = (8 if is_spot else 6) - self.sz_decimals(coin)
-        return Decimal(repr(round(rounded, decimals)))
+        d = _to_decimal(price)
+        max_decimals = (8 if is_spot else 6) - self.sz_decimals(coin)  # also validates the coin
+        if d == d.to_integral_value() or d.adjusted() >= 4:
+            # Whole already, or the integer part alone uses all 5 significant figures (so no
+            # fractional digit is allowed): the nearest valid price is the nearest integer.
+            return d.quantize(Decimal(1))
+        d = d.quantize(Decimal(1).scaleb(d.adjusted() - 4))  # 5 significant figures
+        return d.quantize(Decimal(1).scaleb(-max_decimals))
 
     # --- signing -------------------------------------------------------------
 
@@ -267,7 +304,10 @@ class HyperLiquidExchange:
         nonce + vault tag (+ 0x00-prefixed 8-byte BE expiresAfter when set). Exposed as a
         plain static method so tests can pin the vector without a wallet.
         """
-        data = msgpack.packb(action)
+        # use_bin_type is pinned (not left to the library default) because the bytes are signed:
+        # pre-1.0 msgpack encodes str >= 32 bytes as raw16 where 1.x uses str8, which silently
+        # changes the hash for any action carrying a cloid and the venue rejects the signature.
+        data = msgpack.packb(action, use_bin_type=True)
         data += nonce.to_bytes(8, "big")
         if vault_address is None:
             data += b"\x00"
@@ -302,7 +342,7 @@ class HyperLiquidExchange:
 
     def _post_action(self, action: dict) -> Any:
         """Sign `action` with a fresh ms nonce, POST it, and unwrap the ok/err envelope."""
-        nonce = int(time.time() * 1000)
+        nonce = _next_nonce(self.wallet_address)
         payload = {
             "action": action,
             "nonce": nonce,
@@ -336,7 +376,9 @@ class HyperLiquidExchange:
         ``6 - szDecimals`` decimals -- before submission) and `size` is in coins; `tif` is
         "Gtc", "Ioc" or "Alo"; `reduce_only` closes instead of opens; `cloid` is an optional
         client order id. Returns the per-order outcome -- a venue-level rejection (e.g.
-        insufficient margin) is reported in the result's `error` field, not raised.
+        insufficient margin) is reported in the result's `error` field, not raised. The result
+        carries both the `price` actually submitted (after tick rounding) and the
+        `requested_price`, so a caller can see when the two differ.
         """
         side_norm = side.lower()
         if side_norm not in ("buy", "sell"):
@@ -344,10 +386,11 @@ class HyperLiquidExchange:
         if tif not in VALID_TIFS:
             raise _ers.HyperLiquidError(f"Invalid order type {tif!r}: expected one of {list(VALID_TIFS)}")
 
+        rounded_price = self.round_price(coin, price)
         wire_order = {
             "a": self.resolve_asset_id(coin),
             "b": side_norm == "buy",
-            "p": _to_wire_number(self.round_price(coin, price)),
+            "p": _to_wire_number(rounded_price),
             "s": _to_wire_number(size),
             "r": bool(reduce_only),
             "t": {"limit": {"tif": tif}},
@@ -361,7 +404,11 @@ class HyperLiquidExchange:
             "grouping": "na",
         }
         response = self._post_action(action)
-        return _cls.OrderPlacementResult.from_response(coin, response)
+        return _cls.OrderPlacementResult.from_response(
+            coin, response,
+            price=rounded_price,
+            requested_price=_to_decimal(price),
+        )
 
     def cancel_by_oid(self, coin: str, oid: int) -> _cls.CancelResult:
         """Cancel one order by its venue id. The venue only lists oids it actually canceled."""

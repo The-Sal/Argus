@@ -1315,15 +1315,24 @@ class OrderPlacementResult:
     status: Optional[str] = None  # "resting" | "filled" | None (when errored)
     avg_px: Optional[Decimal] = None
     error: Optional[str] = None
+    price: Optional[Decimal] = None  # the limit price actually submitted, after tick rounding
+    requested_price: Optional[Decimal] = None  # the limit price the caller asked for
+
+    @property
+    def price_adjusted(self) -> bool:
+        """True when tick rounding changed the requested price."""
+        return self.price is not None and self.requested_price is not None and self.price != self.requested_price
 
     @classmethod
-    def from_response(cls, coin: str, data: Dict[str, Any]) -> "OrderPlacementResult":
+    def from_response(cls, coin: str, data: Dict[str, Any], price: Optional[Decimal] = None,
+                      requested_price: Optional[Decimal] = None) -> "OrderPlacementResult":
         statuses = (data.get("data") or {}).get("statuses") or []
         if not statuses:
             raise _ers.HyperLiquidError(f"Unexpected order response shape (no statuses): {data!r}")
         entry = statuses[0]  # this client submits one order per action
+        prices = {"price": price, "requested_price": requested_price}
         if "resting" in entry:
-            return cls(coin=coin, oid=int(entry["resting"]["oid"]), status="resting")
+            return cls(coin=coin, oid=int(entry["resting"]["oid"]), status="resting", **prices)
         if "filled" in entry:
             filled = entry["filled"]
             return cls(
@@ -1331,9 +1340,10 @@ class OrderPlacementResult:
                 oid=int(filled["oid"]),
                 status="filled",
                 avg_px=Decimal(filled["avgPx"]) if filled.get("avgPx") is not None else None,
+                **prices,
             )
         if "error" in entry:
-            return cls(coin=coin, error=entry["error"])
+            return cls(coin=coin, error=entry["error"], **prices)
         raise _ers.HyperLiquidError(f"Unrecognized order status entry: {entry!r}")
 
     @property
@@ -1347,6 +1357,9 @@ class OrderPlacementResult:
             "oid": self.oid,
             "status": self.status,
             "avgPx": _acct.str_or_none(self.avg_px),
+            "price": _acct.str_or_none(self.price),
+            "requestedPrice": _acct.str_or_none(self.requested_price),
+            "priceAdjusted": self.price_adjusted,
             "error": self.error,
         }
         return out

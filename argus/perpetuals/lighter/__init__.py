@@ -51,8 +51,13 @@ class LighterDispatcher(BaseDispatcher):
     handlers in argus/perpetuals/shared/account.py. Configuration is by environment:
     LIGHTER_ACCOUNT_INDEX selects the account (balance/positions are public reads) and
     LIGHTER_AUTH_TOKEN, a long-lived read-only API token, unlocks orders/trades/funding
-    payments. Both are optional: without them the market-data side is unaffected and the
-    account actions answer with AccountNotConfiguredError. Every list action is paginated
+    payments. Both are optional: leaving them *unset* is fine -- market data is unaffected and the
+    account actions answer with AccountNotConfiguredError. A LIGHTER_AUTH_TOKEN that is *set* but
+    malformed, expired, or scoped (`single`) to a different account than LIGHTER_ACCOUNT_INDEX is
+    a configuration error and the dispatcher refuses to start (LighterRest raises ValueError from
+    its constructor), market data included. This is deliberate: silently running with a dead token
+    would make get_orders / get_trades look like "not configured" long after the real cause
+    (an expired credential) has been forgotten. Every list action is paginated
     (offset/limit) because each record carries the full venue payload under "venue".
     Trading functions are not yet implemented.
     """
