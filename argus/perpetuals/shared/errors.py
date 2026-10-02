@@ -56,3 +56,13 @@ class AccountNotConfiguredError(DispatcherError):
     keep working on a dispatcher whose account side is unconfigured.
     """
     pass
+
+
+class OrderExecutionDisabledError(DispatcherError):
+    """
+    Raised by an order-placing action (place_order, place_multiple_orders, set_leverage, ...)
+    while the dispatcher's "Block Order Execution" switch is on. Mirrors Polymarket's error of
+    the same name. Cancels are never blocked: they only reduce risk, and an operator who blocks
+    execution in an emergency still needs to pull resting orders.
+    """
+    pass

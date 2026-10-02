@@ -6,7 +6,9 @@ This mirrors tests/poly_cli.py but targets HyperLiquidDispatcher
 (argus/perpetuals/hyper/__init__.py) instead of the Polymarket dispatcher.
 
 Usage:
-    python tests/hyper_cli.py    # Start interactive mode
+    python tests/hyper_cli.py                                 # Start interactive mode
+    python tests/hyper_cli.py --test                          # Read-only gauntlet + side-effect-free validation
+    python tests/hyper_cli.py --test --enable-execution       # ...plus the checks that touch the real account
 
 Protocol:
     - P1 (control): ~NNNN|<json-payload>
@@ -227,6 +229,7 @@ class HyperArgusClient:
         self.socket: Optional[socket.socket] = None
         self.p2_parser = P2PacketParser()
         self._recv_buffer = b''
+        self.pushes: List[dict] = []  # server pushes that arrived while waiting for a reply
 
     def connect(self) -> None:
         try:
@@ -264,6 +267,9 @@ class HyperArgusClient:
                 raise ConnectionError("Server closed connection before responding.")
             self._recv_buffer += chunk
 
+    #: Server-initiated message actions that can interleave with a request's reply.
+    PUSH_ACTIONS = ('account_update', 'fatal_error', 'funding_rate_update')
+
     def send_request(self, action: str, data: Any = None, timeout: int = 30) -> Tuple[dict, float]:
         """Send a P1 request (with a fresh correlation_id) and return (response, round-trip time)."""
         if data is None:
@@ -281,15 +287,25 @@ class HyperArgusClient:
         try:
             t0 = time.perf_counter()
             self.socket.sendall(packet)
-            payload = self._recv_framed_payload()
+            deadline = t0 + timeout
+            while True:
+                # The dispatcher pushes `account_update` / `fatal_error` / `funding_rate_update` on the same
+                # stream (e.g. an order event right after place_order), so the next frame is not necessarily
+                # this request's reply: skip pushes and stale replies until our correlation_id comes back.
+                self.socket.settimeout(max(deadline - time.perf_counter(), 0.001))
+                payload = self._recv_framed_payload()
+                response = json.loads(payload.decode('utf-8'))
+                response = protocol.decompress_p1_response(response)
+                resp_corr_id = response.get('correlation_id')
+                if resp_corr_id == correlation_id:
+                    break
+                if resp_corr_id is None and response.get('action') not in self.PUSH_ACTIONS:
+                    break  # an error raised before the packet was processed carries no correlation_id
+                if resp_corr_id is not None:
+                    print(f"  ⚠ Skipping stale response {resp_corr_id} (waiting for {correlation_id})")
+                else:
+                    self.pushes.append(response)
             elapsed = time.perf_counter() - t0
-
-            response = json.loads(payload.decode('utf-8'))
-            response = protocol.decompress_p1_response(response)
-
-            resp_corr_id = response.get('correlation_id')
-            if resp_corr_id is not None and resp_corr_id != correlation_id:
-                print(f"  ⚠ Warning: response correlation_id {resp_corr_id} does not match request {correlation_id}")
 
             return response, elapsed
         finally:
@@ -413,17 +429,58 @@ class HyperArgusClient:
 
     # --- trading (signed; Hyperliquid only) ---
 
-    def place_order(self, coin: str, side: str, price: Any, size: Any, order_type: str = 'GTC',
-                    reduce_only: bool = False, cloid: Optional[str] = None, timeout: int = 30) -> Tuple[dict, float]:
-        """Place one limit order. `order_type` is GTC|IOC|ALO; a venue-level rejection comes
-        back in the response's 'error' field with a null 'oid' (not as an exception)."""
-        data: Dict[str, Any] = {'coin': coin, 'side': side, 'price': price, 'size': size,
-                                'order_type': order_type}
+    def get_leverage(self, coin: str, timeout: int = 30) -> Tuple[dict, float]:
+        """The leverage in force on `coin` plus its max / allowed margin modes (read-only)."""
+        return self._account_request('get_leverage', {'coin': coin}, None, timeout)
+
+    def set_leverage(self, coin: str, leverage: int, margin_mode: Optional[str] = None,
+                     timeout: int = 30) -> Tuple[dict, float]:
+        """Set `coin`'s leverage (REAL account change). `margin_mode` None keeps the current mode."""
+        data: Dict[str, Any] = {'coin': coin, 'leverage': leverage}
+        if margin_mode:
+            data['margin_mode'] = margin_mode
+        return self._account_request('set_leverage', data, None, timeout)
+
+    @staticmethod
+    def order_spec(coin: str, side: str, price: Any, size: Any, leverage: int, margin_mode: Optional[str] = None,
+                   order_type: str = 'GTC', reduce_only: bool = False, cloid: Optional[str] = None) -> Dict[str, Any]:
+        """One order dict in the shape `place_order` / `place_multiple_orders` take (leverage is required)."""
+        spec: Dict[str, Any] = {'coin': coin, 'side': side, 'price': price, 'size': size,
+                                'leverage': leverage, 'order_type': order_type}
+        if margin_mode:
+            spec['margin_mode'] = margin_mode
         if reduce_only:
-            data['reduce_only'] = True
+            spec['reduce_only'] = True
         if cloid:
-            data['cloid'] = cloid
+            spec['cloid'] = cloid
+        return spec
+
+    def place_order(self, coin: str, side: str, price: Any, size: Any, leverage: int,
+                    margin_mode: Optional[str] = None, order_type: str = 'GTC',
+                    reduce_only: bool = False, cloid: Optional[str] = None, timeout: int = 30) -> Tuple[dict, float]:
+        """Place one limit order at an explicit `leverage` (required; rolled back by the dispatcher if the
+        order is rejected). `order_type` is GTC|IOC|ALO; a venue-level rejection comes back in the
+        response's 'error' field with a null 'oid' (not as an exception)."""
+        data = self.order_spec(coin, side, price, size, leverage, margin_mode, order_type, reduce_only, cloid)
         return self._account_request('place_order', data, None, timeout)
+
+    def place_multiple_orders(self, orders: List[Dict[str, Any]], timeout: int = 30) -> Tuple[dict, float]:
+        """Place several orders in one signed action; build items with `order_spec`."""
+        return self._account_request('place_multiple_orders', {'orders': orders}, None, timeout)
+
+    def cancel_multiple_orders(self, orders: List[Dict[str, Any]], timeout: int = 30) -> Tuple[dict, float]:
+        """Cancel several orders; items are {'order_id': oid|cloid, 'coin': optional}."""
+        return self._account_request('cancel_multiple_orders', {'orders': orders}, None, timeout)
+
+    def cancel_all_orders(self, coin: Optional[str] = None, dex: Optional[str] = None,
+                          timeout: int = 60) -> Tuple[dict, float]:
+        """Cancel EVERY resting order (optionally one coin / dex). Real and indiscriminate."""
+        data: Dict[str, Any] = {}
+        if coin:
+            data['coin'] = coin
+        if dex is not None:
+            data['dex'] = dex
+        return self._account_request('cancel_all_orders', data, None, timeout)
 
     def cancel_order(self, order_id: Any, coin: Optional[str] = None, timeout: int = 30) -> Tuple[dict, float]:
         """Cancel one order by oid or 0x-cloid. Omitting `coin` makes the dispatcher resolve it
@@ -870,6 +927,129 @@ def _gauntlet_get_rate_limit_usage(client: 'HyperArgusClient', timeout: float) -
     return dt, f"{data['nRequestsUsed']}/{data['nRequestsCap']} requests used, cumVlm={data['cumVlm']}"
 
 
+def _gauntlet_get_leverage(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    data, dt = client.get_leverage('BTC', timeout=int(timeout))
+    for field in ('coin', 'dex', 'leverage', 'max_leverage', 'allowed_margin_modes', 'mark_price'):
+        _check(field in data, f"missing '{field}'")
+    lev = data['leverage']
+    _check(lev.get('type') in ('cross', 'isolated') and isinstance(lev.get('value'), int), f"bad leverage {lev!r}")
+    _check(1 <= lev['value'] <= data['max_leverage'], f"leverage {lev['value']} outside 1..{data['max_leverage']}")
+    _check_numeric(data['mark_price'], 'mark_price', 'get_leverage')
+    return dt, f"BTC {lev['value']}x {lev['type']} (max {data['max_leverage']}x)"
+
+
+def _gauntlet_kill_switch_flag(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    data, dt = client.products_version(timeout=int(timeout))
+    _check(isinstance(data.get('order_execution_blocked'), bool), "products_version lacks boolean 'order_execution_blocked'")
+    return dt, f"order_execution_blocked={data['order_execution_blocked']}"
+
+
+def _expect_error(client: 'HyperArgusClient', action: str, data: dict, fragment: str, timeout: float) -> None:
+    """Send a deliberately invalid request and require the dispatcher to refuse it (nothing is ever placed)."""
+    resp, _ = client.send_request(action, data, timeout=int(timeout))
+    error = resp.get('error')
+    if error and 'blocked' in error.lower():
+        raise GauntletSkip("order execution is blocked on this dispatcher")
+    _check(bool(error) and fragment in error, f"{action}: expected an error containing {fragment!r}, got {resp!r}")
+
+
+def _gauntlet_trading_validation(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    """Side-effect-free: every request here is invalid and must be refused before anything is signed."""
+    start = time.perf_counter()
+    _expect_error(client, 'place_order', {'coin': 'BTC', 'side': 'buy', 'price': '1', 'size': '1'}, 'leverage', timeout)
+    _expect_error(client, 'place_order', {'coin': 'BTC', 'side': 'buy', 'price': '1', 'size': '1', 'leverage': 1.5}, 'leverage', timeout)
+    _expect_error(client, 'place_multiple_orders', {'orders': []}, 'orders', timeout)
+    _expect_error(client, 'set_leverage', {'coin': 'BTC'}, 'leverage', timeout)
+    _expect_error(client, 'cancel_multiple_orders', {'orders': []}, 'orders', timeout)
+    return time.perf_counter() - start, "5 invalid trading requests refused client-side"
+
+
+# --- opt-in trading checks (touch the REAL account) ---------------------------------------------------
+# Enabled with the `--enable-execution` argument (see main). They only ever (a) set leverage to the value already in force and
+# (b) rest far-below-market BTC buys that are cancelled in a `finally`.
+
+TRADE_COIN = 'BTC'
+TRADE_SZ_DECIMALS = 5          # BTC's szDecimals on Hyperliquid
+SAFE_LIMIT_FRACTION = 0.4      # buy at 40% of mark: cannot be crossed, so it only ever rests
+MIN_ORDER_USD = 11             # venue minimum is $10
+
+
+#: Set from `--enable-execution` in `main`; the checks below SKIP unless it is on.
+EXECUTION_ENABLED = False
+
+
+def _require_trade_opt_in() -> None:
+    if not EXECUTION_ENABLED:
+        raise GauntletSkip("pass --enable-execution to run checks that touch the real account")
+
+
+def _gauntlet_set_leverage_noop(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    _require_trade_opt_in()
+    before, _ = client.get_leverage(TRADE_COIN, timeout=int(timeout))
+    lev = before['leverage']
+    try:
+        out, dt = client.set_leverage(TRADE_COIN, lev['value'], lev['type'], timeout=int(timeout))
+    except Exception as e:
+        if 'blocked' in str(e).lower():
+            raise GauntletSkip("order execution is blocked on this dispatcher")
+        raise
+    after, _ = client.get_leverage(TRADE_COIN, timeout=int(timeout))
+    _check(after['leverage'] == lev, f"leverage changed: {lev} -> {after['leverage']}")
+    _check(out['leverage'] == lev['value'] and out['margin_mode'] == lev['type'], f"unexpected reply {out!r}")
+    return dt, f"re-applied {lev['value']}x {lev['type']} (no-op), unchanged"
+
+
+def _gauntlet_trading_lifecycle(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    """place_order / place_multiple_orders / cancel_multiple_orders / cancel_all_orders end to end."""
+    import math
+    _require_trade_opt_in()
+    t = int(timeout)
+    start = time.perf_counter()
+    info, _ = client.get_leverage(TRADE_COIN, timeout=t)
+    lev = info['leverage']
+    mark = float(info['mark_price'])
+    px = round(mark * SAFE_LIMIT_FRACTION)
+    unit = 10 ** -TRADE_SZ_DECIMALS
+    size = f"{math.ceil(MIN_ORDER_USD / px / unit) * unit:.{TRADE_SZ_DECIMALS}f}"
+    cloids = ["0x" + f"{os.getpid() % 256:02x}" * 15 + f"{i:02x}" for i in range(1, 6)]
+    spec = lambda cloid=None: client.order_spec(TRADE_COIN, 'buy', str(px), size, lev['value'], lev['type'], cloid=cloid)
+
+    def cleanup():
+        try:
+            client.cancel_multiple_orders([{'order_id': c, 'coin': TRADE_COIN} for c in cloids], timeout=t)
+        except Exception:
+            pass
+
+    try:
+        single, _ = client.place_order(TRADE_COIN, 'buy', str(px), size, lev['value'], lev['type'], cloid=cloids[0], timeout=t)
+        if single.get('error') and ('minimum' in single['error'] or 'margin' in single['error'].lower()):
+            raise GauntletSkip(f"account cannot fund the minimum order: {single['error']}")
+        _check(single.get('oid') is not None, f"place_order rejected: {single.get('error')}")
+        _check(single['leverage'] == {'type': lev['type'], 'value': lev['value']}, f"reported leverage {single['leverage']!r}")
+        _check(single['leverage_changed'] is False, "leverage unexpectedly changed")
+
+        batch, _ = client.place_multiple_orders([spec(cloids[1]), spec(cloids[2])], timeout=t)
+        _check(batch['ok_count'] == 2 and len(batch['results']) == 2, f"batch not fully accepted: {batch!r}")
+        oids = [r['oid'] for r in batch['results']]
+
+        # one mixed cancel: by oid (coin resolved by the dispatcher), by cloid, and an unknown id
+        cancel, _ = client.cancel_multiple_orders(
+            [{'order_id': single['oid']}, {'order_id': oids[0], 'coin': TRADE_COIN}, {'order_id': cloids[2]},
+             {'order_id': 1}], timeout=t)
+        flags = [o['ok'] for o in cancel['outcomes']]
+        _check(flags == [True, True, True, False], f"unexpected cancel outcomes {cancel['outcomes']!r}")
+
+        client.place_multiple_orders([spec(cloids[3]), spec(cloids[4])], timeout=t)
+        swept, _ = client.cancel_all_orders(coin=TRADE_COIN, timeout=t)  # sweeps ALL resting BTC orders
+        _check(swept['failed'] == 0 and swept['requested'] >= 2, f"cancel_all_orders: {swept!r}")
+        left, _ = client.get_orders(timeout=t)
+        mine = [o for o in left if o.get('client_order_id') in cloids]
+        _check(not mine, f"{len(mine)} test order(s) still resting")
+    finally:
+        cleanup()
+    return time.perf_counter() - start, f"{TRADE_COIN} {size} @ {px} at {lev['value']}x {lev['type']}: place/batch/cancel/sweep ok, nothing left"
+
+
 GAUNTLET_CHECKS: List[Tuple[str, Callable[['HyperArgusClient', float], Tuple[float, str]]]] = [
     ("products_version", _gauntlet_products_version),
     ("get_dexs", _gauntlet_get_dexs),
@@ -887,6 +1067,11 @@ GAUNTLET_CHECKS: List[Tuple[str, Callable[['HyperArgusClient', float], Tuple[flo
     ("get_funding_payments", _gauntlet_get_funding_payments),
     ("get_account_fees", _gauntlet_get_account_fees),
     ("get_rate_limit_usage", _gauntlet_get_rate_limit_usage),
+    ("get_leverage", _gauntlet_get_leverage),
+    ("kill switch flag", _gauntlet_kill_switch_flag),
+    ("trading validation (no side effects)", _gauntlet_trading_validation),
+    ("set_leverage no-op (opt-in)", _gauntlet_set_leverage_noop),
+    ("trading lifecycle (opt-in)", _gauntlet_trading_lifecycle),
     ("market_data (subscribe/P2 lifecycle)", _gauntlet_market_data_stream),
 ]
 
@@ -1110,10 +1295,46 @@ def format_order_status(data: dict) -> str:
 
 def format_place_result(data: dict) -> str:
     if data.get('error'):
-        return f"\n  ✗ Order rejected by venue: {data['error']}"
+        rolled = "  (leverage rolled back)" if data.get('leverage_reverted') else ""
+        return f"\n  ✗ Order rejected by venue: {data['error']}{rolled}"
     avg = f" @ {data['avgPx']}" if data.get('avgPx') else ""
+    lev = ""
+    if data.get('leverage'):
+        lev = (f"\n    leverage: {data['leverage']['value']}x {data['leverage']['type']}"
+               f" (was {data['previous_leverage']['value']}x {data['previous_leverage']['type']}"
+               f"{', changed' if data.get('leverage_changed') else ''}) "
+               f"est. initial margin: {data.get('estimated_initial_margin')}")
+    if data.get('leverage_reverted'):
+        lev += "\n    ↩ leverage rolled back to the previous value"
     return (f"\n  ✓ {data.get('status', '').upper()}: {data.get('coin')} "
-            f"oid={data.get('oid')}{avg}")
+            f"oid={data.get('oid')}{avg}{lev}")
+
+
+def format_batch(data: dict) -> str:
+    """place_multiple_orders / cancel_multiple_orders / cancel_all_orders replies."""
+    lines = []
+    for i, r in enumerate(data.get('results') or []):
+        lines.append(f"  [{i}] " + format_place_result(r).strip())
+    for o in data.get('outcomes') or []:
+        lines.append(f"  {'✓' if o['ok'] else '✗'} {o['order_id']} ({o.get('coin')}) {o.get('error') or ''}")
+    if 'requested' in data:
+        lines.append(f"  requested={data['requested']} canceled={data['canceled']} failed={data['failed']}")
+        for f in data.get('failures') or []:
+            lines.append(f"  ✗ {f['order_id']} ({f.get('coin')}) {f.get('error')}")
+        if data.get('failures_truncated'):
+            lines.append("  … more failures not shown")
+    counts = [f"{k}={data[k]}" for k in ('ok_count', 'error_count') if k in data]
+    return "\n" + "\n".join(lines + ([" ".join(counts)] if counts else []))
+
+
+def format_leverage(data: dict) -> str:
+    lev = data.get('leverage') or {}
+    if not isinstance(lev, dict):  # set_leverage reply: {coin, leverage: int, margin_mode, previous}
+        return (f"\n  {data.get('coin')}: now {lev}x {data.get('margin_mode')}"
+                f" (was {data['previous']['value']}x {data['previous']['type']})")
+    return (f"\n  {data.get('coin')}: {lev.get('value')}x {lev.get('type')} (max {data.get('max_leverage')}x, "
+            f"modes {data.get('allowed_margin_modes')}) mark={data.get('mark_price')}"
+            + (f"\n  previous: {data['previous']}" if data.get('previous') else ""))
 
 
 def format_cancel_result(data: dict) -> str:
@@ -1358,7 +1579,10 @@ def print_help():
     print("  fundingpay [days] [limit]  - Funding settlements over the last N days (default: 7)")
     print("  fees                       - Account maker/taker fee rates and daily volume")
     print("  ratelimit                  - Address-based rate-limit budget")
-    print("  place <coin> <buy|sell> <price> <size> [GTC|IOC|ALO] [reduce_only] [cloid=0x..] - Place a limit order")
+    print("  place <coin> <buy|sell> <price> <size> <leverage> [cross|isolated] [GTC|IOC|ALO] [reduce_only] [cloid=0x..] - Place a limit order")
+    print("  placemany <coin> <buy|sell> <price> <size> <leverage> <count> - Place <count> identical orders in one batch")
+    print("  leverage <coin> - Show leverage in force;  setlev <coin> <leverage> [cross|isolated] - Set it")
+    print("  cancelmany <order_id|cloid>... - Cancel several;  cancelall [coin] - Cancel every resting order")
     print("  cancel <order_id|cloid> [coin] - Cancel one order (coin optional; resolved via orderStatus)")
     print("  test | gauntlet            - Call every known read-only action and validate the responses")
     print("  clear                      - Clear screen")
@@ -1447,35 +1671,69 @@ def interactive_loop(client: HyperArgusClient):
                         print(format_rate_limit(data))
                 except Exception as e:
                     print(f"✗ {cmd} failed: {e}")
-            elif query.lower().split()[0] in ('place', 'cancel'):
+            elif query.lower().split()[0] in ('place', 'placemany', 'cancel', 'cancelmany', 'cancelall', 'leverage', 'setlev'):
                 parts = query.split()
                 cmd = parts[0].lower()
                 args = parts[1:]
                 try:
                     if cmd == 'place':
-                        # place <coin> <buy|sell> <price> <size> [GTC|IOC|ALO] [reduce_only] [cloid=0x..]
                         flags = [a for a in args if a.lower() == 'reduce_only' or a.startswith('cloid=')]
                         pos = [a for a in args if a not in flags]
-                        if len(pos) < 4:
-                            print("Usage: place <coin> <buy|sell> <price> <size> [GTC|IOC|ALO] [reduce_only] [cloid=0x..]")
+                        modes = [a for a in pos[5:] if a.lower() in ('cross', 'isolated')]
+                        types = [a.upper() for a in pos[5:] if a.upper() in ('GTC', 'IOC', 'ALO')]
+                        if len(pos) < 5:
+                            print("Usage: place <coin> <buy|sell> <price> <size> <leverage> [cross|isolated] [GTC|IOC|ALO] [reduce_only] [cloid=0x..]")
                         else:
-                            coin, side, price, size = pos[0], pos[1], pos[2], pos[3]
-                            order_type = pos[4].upper() if len(pos) > 4 else 'GTC'
                             reduce_only = any(a.lower() == 'reduce_only' for a in flags)
                             cloid = next((a.split('=', 1)[1] for a in flags if a.startswith('cloid=')), None)
-                            data, dt = client.place_order(coin, side, price, size, order_type=order_type,
+                            data, dt = client.place_order(pos[0], pos[1], pos[2], pos[3], int(pos[4]),
+                                                          margin_mode=modes[0].lower() if modes else None,
+                                                          order_type=types[0] if types else 'GTC',
                                                           reduce_only=reduce_only, cloid=cloid)
                             print(f"✓ Submitted in {dt*1000:.1f}ms")
                             print(format_place_result(data))
-                    else:
+                    elif cmd == 'placemany':
+                        if len(args) < 6:
+                            print("Usage: placemany <coin> <buy|sell> <price> <size> <leverage> <count>")
+                        else:
+                            specs = [client.order_spec(args[0], args[1], args[2], args[3], int(args[4]))
+                                     for _ in range(int(args[5]))]
+                            data, dt = client.place_multiple_orders(specs)
+                            print(f"✓ Submitted in {dt*1000:.1f}ms")
+                            print(format_batch(data))
+                    elif cmd == 'cancel':
                         if not args:
                             print("Usage: cancel <order_id|cloid> [coin]")
                         else:
-                            order_id = args[0]
-                            coin = args[1] if len(args) > 1 else None
-                            data, dt = client.cancel_order(order_id, coin=coin)
+                            data, dt = client.cancel_order(args[0], coin=args[1] if len(args) > 1 else None)
                             print(f"✓ Submitted in {dt*1000:.1f}ms")
                             print(format_cancel_result(data))
+                    elif cmd == 'cancelmany':
+                        if not args:
+                            print("Usage: cancelmany <order_id|cloid> [<order_id|cloid> ...]")
+                        else:
+                            data, dt = client.cancel_multiple_orders(
+                                [{'order_id': int(a) if a.isdigit() else a} for a in args])
+                            print(f"✓ Submitted in {dt*1000:.1f}ms")
+                            print(format_batch(data))
+                    elif cmd == 'cancelall':
+                        data, dt = client.cancel_all_orders(coin=args[0] if args else None)
+                        print(f"✓ Submitted in {dt*1000:.1f}ms")
+                        print(format_batch(data))
+                    elif cmd == 'leverage':
+                        if not args:
+                            print("Usage: leverage <coin>")
+                        else:
+                            data, dt = client.get_leverage(args[0])
+                            print(f"✓ Fetched in {dt*1000:.1f}ms")
+                            print(format_leverage(data))
+                    else:
+                        if len(args) < 2:
+                            print("Usage: setlev <coin> <leverage> [cross|isolated]")
+                        else:
+                            data, dt = client.set_leverage(args[0], int(args[1]), args[2].lower() if len(args) > 2 else None)
+                            print(f"✓ Submitted in {dt*1000:.1f}ms")
+                            print(format_leverage(data))
                 except Exception as e:
                     print(f"✗ {cmd} failed: {e}")
             elif query.lower() == 'version':
@@ -1580,10 +1838,13 @@ def main():
     parser = argparse.ArgumentParser(description='Argus Hyperliquid Interactive CLI Client')
     parser.add_argument('--host', default='localhost', help='Argus server host (default: localhost)')
     parser.add_argument('--port', type=int, default=9972, help='Argus server port (default: 9972)')
-    parser.add_argument('--test', action='store_true', help='Run the read-only gauntlet against a live dispatcher and exit (no interactive prompt)')
+    parser.add_argument('--test', action='store_true', help='Run the gauntlet (read-only; trading checks need --enable-execution) against a live dispatcher and exit (no interactive prompt)')
+    parser.add_argument('--enable-execution', action='store_true', help='With --test: also run the checks that touch the REAL account (a no-op set_leverage, and a far-below-market place / batch / cancel / cancel_all_orders lifecycle on BTC; cancel_all_orders cancels ALL resting BTC orders)')
     parser.add_argument('--test-timeout', type=float, default=15.0, help='Per-check timeout in seconds for --test (default: 15)')
 
     args = parser.parse_args()
+    global EXECUTION_ENABLED
+    EXECUTION_ENABLED = args.enable_execution
 
     client = HyperArgusClient(args.host, args.port)
 

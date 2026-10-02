@@ -236,6 +236,12 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/hyper/rest.py`
 - **Behavior**: Read at startup when no `private_key` is passed to `HyperLiquidDispatcher`; used to construct `HyperLiquidRest`
 
+### `HYPERLIQUID_BLOCK_ORDER_EXECUTION`
+- **Purpose**: Starts the Hyperliquid dispatcher with the "Block Order Execution" kill switch on: `place_order`, `place_multiple_orders` and `set_leverage` are refused with `OrderExecutionDisabledError`. Cancels and reads are never blocked. Can also be toggled from the dispatcher's interactive menu; no client action changes it
+- **Default**: off (`1`, `true` or `yes` turn it on)
+- **Required**: No
+- **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/shared/__init__.py`
+
 ### `HYPERLIQUID_ORDERBOOK_DEPTH`
 - **Purpose**: Controls the depth of orderbook data (number of bid/ask levels streamed in P2 packets)
 - **Default**: `10`

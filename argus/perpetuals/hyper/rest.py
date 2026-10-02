@@ -243,6 +243,14 @@ class HyperLiquidRest(BaseDispatcherCompatibleRest, BaseDispatcherCompatibleAcco
         response: list = self._post(body)
         return [_cls.UserFundingPayment.from_dict(entry) for entry in response]
 
+    def get_active_asset_data(self, coin: str) -> _cls.ActiveAssetData:
+        """
+        The leverage in force for the account on `coin` plus the venue's size limits (`activeAssetData`),
+        always read fresh: the order path uses it to remember the leverage to roll back to, so a cached
+        value could roll back to a stale one. Works for HIP-3 coins with the prefixed name ("xyz:AAPL").
+        """
+        return _cls.ActiveAssetData.from_dict(self._post(self._user_body('activeAssetData', coin=coin)))
+
     def get_user_fees(self) -> _cls.UserFees:
         """Current maker/taker fee rates and rolling volume for the account."""
         return _cls.UserFees.from_dict(self._post(self._user_body('userFees')))

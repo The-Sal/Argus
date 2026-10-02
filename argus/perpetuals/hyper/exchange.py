@@ -4,12 +4,14 @@ Signed order execution for Hyperliquid (the `exchange` endpoint).
 This module is to *trading* what `argus.perpetuals.hyper.rest` is to reads: the one place
 that knows how to sign and submit account actions to Hyperliquid. It complements
 `HyperLiquidRest` (unsigned public `info` reads) with the wallet's write surface --
-placing limit orders and canceling them. Order modification is deliberately not part of
-this surface (see the dispatcher's routing table).
+placing limit orders (singly or in batches), canceling them (singly or in batches) and
+setting per-coin leverage. Order modification is deliberately not part of this surface (see
+the dispatcher's routing table).
 
 Note that Hyperliquid has no immediate "cancel all" action: the only bulk cancel is
 ``scheduleCancel`` (a one-shot trigger at least 5s in the future, max 10/day), which this
-module deliberately does not expose.
+module deliberately does not expose. The dispatcher's cancel-all is client-side: list open
+orders, then `cancel_many`.
 
 Protocol
 --------
@@ -64,7 +66,7 @@ from decimal import Decimal
 from eth_utils import keccak
 from eth_account import Account
 from utils3.networking import Session
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from eth_account.messages import encode_typed_data
 from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
@@ -125,6 +127,10 @@ def _next_nonce(wallet_address: str) -> int:
 
 #: Time-in-force values the exchange accepts on limit orders ("Alo" = auction limit order).
 VALID_TIFS = ("Gtc", "Ioc", "Alo")
+
+#: Our own cap on items per signed batch action. The venue's real maximum is undocumented; 40 is the step
+#: of its IP-weight formula (``1 + floor(n / 40)``) and keeps a batch response well inside Protocol 1's byte cap.
+MAX_BATCH_SIZE = 40
 
 
 def _split_coin(coin: str) -> tuple:
@@ -206,7 +212,7 @@ class HyperLiquidExchange:
         self.session = Session()
         self.session.headers = {"Content-Type": "application/json"}
         self._meta_ttl_s = meta_ttl_s
-        # dex name -> (monotonic fetch time, [coin names in universe order])
+        # dex name -> (monotonic fetch time, {coin name: Asset} in universe order)
         self._universe_cache: Dict[str, tuple] = {}
         # (monotonic fetch time, {dex name: asset-id offset}); "" is always 0
         self._asset_offset_cache: Optional[tuple] = None
@@ -216,15 +222,15 @@ class HyperLiquidExchange:
     def _info(self, body: dict) -> Any:
         return self.session.post(url=self.base_url + "/info", json=body).json()
 
-    def _universe(self, dex: str) -> Dict[str, int]:
-        """The dex's universe as an insertion-ordered {coin name: szDecimals} map; the
-        position of a name in it is the asset's index within that dex's asset space."""
+    def _universe(self, dex: str) -> Dict[str, _cls.Asset]:
+        """The dex's universe as an insertion-ordered {coin name: Asset} map; the position of a
+        name in it is the asset's index within that dex's asset space."""
         now = time.monotonic()
         cached = self._universe_cache.get(dex)
         if cached is not None and now - cached[0] < self._meta_ttl_s:
             return cached[1]
         meta = self._info({"type": "meta", "dex": dex})
-        universe = {asset["name"]: int(asset["szDecimals"]) for asset in meta.get("universe", [])}
+        universe = {a["name"]: _cls.Asset.from_dict(a) for a in meta.get("universe", [])}
         self._universe_cache[dex] = (now, universe)
         return universe
 
@@ -260,8 +266,8 @@ class HyperLiquidExchange:
             raise _shared_ers.InvalidCoinError(f"Unknown HIP-3 dex {dex!r} for coin {coin!r}")
         return offsets[dex] + list(universe).index(key)
 
-    def sz_decimals(self, coin: str) -> int:
-        """The coin's size precision (number of decimal places the venue accepts for size)."""
+    def asset(self, coin: str) -> _cls.Asset:
+        """The typed universe entry for `coin` (same naming rules as `resolve_asset_id`)."""
         dex, bare = _split_coin(coin)
         universe = self._universe(dex)
         key = coin if coin in universe else bare
@@ -270,6 +276,14 @@ class HyperLiquidExchange:
                 f"Coin {coin!r} is not in the universe of dex {dex or '(default)'!r}"
             )
         return universe[key]
+
+    def sz_decimals(self, coin: str) -> int:
+        """The coin's size precision (number of decimal places the venue accepts for size)."""
+        return self.asset(coin).szDecimals
+
+    def max_leverage(self, coin: str) -> int:
+        """The asset's ``maxLeverage``. Margin tiers may lower it for large notionals; the venue enforces those."""
+        return self.asset(coin).maxLeverage
 
     def round_price(self, coin: str, price: Any, is_spot: bool = False) -> Decimal:
         """
@@ -360,6 +374,31 @@ class HyperLiquidExchange:
 
     # --- trading ---------------------------------------------------------------
 
+    def _build_wire_order(self, request: _cls.OrderRequest) -> tuple:
+        """
+        Validate `request` and build its wire order. Returns ``(wire_order, rounded_price, requested_price)``.
+        Shared by `place_order` and `place_orders` so both produce byte-identical orders. Key order is part
+        of the signature (see module docstring).
+        """
+        side_norm = request.side.lower()
+        if side_norm not in ("buy", "sell"):
+            raise _ers.HyperLiquidError(f"Invalid side {request.side!r}: expected 'buy' or 'sell'")
+        if request.tif not in VALID_TIFS:
+            raise _ers.HyperLiquidError(f"Invalid order type {request.tif!r}: expected one of {list(VALID_TIFS)}")
+
+        rounded_price = self.round_price(request.coin, request.price)
+        wire_order = {
+            "a": self.resolve_asset_id(request.coin),
+            "b": side_norm == "buy",
+            "p": _to_wire_number(rounded_price),
+            "s": _to_wire_number(request.size),
+            "r": bool(request.reduce_only),
+            "t": {"limit": {"tif": request.tif}},
+        }
+        if request.cloid is not None:
+            wire_order["c"] = validate_cloid(request.cloid)
+        return wire_order, rounded_price, _to_decimal(request.price)
+
     def place_order(
         self,
         coin: str,
@@ -380,23 +419,9 @@ class HyperLiquidExchange:
         carries both the `price` actually submitted (after tick rounding) and the
         `requested_price`, so a caller can see when the two differ.
         """
-        side_norm = side.lower()
-        if side_norm not in ("buy", "sell"):
-            raise _ers.HyperLiquidError(f"Invalid side {side!r}: expected 'buy' or 'sell'")
-        if tif not in VALID_TIFS:
-            raise _ers.HyperLiquidError(f"Invalid order type {tif!r}: expected one of {list(VALID_TIFS)}")
-
-        rounded_price = self.round_price(coin, price)
-        wire_order = {
-            "a": self.resolve_asset_id(coin),
-            "b": side_norm == "buy",
-            "p": _to_wire_number(rounded_price),
-            "s": _to_wire_number(size),
-            "r": bool(reduce_only),
-            "t": {"limit": {"tif": tif}},
-        }
-        if cloid is not None:
-            wire_order["c"] = validate_cloid(cloid)
+        wire_order, rounded_price, requested_price = self._build_wire_order(_cls.OrderRequest(
+            coin=coin, side=side, price=price, size=size, tif=tif, reduce_only=reduce_only, cloid=cloid,
+        ))
         # Key order below is part of the signature (see module docstring).
         action = {
             "type": "order",
@@ -407,8 +432,60 @@ class HyperLiquidExchange:
         return _cls.OrderPlacementResult.from_response(
             coin, response,
             price=rounded_price,
-            requested_price=_to_decimal(price),
+            requested_price=requested_price,
         )
+
+    def place_orders(self, requests: List[_cls.OrderRequest]) -> List[_cls.OrderPlacementResult]:
+        """
+        Place several limit orders in ONE signed action (one nonce, one POST). Everything is validated
+        before anything is signed: non-empty, at most `MAX_BATCH_SIZE`, every request valid, no duplicate
+        cloids (the venue's behavior for duplicates is undocumented) -- one bad item raises and nothing is
+        sent. Results are positional (index i answers request i); a venue-level rejection of one order is
+        that order's `error`, not an exception, while an envelope rejection raises `ExchangeActionError`.
+        """
+        if not requests:
+            raise _ers.HyperLiquidError("place_orders needs at least one order")
+        if len(requests) > MAX_BATCH_SIZE:
+            raise _ers.HyperLiquidError(f"Too many orders in one batch: {len(requests)} > {MAX_BATCH_SIZE}")
+        built = [self._build_wire_order(r) for r in requests]
+        cloids = [r.cloid for r in requests if r.cloid is not None]
+        if len(set(cloids)) != len(cloids):
+            raise _ers.HyperLiquidError("Duplicate cloid within the batch")
+        action = {
+            "type": "order",
+            "orders": [wire for wire, _, _ in built],
+            "grouping": "na",
+        }
+        response = self._post_action(action)
+        return _cls.OrderPlacementResult.from_batch_response(
+            response,
+            coins=[r.coin for r in requests],
+            prices=[rounded for _, rounded, _ in built],
+            requested_prices=[requested for _, _, requested in built],
+        )
+
+    def update_leverage(self, coin: str, leverage: int, is_cross: bool) -> _cls.LeverageUpdateResult:
+        """
+        Set the leverage (and margin mode) used for NEW positions on `coin`. `leverage` must be an int in
+        ``1..maxLeverage``; isolated-only assets cannot be set to cross. Whether lowering leverage or
+        switching mode is allowed while a position is open is undocumented, so it is not pre-validated: the
+        venue's rejection surfaces as `ExchangeActionError`.
+        """
+        if isinstance(leverage, bool) or not isinstance(leverage, int):
+            raise _ers.HyperLiquidError(f"Invalid leverage {leverage!r}: expected an integer")
+        asset = self.asset(coin)
+        if not 1 <= leverage <= asset.maxLeverage:
+            raise _ers.HyperLiquidError(f"Invalid leverage {leverage}: {coin} allows 1..{asset.maxLeverage}")
+        if is_cross and asset.is_isolated_only:
+            raise _ers.HyperLiquidError(f"{coin} is isolated-only; it cannot use cross margin")
+        action = {
+            "type": "updateLeverage",
+            "asset": self.resolve_asset_id(coin),
+            "isCross": bool(is_cross),
+            "leverage": leverage,
+        }
+        self._post_action(action)
+        return _cls.LeverageUpdateResult(coin=coin, leverage=leverage, margin_mode="cross" if is_cross else "isolated")
 
     def cancel_by_oid(self, coin: str, oid: int) -> _cls.CancelResult:
         """Cancel one order by its venue id. The venue only lists oids it actually canceled."""
@@ -427,6 +504,48 @@ class HyperLiquidExchange:
         }
         response = self._post_action(action)
         return _cls.CancelResult.from_response(coin, response)
+
+    def cancel_many(self, items: List[tuple]) -> _cls.BatchCancelResult:
+        """
+        Cancel many orders. `items` are ``(coin, oid | cloid)`` pairs (an int is an oid, a 0x-string a cloid).
+        oids go in one ``cancel`` action and cloids in one ``cancelByCloid`` action per chunk of
+        `MAX_BATCH_SIZE`, so a mixed batch is several signed actions; outcomes come back in the caller's order.
+        Cancels reduce risk, so we do as much as possible: a chunk the venue rejects outright marks every item
+        in that chunk as an error outcome and the remaining chunks are still sent. Validation (ids, coins)
+        happens up front, before anything is signed.
+        """
+        if not items:
+            raise _ers.HyperLiquidError("cancel_many needs at least one order")
+        prepared = []  # (index, kind, coin, identifier, wire item)
+        for i, (coin, identifier) in enumerate(items):
+            asset_id = self.resolve_asset_id(coin)
+            if isinstance(identifier, int) and not isinstance(identifier, bool):
+                prepared.append((i, "oid", coin, identifier, {"a": asset_id, "o": int(identifier)}))
+            else:
+                prepared.append((i, "cloid", coin, identifier,
+                                 {"asset": asset_id, "cloid": validate_cloid(identifier)}))
+        outcomes: List[Optional[_cls.CancelOutcome]] = [None] * len(items)
+        for kind, action_type in (("oid", "cancel"), ("cloid", "cancelByCloid")):
+            group = [p for p in prepared if p[1] == kind]
+            for start in range(0, len(group), MAX_BATCH_SIZE):
+                chunk = group[start:start + MAX_BATCH_SIZE]
+                try:
+                    response = self._post_action({"type": action_type, "cancels": [p[4] for p in chunk]})
+                    statuses = (response.get("data") or {}).get("statuses") or []
+                    if len(statuses) != len(chunk):
+                        raise _ers.HyperLiquidError(
+                            f"Cancel response has {len(statuses)} statuses for {len(chunk)} items: {response!r}"
+                        )
+                except Exception as e:
+                    for index, _, coin, identifier, _ in chunk:
+                        outcomes[index] = _cls.CancelOutcome(str(identifier), coin, False, str(e))
+                    continue
+                for (index, _, coin, identifier, _), status in zip(chunk, statuses):
+                    error = status.get("error") if isinstance(status, dict) else None
+                    if isinstance(status, dict) and error is None:
+                        error = f"Unrecognized cancel status: {status!r}"
+                    outcomes[index] = _cls.CancelOutcome(str(identifier), coin, error is None, error)
+        return _cls.BatchCancelResult(outcomes=outcomes)
 
 
 def _demo() -> None:

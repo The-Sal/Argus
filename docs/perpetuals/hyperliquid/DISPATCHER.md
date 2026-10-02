@@ -43,11 +43,16 @@ Quick reminders from the shared spec: `correlation_id` is **required** and uniqu
 | [`get_funding_payments`](#account-actions) | account | yes | no |
 | [`get_account_fees`](#get_account_fees) | account (HL only) | no | no |
 | [`get_rate_limit_usage`](#get_rate_limit_usage) | account (HL only) | no | no |
+| [`get_leverage`](#get_leverage) | trading | no | no |
+| [`set_leverage`](#set_leverage) | trading | no | **yes** |
 | [`place_order`](#place_order) | trading | no | **yes** |
+| [`place_multiple_orders`](#place_multiple_orders) | trading | no | **yes** |
 | [`cancel_order`](#cancel_order) | trading | no | **yes** |
+| [`cancel_multiple_orders`](#cancel_multiple_orders) | trading | no | **yes** |
+| [`cancel_all_orders`](#cancel_all_orders) | trading | no | **yes** |
 
-Deliberately absent: order modification, cancel-all (Hyperliquid's only bulk cancel is
-`scheduleCancel`, a one-shot trigger ≥ 5 s ahead, max 10/day), `place_multiple_orders`.
+Deliberately absent: order modification, and the venue's own cancel-all (Hyperliquid's only bulk cancel is
+`scheduleCancel`, a one-shot trigger ≥ 5 s ahead, max 10/day; `cancel_all_orders` is a client-side sweep instead).
 
 ---
 
@@ -63,12 +68,22 @@ Deliberately absent: order modification, cancel-all (Hyperliquid's only bulk can
 | Env | Needed for |
 |---|---|
 | `HYPERLIQUID_WALLET_ADDRESS` | startup; the `user` on every account read. Must be the **master** address (an API/agent wallet reads as an empty account) |
-| `HYPERLIQUID_PRIVATE_KEY` | startup; signing for `place_order` / `cancel_order`. Must belong to the master address |
+| `HYPERLIQUID_PRIVATE_KEY` | startup; signing for the trading actions. Must belong to the master address |
+| `HYPERLIQUID_BLOCK_ORDER_EXECUTION` | optional; `1`/`true`/`yes` starts the dispatcher with the **order execution kill switch** on (see below). Default off |
 | `HYPERLIQUID_ORDERBOOK_DEPTH` | P2 levels per side, default 10, max 20 (larger raises `ValueError` at startup) |
 | `HYPERLIQUID_MAX_SOCKET_RETRIES`, `HYPERLIQUID_MAX_PING_PONG_FAILURES`, `HYPERLIQUID_PING_INTERVAL_S`, `HYPERLIQUID_DISABLE_PING_PONG_LOGS`, `HYPERLIQUID_WS_RESTORE_TIMEOUT` | upstream websocket tuning |
 
 Both address and key are required at startup (a `KeyError` otherwise) unless passed to the constructor.
 Full descriptions: `docs/system/ENVIRONMENT_VARIABLES.md`.
+
+**Block Order Execution (kill switch).** While on, `place_order`, `place_multiple_orders` and `set_leverage`
+fail with `OrderExecutionDisabledError` ("Order execution is currently blocked by server configuration.") as their
+very first step, before any argument parsing, venue read or signing. **Cancels (`cancel_order`,
+`cancel_multiple_orders`, `cancel_all_orders`) and every read are never blocked**: cancels only reduce risk, and an
+operator who blocks execution in an emergency still needs to pull resting orders. The switch is set by the env var
+at boot or by the dispatcher's interactive menu ("Toggle Block Order Execution"); **no wire action toggles it**, and
+nothing in the dispatcher engages it automatically (an unexpected trading error alerts and broadcasts, see
+`fatal_error` below, but never blocks). Clients can read its state from `products_version.order_execution_blocked`.
 
 ---
 
@@ -82,7 +97,7 @@ Full descriptions: `docs/system/ENVIRONMENT_VARIABLES.md`.
 
 **Output:**
 ```json
-{ "argus": "<argus version>", "hyperliquid_dispatcher": [1, 0, 0, 0], "sidecars": {} }
+{ "argus": "<argus version>", "hyperliquid_dispatcher": [1, 0, 0, 0], "sidecars": {}, "order_execution_blocked": false }
 ```
 
 # Market information
@@ -403,7 +418,66 @@ cumulative traded volume (≈ 1 request per 1 USDC).
 
 Signed order execution against Hyperliquid's `/exchange` endpoint
 (`argus/perpetuals/hyper/exchange.py`, `HyperLiquidExchange`). Names match `PolymarketDispatcher`'s
-`place_order` / `cancel_order`.
+`place_order` / `place_multiple_orders` / `cancel_order` / `cancel_multiple_orders`.
+
+**Unexpected errors (`fatal_error`).** Every trading handler is wrapped in `fatal_decorator`. Errors the handler
+is *ready for* (bad arguments, unknown coin, the venue rejecting an action, the kill switch) are ordinary request
+errors. Anything else (a timeout mid-order, an unparsable reply, a bug) may leave an order or a leverage change in an
+unknown state, so the dispatcher raises a console alert and pushes a **`fatal_error`** message to every client
+(`data: {function, exception, traceback, order_execution_blocked}`, `error` set), then still answers the request with
+the normal error. Reconcile with `get_orders` / `get_positions`. It deliberately does **not** block order execution.
+
+### Leverage is per coin, and every order names it
+
+Hyperliquid stores leverage per **coin and margin mode** (`cross` / `isolated`), an integer from 1 to the coin's
+`maxLeverage`; it applies to *new* positions (raising it on an open one is allowed, and moves its liquidation price).
+The venue default for a coin you never touched is cross at `min(20, maxLeverage)` (isolated at max for isolated-only
+assets). So `place_order` / `place_multiple_orders` take a **required `leverage`** (and optional `margin_mode`,
+default: the coin's current mode). For each coin the dispatcher:
+
+1. reads the coin's current leverage (`activeAssetData`, weight 20; this is the roll-back target, so a failed read
+   fails the call before anything changes),
+2. sends one signed `updateLeverage` only if it differs (nothing is signed when it already matches),
+3. places the order(s),
+4. **rolls back** to the previous leverage if the order was rejected by the venue or definitively refused (so a failed
+   order never leaves a position's liquidation price moved). A coin in a batch keeps the new leverage if at least
+   one of its orders was accepted. If the submission fails *ambiguously* (e.g. a timeout), the order may be live, so
+   leverage is **left as is** and the `fatal_error` contingency runs. If a roll-back itself fails, the call fails
+   with `LeverageRevertError` (also `fatal_error`) naming the coins to repair with `set_leverage`.
+
+The cost is one extra info read (~100 ms) per distinct coin per call, plus the update when leverage changes. Each
+update counts as a user action (unified / portfolio-margin accounts are capped at 50,000 actions/day). Whether
+*lowering* leverage or *switching mode* is allowed while a position is open is not documented by the venue; it is not
+pre-validated and the venue's rejection surfaces as `ExchangeActionError`.
+
+### `get_leverage`
+
+```json
+{ "action": "get_leverage", "data": { "coin": "BTC" }, "correlation_id": "<uuid>" }
+```
+
+**Output:**
+```json
+{
+  "coin": "BTC", "dex": "", "leverage": { "type": "cross", "value": 20 }, "max_leverage": 40,
+  "allowed_margin_modes": ["cross", "isolated"], "mark_price": "2726.26",
+  "max_trade_sizes": ["0.0007", "0.0007"], "available_to_trade": ["0.1", "0.1"]
+}
+```
+
+`leverage` also carries `rawUsd` for isolated. `max_trade_sizes` / `available_to_trade` are passed through in the
+venue's order, which is **undocumented** (believed `[buy, sell]`, unverified): do not rely on it. Read-only, never
+blocked.
+
+### `set_leverage`
+
+```json
+{ "action": "set_leverage", "data": { "coin": "BTC", "leverage": 10, "margin_mode": "cross" }, "correlation_id": "<uuid>" }
+```
+
+`coin` and `leverage` (integer, 1..`max_leverage`; bool/float/string are rejected) are required; `margin_mode` is
+optional (default: keep the current mode). Isolated-only assets cannot be set to `cross`. **Output:**
+`{ "coin", "leverage", "margin_mode", "previous": { "type", "value" } }`. Blocked by the kill switch.
 
 ### Signing (handled by the dispatcher)
 
@@ -438,6 +512,8 @@ Place one limit order.
     "side": "buy",
     "price": "30000",
     "size": "0.001",
+    "leverage": 10,
+    "margin_mode": "cross",
     "order_type": "GTC",
     "reduce_only": false,
     "cloid": "0x0123456789abcdef0123456789abcdef"
@@ -452,6 +528,8 @@ Place one limit order.
 | `side` | yes | `"buy"` or `"sell"` |
 | `price` | yes | Limit price, rounded to the venue's tick rules before submission: a fractional price keeps 5 significant figures and at most `6 - szDecimals` decimals (nearest integer once the integer part has 5+ digits); a whole-number price is never changed |
 | `size` | yes | Size in coins, at most 8 decimals |
+| `leverage` | **yes** | integer 1..`max_leverage`; applied to the coin before the order and rolled back if the order fails (see [above](#leverage-is-per-coin-and-every-order-names-it)) |
+| `margin_mode` | no | `"cross"` or `"isolated"`; default: the coin's current mode |
 | `order_type` | no | `"GTC"` (default), `"IOC"`, `"ALO"` (post-only); anything else is rejected |
 | `reduce_only` | no | default `false` |
 | `cloid` | no | client order id: `0x` + 32 hex chars (16 bytes) |
@@ -468,7 +546,13 @@ Unknown keys are rejected.
   "price": "30000",
   "requestedPrice": "30000.123456",
   "priceAdjusted": true,
-  "error": null
+  "error": null,
+  "leverage": { "type": "cross", "value": 10 },
+  "margin_mode": "cross",
+  "previous_leverage": { "type": "cross", "value": 20 },
+  "leverage_changed": true,
+  "leverage_reverted": false,
+  "estimated_initial_margin": "3.0"
 }
 ```
 
@@ -478,6 +562,31 @@ Unknown keys are rejected.
 - A **venue-level rejection of the order** (insufficient margin, below the $10 minimum order value, ...) comes
   back as a normal `response` with `error` set and `oid: null`. Callers must check `error`.
 - A rejected *envelope* (invalid signature, stale nonce) is a packet-level `error` (`ExchangeActionError`).
+- `leverage` / `margin_mode` are what is in force **after** the call: the requested value, or `previous_leverage`
+  when the order was rejected and `leverage_reverted` is `true` (`leverage_revert_error` is added if the roll-back
+  failed). `estimated_initial_margin` is `size × price / leverage`, an **estimate** (a marketable IOC fills at the
+  book price and cross margin also nets unrealized PnL); `null` for `reduce_only` and failed orders.
+- Blocked by the kill switch.
+
+### `place_multiple_orders`
+
+Place up to **40** orders in **one** signed action (one nonce, one POST; the cap is our own, the venue's maximum is
+undocumented). Each item is a `place_order` body, `leverage` required per item:
+
+```json
+{ "action": "place_multiple_orders", "data": { "orders": [
+  { "coin": "BTC", "side": "buy", "price": "30000", "size": "0.001", "leverage": 10, "order_type": "ALO" },
+  { "coin": "xyz:AAPL", "side": "sell", "price": "400", "size": "1", "leverage": 5,
+    "cloid": "0x0123456789abcdef0123456789abcdef" }
+] }, "correlation_id": "<uuid>" }
+```
+
+Leverage is per coin, so two items on the same coin must agree. **Everything is validated before any leverage is
+changed or anything is signed** (size, fields, duplicate cloids, per-coin consistency); one bad item rejects the whole
+request. **Output:** `{ "results": [<place_order output>, ...], "ok_count", "error_count" }`, where `results[i]` answers
+`orders[i]` (matched by position; the dispatcher refuses a venue reply whose length does not match). One order being
+rejected is that item's `error`, not a packet error. Coins with no accepted order are rolled back. Blocked by the kill
+switch.
 
 ### `cancel_order`
 
@@ -499,7 +608,66 @@ Cancel one order by venue id or client id.
 
 `errors` holds the venue's messages for ids it could not cancel (already filled/canceled, unknown), e.g.
 `"Order was never placed, already canceled, or filled."`, with `canceledOids` empty. **A submitted cancel is
-not proof the order was canceled; check both.**
+not proof the order was canceled; check both.** Never blocked by the kill switch.
+
+### `cancel_multiple_orders`
+
+```json
+{ "action": "cancel_multiple_orders", "data": { "orders": [
+  { "order_id": 123456789, "coin": "BTC" },
+  { "order_id": "0x0123456789abcdef0123456789abcdef" }
+] }, "correlation_id": "<uuid>" }
+```
+
+Items are `{order_id, coin?}`. When every item has a `coin` there is no lookup; otherwise one read of all open orders
+resolves the missing coins (far cheaper than a per-order lookup), and an id that is not among the open orders is
+reported as an error outcome (`"not found among open orders"`) **without** calling the venue. oids go in a `cancel`
+action and cloids in a `cancelByCloid` action, so a mixed batch is up to two signed actions per 40 items. **Output:**
+`{ "outcomes": [{ "order_id", "coin", "ok", "error" }, ...], "ok_count", "error_count" }` in request order. Partial
+success is normal; an order that filled in the meantime is an item-level error. A chunk the venue rejects outright marks
+its items as errors and the remaining chunks are still sent (cancels reduce risk, so we do as much as possible).
+Never blocked by the kill switch.
+
+### `cancel_all_orders`
+
+```json
+{ "action": "cancel_all_orders", "data": { "coin": "BTC", "dex": "" }, "correlation_id": "<uuid>" }
+```
+
+Both optional: `coin` (only that coin's orders), `dex` (`""` = default dex, a HIP-3 name, or omitted = every dex).
+Hyperliquid has no immediate cancel-all, so this is a **point-in-time sweep**: read the open orders, then
+batch-cancel them. Orders placed after the read are not affected, and an order that fills in between shows up as a
+failure. **Output** (compact on purpose, up to ~1000 orders must fit Protocol 1's byte cap):
+`{ "requested", "canceled", "failed", "failures": [{order_id, coin, ok, error}, ... up to 50], "failures_truncated" }`.
+`failed > 0` means some orders may still be resting: check `get_orders`. Never blocked by the kill switch.
+
+---
+
+## Known quirks (trading)
+
+- **Leverage is shared per coin, and the dispatcher does not serialize it.** Two concurrent `place_order` calls on
+  the **same coin with different leverage** race: each reads the previous value, applies its own, and a roll-back
+  after a rejection can restore a value the other call has since replaced. Send same-coin orders with one leverage
+  (a batch enforces this), or serialize them client-side.
+- **A rolled-back leverage is written explicitly.** "Previous" is whatever `activeAssetData` reported, including the
+  venue default (cross at `min(20, maxLeverage)`) for a coin you never touched, so a roll-back leaves that coin with
+  an explicit setting equal to the default.
+- **Ambiguous failures never roll back.** A timeout or unparsable reply mid-order may mean the order is live, so
+  leverage stays as requested and `fatal_error` is pushed; reconcile with `get_orders` / `get_leverage`.
+- **Every order costs an extra read.** One `activeAssetData` read (info weight 20, ~100 ms) per distinct coin per call,
+  plus one signed `updateLeverage` only when leverage actually changes. There is no cache: the read is the roll-back
+  target, so it must be fresh.
+- **Pushes interleave with replies.** Placing or cancelling an order triggers `account_update` pushes on the same
+  socket, usually before the next reply. A client must match replies by `correlation_id` and skip pushes (the
+  `tests/hyper_cli.py` client does).
+- **`max_trade_sizes` / `available_to_trade` ordering is undocumented** by the venue (believed `[buy, sell]`,
+  unverified); values for an account with no collateral are not meaningful.
+- **Lowering leverage or switching mode with an open position** may be rejected by the venue; the dispatcher does not
+  pre-validate it, and the rejection surfaces as an error before any order is sent.
+- **`cancel_all_orders` is point-in-time and indiscriminate.** It sweeps every resting order matching the filter,
+  including ones other clients placed; orders placed after its read survive.
+- **Not yet verified against the live venue:** a batch mixing a default-dex coin with a HIP-3 coin, the revert path
+  after a real venue rejection, and the kill switch end to end. All three are covered by offline tests only.
 
 ---
 
@@ -525,7 +693,7 @@ def call(action, data=None):
 
 call("subscribe", ["BTC"])                      # optional: only for the order book stream
 call("get_balance")
-r = call("place_order", {"coin": "BTC", "side": "buy", "price": "30000", "size": "0.001"})
+r = call("place_order", {"coin": "BTC", "side": "buy", "price": "30000", "size": "0.001", "leverage": 10})
 if r["error"] is None:                           # order-level outcome lives in data.error
     call("cancel_order", {"order_id": r["oid"], "coin": "BTC"})
 ```
@@ -537,8 +705,12 @@ if r["error"] is None:                           # order-level outcome lives in 
   dispatcher handlers, wire byte budget, `account_update` parsing / gap / fan-out).
 - **Live:** `env PYTHONPATH=. uv run python tests/hyper_order_smoke.py` places a far-below-market resting
   order, confirms it via `orderStatus`, cancels it, and repeats with a cloid (needs a funded account).
+- **Live, through the dispatcher:** `tests/hyper_cli.py --test` always runs `get_leverage`, the kill-switch flag
+  and a side-effect-free validation check; with `--enable-execution` (an argument, not an env var) it also re-applies the leverage already in
+  force (a no-op, verified unchanged) and runs a place / batch place / mixed cancel / `cancel_all_orders` lifecycle on
+  far-below-market BTC buys that are cancelled in a `finally`. **`cancel_all_orders` in that lifecycle sweeps every resting BTC order on the account, not just the test's.**
 - **Live `account_update`:** `env PYTHONPATH=. uv run python tests/hyper_account_stream_smoke.py --go [ETH|BTC]` runs a
   real dispatcher, places/cancels a resting order and an ~$11 IOC round trip, kills the account websocket, and asserts
   the `order` / `fill` / `gap` pushes (real orders, pennies of risk; flattens on exit).
-- **REPL:** `env PYTHONPATH=. uv run python tests/hyper_cli.py` (`place ...`, `cancel ...`, `balance`, `watch` for live
+- **REPL:** `env PYTHONPATH=. uv run python tests/hyper_cli.py` (`place ... <leverage>`, `placemany`, `cancel`, `cancelmany`, `cancelall`, `leverage`, `setlev`, `balance`, `watch` for live
   `account_update` pushes, ...).

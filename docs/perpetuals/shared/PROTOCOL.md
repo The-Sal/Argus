@@ -119,6 +119,20 @@ Pushes use the P1 envelope with `correlation_id: null` and are delivered only to
 connected client with no `subscribe` required; see `docs/perpetuals/hyperliquid/DISPATCHER.md#account_update`.
 **Lighter** has no `account_update` push yet; poll `get_orders` / `get_order_status` / `get_trades`.
 
+### `fatal_error`
+
+```json
+{ "action": "fatal_error", "data": { "function": "place_order", "exception": "<message>", "traceback": "<last 1500 chars>", "order_execution_blocked": false }, "error": "<message>", "compressed": false, "correlation_id": null }
+```
+
+Broadcast to **every connected client** (no `subscribe` needed) when a trading handler wrapped in `fatal_decorator`
+(`argus/perpetuals/shared/__init__.py`) raises an error it was not ready for: anything other than the dispatcher's
+expected errors (bad arguments, unknown coin, the venue rejecting an action, the kill switch). The state of any
+in-flight order or leverage change is then uncertain, so reconcile with `get_orders` / `get_positions`. The
+request that triggered it still gets its normal error response. The dispatcher also alerts on its console. It
+never engages the order-execution kill switch (`order_execution_blocked` just reports its current state).
+Hyperliquid wraps its trading handlers today.
+
 ---
 
 ## P2: market data
@@ -156,6 +170,7 @@ carries only the message.
 | `InvalidFunctionError` | unknown `action` (`Function <x> is not valid`) |
 | `MissingArgumentError` | required argument absent, unknown argument supplied, or a value out of range (also used for a bad `order_type`) |
 | `InvalidCoinError` | `subscribe` / `get_funding_rate` on a symbol the venue does not list |
+| `OrderExecutionDisabledError` | `place_order` / `place_multiple_orders` / `set_leverage` while the operator's "Block Order Execution" kill switch is on (`Order execution is currently blocked by server configuration.`). Cancels and reads are never blocked; no client action toggles it |
 | `RoutingDisabledError` | the hourly perpetual refresh failed repeatedly; routing is off until it recovers (`Routing is currently disabled`) |
 | `PacketTooLargeError` | response still > 9990 bytes after compression |
 | `AccountNotConfiguredError` | account action on a dispatcher with no (or insufficient) account credentials; market data unaffected |
