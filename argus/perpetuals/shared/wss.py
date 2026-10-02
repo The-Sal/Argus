@@ -110,7 +110,13 @@ class VenueWSSBase:
         self._create_ws_app()
 
     def _create_ws_app(self):
-        raise NotImplementedError("Subclasses must implement _create_ws_app()")
+        self._ws = WebSocketApp(
+            url=self._url,
+            on_open=self._on_open_base,
+            on_close=self._on_close_base,
+            on_error=self._on_error_base,
+            on_message=self._on_message_base,
+        )
 
     def _on_open_base(self, ws):
         _ = ws
@@ -241,6 +247,13 @@ class VenueWSSBase:
     def _start_ws(self):
         self._start_ws_sync()
 
+    def run(self, main_thread=False):
+        """Bring the connection online. `main_thread` is accepted for API parity
+        with Polymarket's pool `.run()` but ignored -- always runs in a background
+        thread."""
+        _ = main_thread
+        self._start_ws()
+
 
 class MarketDataWssBase(VenueWSSBase):
     """
@@ -289,15 +302,6 @@ class MarketDataWssBase(VenueWSSBase):
     # Connection lifecycle
     ########################################
 
-    def _create_ws_app(self):
-        self._ws = WebSocketApp(
-            url=self._url,
-            on_open=self._on_open_base,
-            on_close=self._on_close_base,
-            on_error=self._on_error_base,
-            on_message=self._on_message_base,
-        )
-
     def _on_open_impl(self):
         # Nothing to send on open -- no handshake frame is needed before real
         # subscriptions can be sent for the venues this was extracted from.
@@ -341,13 +345,6 @@ class MarketDataWssBase(VenueWSSBase):
     ########################################
     # Public subscription surface
     ########################################
-
-    def run(self, main_thread=False):
-        """Bring the connection online. `main_thread` is accepted for API parity
-        with Polymarket's pool `.run()` but ignored -- always runs in a background
-        thread."""
-        _ = main_thread
-        self._start_ws()
 
     def _subscribe_to_key(self, key) -> None:
         with self._roster_lock:

@@ -3,16 +3,19 @@ import json
 import time
 import random
 import socket
+import functools
 import threading
 import traceback
 from argus import protocol
 from utils3 import runAsThread
 from collections.abc import Mapping
+from argus.perpetuals.shared import account
 from utils3.networking.sockets import Server
 from datetime import datetime, timedelta, UTC
 from typing import Callable, Any, Generic, TypeVar
-from argus.perpetuals.shared import _classes as cls, _errors as ers
-from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage, NewFundingRate
+from argus.perpetuals.shared import _classes as cls, errors as ers
+from argus.perpetuals.shared.account import AccountHandlersMixin, BaseDispatcherCompatibleAccountRest
+from argus.perpetuals.shared._classes import P2OrderBookConvertClass, OutboundMessage, NewFundingRate, AccountUpdate
 from argus._argus_utils import Introspective, CorrelationIDChecker, RoutingHelper, ArgsObject, Notification, throw_fuss
 
 
@@ -107,6 +110,40 @@ class LockedState(Generic[T]):
         return copy.copy(self.value)
 
 
+def fatal_decorator(function_name: str):
+    """
+    Wrap a dispatcher HANDLER (a method taking `self`) like Polymarket's `fatal_decorator`: if anything
+    in the stack raises an error the handler was not ready for, run the dispatcher's contingency action
+    (`self._on_fatal_error`) and then re-raise so the client still gets its normal error response.
+
+    "Ready for" means the dispatcher's expected errors (`self._expected_errors`, by default every
+    `DispatcherError` except `FatalDispatcherError`): bad arguments, unknown coins, a venue rejecting an
+    action, the kill switch, ... Those are ordinary request failures and must not trip the contingency.
+    Anything else -- a timeout mid-order, a parse failure, a bug -- may have left the account in a state
+    we cannot reason about (an order that may or may not exist, leverage half-changed), which is exactly
+    when the contingency has to run. The contingency itself never raises.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:
+                expected = getattr(self, "_expected_errors", (ers.DispatcherError,))
+                if not isinstance(e, expected) or isinstance(e, ers.FatalDispatcherError):
+                    try:
+                        self._on_fatal_error({
+                            "function": function_name,
+                            "exception": e,
+                            "traceback": traceback.format_exc(),
+                        })
+                    except Exception:
+                        traceback.print_exc()
+                raise
+        return wrapper
+    return decorator
+
+
 class BaseDispatcherCompatibleRest:
     """
     A class REST clients should inherit from and subclass it's methods.
@@ -125,12 +162,12 @@ class BaseDispatcherCompatibleRest:
         raise NotImplementedError("get_all_perpetuals() not implemented.")
 
 
-class BaseDispatcher(Introspective, RoutingHelper):
+class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
     """
     A base class designed for Argus v2's Perpetual Dispatchers. This dispatcher inherits almost all of PolymarketDispatcher's inbound
     and outbound message shapes. It uses Introspective, RoutingHelper, CorrelationIDChecker, Server (utils3.networking.sockets.Server),
     etc... to provide the foundation for a trading-enabled dispatcher. The common data shapes for this dispatcher
-    can be found in shared/_classes.py & shared/_errors.py
+    can be found in shared/_classes.py & shared/errors.py
 
     This base class supports runtime.py's .interactive_mode() [to Introspective._interactive_ui].
     Subclasses should NOT override this function to provide custom functionality. Rather provide custom
@@ -186,6 +223,14 @@ class BaseDispatcher(Introspective, RoutingHelper):
     rest client and pass it to the superclass constructor. For guidance on this pattern, see:
     argus/perpetuals/hyper/__init__.py: HyperLiquidDispatcher
 
+    Account data (balance, positions, orders, trades, funding payments) is likewise shared: the handlers come from
+    argus.perpetuals.shared.account.AccountHandlersMixin and only ever talk to `self.account_rest`, a
+    BaseDispatcherCompatibleAccountRest. Pass the venue's account-capable REST client as `account_rest` (it may be
+    the same object as `common_rest`) and merge `self.account_routing_table()` into the routing table to expose the
+    actions. Leave `account_rest` as None for a dispatcher with no account configured; the actions then answer
+    with AccountNotConfiguredError instead of silently reporting an empty account. See shared/account.py for the
+    design and the wire format.
+
 
 
     """
@@ -195,7 +240,8 @@ class BaseDispatcher(Introspective, RoutingHelper):
                  pi: "PrintInterface" = _p,
                  common_rest: BaseDispatcherCompatibleRest = None,
                  configurations: dict = None,
-                 interactive_functions: dict = None):
+                 interactive_functions: dict = None,
+                 account_rest: BaseDispatcherCompatibleAccountRest = None):
         super().__init__()
         RoutingHelper.__init__(self)
         self._dispatcher_server = Server(
@@ -209,6 +255,7 @@ class BaseDispatcher(Introspective, RoutingHelper):
         self.routing_table = routing_table
         self.pi = pi
         self.common_rest: BaseDispatcherCompatibleRest = common_rest
+        self.account_rest: BaseDispatcherCompatibleAccountRest | None = account_rest
         self._state = {
             "enable_routing": LockedState(True)
         }
@@ -221,6 +268,10 @@ class BaseDispatcher(Introspective, RoutingHelper):
         self._retry_backoff_max_rest = configurations.get("retry_backoff_max_rest", 30.0)
         self._distribute_refreshed_perps = configurations.get("distribute_refreshed_perps", False)
         self._interactive_fns = interactive_functions if interactive_functions is not None else {}
+        # Server-side kill switch for order placement, like Polymarket's "Block Order Execution". Seeded from
+        # configurations["block_order_execution"]; a LockedState because the dispatcher runs one thread per
+        # client socket. Interactive-only: no wire action toggles it, so a client cannot unblock itself.
+        self._block_order_execution = LockedState(bool(configurations.get("block_order_execution", False)))
 
     ########################################
     # Threads and utilities
@@ -345,6 +396,11 @@ class BaseDispatcher(Introspective, RoutingHelper):
         _ = address  # this will be used later for logging. However, for now the logging functionality
         # is not implemented.
 
+        # Any client that talks to us receives unsolicited account_update pushes. This is done here rather
+        # than via Server(on_connect=...) because utils3's Server treats on_connect as a *replacement* for
+        # its receive loop, which would stop on_recv from ever being called. add_socket is idempotent.
+        self.add_socket(client)
+
         try:
             packets = protocol.decode_multiple_packets(data)
         except ValueError:
@@ -449,6 +505,19 @@ class BaseDispatcher(Introspective, RoutingHelper):
                 self.remove_socket(sock)
                 traceback.print_exc()
 
+    def _routine_push_account_update(self, update: AccountUpdate):
+        """
+        Push one account event (order transition, fill, gap) to every connected client, whether or not
+        it has subscribed to any market. Unlike Polymarket, where `self.sockets` only holds clients that
+        subscribed, account events are not tied to a coin, so recipients are every socket that has made
+        a request (`_on_recv` registers it). Callers run on a venue websocket thread: this encodes once,
+        sends per socket under its send lock and prunes dead sockets, and never raises on a bad client.
+        :param update: The AccountUpdate to broadcast; one record per call (see AccountUpdate).
+        :return:
+        """
+        packet = update.convert_to_protocol_1()
+        self._routine_send_packet_to_clients(self.sockets, packet, context=f"account update ({update.event})")
+
     @runAsThread
     def _routine_push_funding_rates_for_client(self, client: socket.socket, PerpObject):
         """
@@ -463,11 +532,69 @@ class BaseDispatcher(Introspective, RoutingHelper):
         )
         self._routine_send_packet_to_clients([client], new_rate.convert_to_protocol_1(), context="Funding Rate Update")
 
+    #: Errors a `fatal_decorator`-wrapped handler is "ready for"; subclasses extend it with their venue's
+    #: expected errors (e.g. an exchange rejecting an action). `FatalDispatcherError` is always excluded.
+    _expected_errors: tuple = (ers.DispatcherError,)
+
+    def _on_fatal_error(self, info: dict) -> None:
+        """
+        The contingency action for an unexpected error in a trading handler (see `fatal_decorator`):
+        1. shout on the console, 2. broadcast a `fatal_error` message to every connected client (so SDKs know
+        the state of any in-flight order is uncertain and must be reconciled with `get_orders` /
+        `get_positions`). It deliberately does NOT touch the order-execution kill switch: that is only ever
+        engaged by the operator (interactive menu or environment variable). Never raises.
+        """
+        try:
+            function, exception, tb = info.get("function"), info.get("exception"), info.get("traceback", "")
+            self.pi.throw_fuss(
+                f"UNEXPECTED ERROR in '{function}': {exception!r}\n{tb}\n"
+                f"Reconcile with get_orders / get_positions.",
+                title="Fatal Dispatcher Error", notify=True,
+            )
+            packet = cls.OutboundMessage(
+                action="fatal_error",
+                data={"function": function, "exception": str(exception), "traceback": tb[-1500:],
+                      "order_execution_blocked": self.order_execution_blocked},
+                error=str(exception),
+            ).convert_to_protocol_1()
+            self._routine_send_packet_to_clients(list(self.sockets), packet, context="fatal error")
+        except Exception:
+            traceback.print_exc()
+
+    ########################################
+    # Order execution kill switch
+    ########################################
+    @property
+    def order_execution_blocked(self) -> bool:
+        """True while placing orders (and changing leverage) is refused. Cancels are never blocked."""
+        return self._block_order_execution.value
+
+    def _require_order_execution_enabled(self) -> None:
+        """
+        Call as the FIRST statement of every handler that can open or increase risk (before argument parsing,
+        any info call, or any signing). Raises `ers.OrderExecutionDisabledError` while the switch is on.
+        """
+        if self._block_order_execution.value:
+            raise ers.OrderExecutionDisabledError("Order execution is currently blocked by server configuration.")
+
+    def _toggle_block_order_execution(self) -> bool:
+        """Interactive toggle for the kill switch; returns (and prints) the new state."""
+        with self._block_order_execution.lock:
+            self._block_order_execution._value = not self._block_order_execution._value
+            blocked = self._block_order_execution._value
+        print(f"[CONFIG] Block Order Execution: {'ENABLED (orders refused)' if blocked else 'DISABLED (orders allowed)'}")
+        return blocked
+
     ########################################
     # PUBLIC FUNCTIONS
     ########################################
     def interactive_mode(self):
-        fns = {}
+        fns = {
+            "Toggle Block Order Execution": (
+                "Refuse (or allow again) order placement and leverage changes; cancels always work",
+                self._toggle_block_order_execution,
+            ),
+        }
         if self._distribute_refreshed_perps:
             fns["Distribute Refreshed Perpetuals"] = (
                 "Distributes the refreshed perpetuals currently subscribed to their respective clients as a P1 message",
