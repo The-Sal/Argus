@@ -47,6 +47,45 @@ def force_print_traceback(func):
 
     return wrapper
 
+# Quote fields requested from TradingView. Shared by QuoteSession.setup_qs and the
+# dispatcher (argus.tv.dispatcher) so both request the same data.
+QUOTE_FIELDS = [
+    "base-currency-logoid",
+    "ch",
+    "chp",
+    "currency-logoid",
+    "currency_code",
+    "currency_id",
+    "base_currency_id",
+    "current_session",
+    "description",
+    "exchange",
+    "format",
+    "fractional",
+    "is_tradable",
+    "language",
+    "local_description",
+    "listed_exchange",
+    "logoid",
+    "lp",
+    "lp_time",
+    "minmov",
+    "minmove2",
+    "original_name",
+    "pricescale",
+    "pro_name",
+    "short_name",
+    "type",
+    "typespecs",
+    "update_mode",
+    "volume",
+    "variable_tick_size",
+    "value_unit_id",
+    "unit_id",
+    "measure"
+]
+
+
 class TradingViewConnection:
     def __init__(self, send_auth=True):
         self.ws = websocket.WebSocketApp(
@@ -175,40 +214,7 @@ class QuoteSession(TradingViewConnection):
 
             self.craft_message("quote_create_session", [self.quote_session_id]),
             self.craft_message("quote_set_fields", [
-                self.quote_session_id,
-                "base-currency-logoid",
-                "ch",
-                "chp",
-                "currency-logoid",
-                "currency_code",
-                "currency_id",
-                "base_currency_id",
-                "current_session",
-                "description",
-                "exchange",
-                "format",
-                "fractional",
-                "is_tradable",
-                "language",
-                "local_description",
-                "listed_exchange",
-                "logoid",
-                "lp",
-                "lp_time",
-                "minmov",
-                "minmove2",
-                "original_name",
-                "pricescale",
-                "pro_name",
-                "short_name",
-                "type",
-                "typespecs",
-                "update_mode",
-                "volume",
-                "variable_tick_size",
-                "value_unit_id",
-                "unit_id",
-                "measure"
+                self.quote_session_id, *QUOTE_FIELDS
             ]),
             self.craft_message("quote_add_symbols", [
                 self.quote_session_id, self.symbol
@@ -223,40 +229,7 @@ class QuoteSession(TradingViewConnection):
             ]),
             self.craft_message("quote_create_session", [self.quote_snapshotter]),
             self.craft_message("quote_set_fields", [
-                self.quote_session_id,
-                "base-currency-logoid",
-                "ch",
-                "chp",
-                "currency-logoid",
-                "currency_code",
-                "currency_id",
-                "base_currency_id",
-                "current_session",
-                "description",
-                "exchange",
-                "format",
-                "fractional",
-                "is_tradable",
-                "language",
-                "local_description",
-                "listed_exchange",
-                "logoid",
-                "lp",
-                "lp_time",
-                "minmov",
-                "minmove2",
-                "original_name",
-                "pricescale",
-                "pro_name",
-                "short_name",
-                "type",
-                "typespecs",
-                "update_mode",
-                "volume",
-                "variable_tick_size",
-                "value_unit_id",
-                "unit_id",
-                "measure"
+                self.quote_session_id, *QUOTE_FIELDS
             ]),
             self.craft_message("quote_add_symbols", [
                 self.quote_snapshotter, self.symbol
@@ -446,3 +419,7 @@ class NewsSession(TradingViewConnection):
         self.callback = callback
         super().__init__(send_auth=False)
         self.messages = 0
+
+# Dispatcher (P1 subscribe/unsubscribe + P2 streaming). Imported last so that
+# argus.tv.dispatcher can do `from argus.tv import QuoteSession` without a cycle.
+from argus.tv.dispatcher import TradingViewDispatcher, TVP2ConvertClass  # noqa: E402,F401

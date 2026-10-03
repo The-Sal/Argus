@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 """
 Argus runtime entrypoint.
-- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance | hyperliquid | lighter
+- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance | hyperliquid | lighter | tradingview
 - Optional --host/--port are accepted and forwarded only to dispatchers that support them.
   Dispatchers have their own defaults; if not provided, nothing is passed.
 - Supports: macOS, Linux (tested on Debian) does NOT support Windows.
@@ -19,7 +19,7 @@ import argparse
 from argus import secure_load_dotenv, check_env_compatibility
 
 
-choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid', 'lighter']
+choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid', 'lighter', 'tradingview']
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
@@ -131,6 +131,17 @@ def main(argv=None):
         dispatcher.run()
         dispatcher.interactive_mode()
         print("Exiting Lighter dispatcher")
+    elif args.target == "tradingview":
+        from argus.tv import TradingViewDispatcher
+        tv_kwargs = {}
+        if args.host:
+            tv_kwargs['host'] = args.host
+        if args.port is not None:
+            tv_kwargs['port'] = args.port
+        dispatcher = TradingViewDispatcher(**tv_kwargs)
+        dispatcher.run()
+        dispatcher.interactive_mode()
+        print("Exiting TradingView dispatcher")
     else:
         parser.error('Unknown target')
 
