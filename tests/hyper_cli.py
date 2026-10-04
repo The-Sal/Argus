@@ -1,0 +1,1127 @@
+#!/usr/bin/env python3
+"""
+Interactive CLI client for querying the Argus Hyperliquid perpetuals dispatcher.
+
+This mirrors tests/poly_cli.py but targets HyperLiquidDispatcher
+(argus/perpetuals/hyper/__init__.py) instead of the Polymarket dispatcher.
+
+Usage:
+    python tests/hyper_cli.py    # Start interactive mode
+
+Protocol:
+    - P1 (control): ~NNNN|<json-payload>
+    Unlike Polymarket, every Hyperliquid request MUST include a "correlation_id".
+    Once a client has subscribed, the same socket also carries unsolicited P1
+    system pushes (e.g. the hourly refreshed funding rate, action "perpetual_info";
+    see HyperLiquidDispatcher._distribute_refreshed_perpetuals).
+    - P2 (async market-data push): ~<packet-length><symbol-length>|<symbol><csv-data>L
+    Pushed unsolicited once a client has `subscribe`d to one or more coins (see
+    HyperLiquidDispatcher._order_book_update_callback / argus/perpetuals/hyper/wss.py).
+    Encoded with the same argus.protocol.transmit_mkt_data_with_protocol_2 wire
+    format Polymarket uses, via HLP2ConvertClass (argus/perpetuals/hyper/_classes.py).
+"""
+import os
+import sys
+import json
+import time
+import uuid
+import socket
+from typing import Any, Callable, Dict, List, Optional, Tuple
+sys.path.insert(0, __file__.replace('/tests/hyper_cli.py', ''))
+from argus import protocol
+
+# Must match HyperLiquidDispatcher's default (argus/perpetuals/hyper/__init__.py),
+# since the P2 packet's field count/order depends on it.
+ORDERBOOK_DEPTH = int(os.environ.get('HYPERLIQUID_ORDERBOOK_DEPTH', 10))
+
+
+# =============================================================================
+# P2 Protocol Parser for Order Book Data
+# =============================================================================
+#
+# Standalone port of argus.protocol.Protocol2Parser, mirroring tests/poly_cli.py's
+# own local P2PacketParser rather than importing the shared one -- see that file
+# for why (a fixed decoding_order doesn't fit a variable order book depth).
+
+def build_p2_decoding_order(depth: int = ORDERBOOK_DEPTH) -> List[str]:
+    """Build the field decoding order for a P2 packet at a given order book depth."""
+    fields = []
+    for i in range(depth):
+        fields.append(f'bid_{i}_price')
+        fields.append(f'bid_{i}_size')
+    for i in range(depth):
+        fields.append(f'ask_{i}_price')
+        fields.append(f'ask_{i}_size')
+    fields.append('book_timestamp')
+    fields.append('server_timestamp')
+    return fields
+
+
+P2_DECODING_ORDER = build_p2_decoding_order()
+
+
+class P2PacketParser:
+    """
+    Parser for Protocol 2 market data packets from the Hyperliquid dispatcher.
+    Format: ~<packet-length><symbol-length>|<symbol><market-data>L
+    """
+
+    def __init__(self, decoding_order: Optional[List[str]] = None):
+        self.decoding_order = decoding_order if decoding_order is not None else P2_DECODING_ORDER
+
+    def parse(self, packet_bytes: bytes) -> Dict[str, Any]:
+        if len(packet_bytes) < 11:
+            raise ValueError("Packet too short for Protocol 2 format")
+
+        pos = 0
+        if packet_bytes[pos] != ord('~'):
+            raise ValueError("Invalid header: missing start marker '~'")
+        pos += 1
+
+        packet_length = int(packet_bytes[pos:pos + 4].decode('ascii'))
+        pos += 4
+
+        expected_total_length = 5 + packet_length
+        if len(packet_bytes) != expected_total_length:
+            raise ValueError(
+                f"Packet length mismatch: expected {expected_total_length}, got {len(packet_bytes)}"
+            )
+
+        symbol_length = int(packet_bytes[pos:pos + 4].decode('ascii'))
+        pos += 4
+
+        if packet_bytes[pos] != ord('|'):
+            raise ValueError("Missing pipe separator after symbol length")
+        pos += 1
+
+        symbol = packet_bytes[pos:pos + symbol_length].decode('ascii')
+        pos += symbol_length
+
+        if packet_bytes[-1] != ord('L'):
+            raise ValueError("Invalid terminator: expected 'L'")
+
+        market_data_str = packet_bytes[pos:-1].decode('ascii')
+        values = self._parse_csv_values(market_data_str)
+
+        if len(values) != len(self.decoding_order):
+            raise ValueError(
+                f"Field count mismatch: expected {len(self.decoding_order)} values, got {len(values)}"
+            )
+
+        result: Dict[str, Any] = {'symbol': symbol}
+        for i, field_name in enumerate(self.decoding_order):
+            result[field_name] = values[i]
+        return result
+
+    @staticmethod
+    def _parse_csv_values(data_str: str) -> List[float]:
+        if not data_str:
+            raise ValueError("Empty market data")
+        return [float(v) for v in data_str.split(',')]
+
+    def parse_multiple(self, mixed_packets: bytes) -> List[Dict[str, Any]]:
+        packets = []
+        position = 0
+        while position < len(mixed_packets):
+            if mixed_packets[position] != ord('~'):
+                raise ValueError(f"Invalid packet start at position {position}")
+            packet_length = int(mixed_packets[position + 1:position + 5].decode('ascii'))
+            total_packet_length = 5 + packet_length
+            packet_bytes = mixed_packets[position:position + total_packet_length]
+            packets.append(self.parse(packet_bytes))
+            position += total_packet_length
+        return packets
+
+
+def format_orderbook(parsed_data: Dict[str, Any], depth: int = 5) -> str:
+    """Format order book data from a parsed P2 packet."""
+    output = [f"\n{'SIDE':<6} {'LEVEL':<6} {'PRICE':<14} {'SIZE':<15}", "-" * 45]
+
+    bids, asks = [], []
+    for i in range(depth):
+        price, size = parsed_data.get(f'bid_{i}_price', 0), parsed_data.get(f'bid_{i}_size', 0)
+        if price > 0 and size > 0:
+            bids.append((price, size))
+    for i in range(depth):
+        price, size = parsed_data.get(f'ask_{i}_price', 0), parsed_data.get(f'ask_{i}_size', 0)
+        if price > 0 and size > 0:
+            asks.append((price, size))
+
+    for i, (price, size) in enumerate(bids[:depth]):
+        output.append(f"{'BID':<6} {i:<6} {price:<14.4f} {size:<15.4f}")
+    output.append("-" * 45)
+    for i, (price, size) in enumerate(asks[:depth]):
+        output.append(f"{'ASK':<6} {i:<6} {price:<14.4f} {size:<15.4f}")
+
+    return "\n".join(output)
+
+
+# =============================================================================
+# Mixed P1/P2 Stream Splitting
+# =============================================================================
+#
+# A subscribed socket carries both P2 order book frames and P1 system pushes
+# (e.g. funding-rate updates) interleaved. The two share a '~NNNN' length header
+# but differ after it, so they are told apart by structure: P2's first '|' sits
+# at byte 9 (after a 4-digit symbol length) and the frame ends with 'L', while
+# P1 is '~NNNN|' followed directly by its JSON payload. Mirrors the extraction
+# helpers in tests/test_poly_dispatcher_order_lifecycle.py.
+
+def extract_p1_p2_frames(raw: bytes) -> Tuple[List[Tuple[str, bytes]], bytes]:
+    """
+    Split a mixed byte stream into complete frames. Returns (frames, leftover),
+    where each frame is ('p1', raw_frame_bytes) or ('p2', raw_frame_bytes), and
+    `leftover` holds an incomplete trailing frame to prepend on the next call.
+    """
+    frames: List[Tuple[str, bytes]] = []
+    while raw and raw[0:1] == b'~':
+        if len(raw) < 5:
+            break  # need ~NNNN before any length can be read
+
+        pipe_idx = raw.find(b'|')
+        if pipe_idx == -1:
+            break  # incomplete frame
+
+        # P2 probe: first pipe at byte 9 (after the 4-digit symbol length) and
+        # a trailing 'L'. If the probe fails, fall through to the P1 layout.
+        if pipe_idx == 9:
+            try:
+                p2_packet_len = int(raw[1:5].decode('ascii'))
+                p2_total = 5 + p2_packet_len
+                if len(raw) >= p2_total and raw[p2_total - 1:p2_total] == b'L':
+                    frames.append(('p2', raw[:p2_total]))
+                    raw = raw[p2_total:]
+                    continue
+                if len(raw) < p2_total:
+                    break  # incomplete P2 frame
+            except (ValueError, UnicodeDecodeError):
+                pass
+
+        # P1 frame: ~<length>|<payload>
+        try:
+            payload_len = int(raw[1:pipe_idx].decode('ascii'))
+        except (ValueError, UnicodeDecodeError):
+            break
+        frame_len = pipe_idx + 1 + payload_len
+        if len(raw) < frame_len:
+            break  # incomplete P1 frame
+        frames.append(('p1', raw[:frame_len]))
+        raw = raw[frame_len:]
+
+    return frames, raw
+
+
+# =============================================================================
+# Client
+# =============================================================================
+
+class HyperArgusClient:
+    """Client for the Argus Hyperliquid perpetuals dispatcher."""
+
+    def __init__(self, host: str = 'localhost', port: int = 9972):
+        self.host = host
+        self.port = port
+        self.socket: Optional[socket.socket] = None
+        self.p2_parser = P2PacketParser()
+        self._recv_buffer = b''
+
+    def connect(self) -> None:
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.socket.settimeout(30)
+            self.socket.connect((self.host, self.port))
+        except (ConnectionRefusedError, OSError) as e:
+            raise ConnectionError(f"Could not connect to dispatcher at {self.host}:{self.port} - {e}")
+
+    def disconnect(self) -> None:
+        if self.socket:
+            self.socket.close()
+            self.socket = None
+
+    def _recv_framed_payload(self) -> bytes:
+        """
+        Read one full P1 packet off the socket and return its payload bytes.
+        Interleaved P2 (order book) frames are skipped; an incomplete trailing
+        frame, as well as any complete frames after the returned one, are kept
+        in self._recv_buffer for the next read.
+        """
+        if not self.socket:
+            raise ConnectionError("Not connected to server")
+
+        while True:
+            frames, self._recv_buffer = extract_p1_p2_frames(self._recv_buffer)
+            for i, (frame_type, frame_bytes) in enumerate(frames):
+                if frame_type == 'p1':
+                    later_frames = b''.join(frame for _, frame in frames[i + 1:])
+                    self._recv_buffer = later_frames + self._recv_buffer
+                    return protocol.decode_packet(frame_bytes)
+
+            chunk = self.socket.recv(131072)
+            if not chunk:
+                raise ConnectionError("Server closed connection before responding.")
+            self._recv_buffer += chunk
+
+    def send_request(self, action: str, data: Any = None, timeout: int = 30) -> Tuple[dict, float]:
+        """Send a P1 request (with a fresh correlation_id) and return (response, round-trip time)."""
+        if data is None:
+            data = {}
+
+        correlation_id = str(uuid.uuid4())
+        request = {'action': action, 'data': data, 'correlation_id': correlation_id}
+        packet = protocol.encode_packet(json.dumps(request).encode('utf-8'))
+
+        if not self.socket:
+            raise ConnectionError("Not connected to server")
+
+        old_timeout = self.socket.gettimeout()
+        self.socket.settimeout(timeout)
+        try:
+            t0 = time.perf_counter()
+            self.socket.sendall(packet)
+            payload = self._recv_framed_payload()
+            elapsed = time.perf_counter() - t0
+
+            response = json.loads(payload.decode('utf-8'))
+            response = protocol.decompress_p1_response(response)
+
+            resp_corr_id = response.get('correlation_id')
+            if resp_corr_id is not None and resp_corr_id != correlation_id:
+                print(f"  ⚠ Warning: response correlation_id {resp_corr_id} does not match request {correlation_id}")
+
+            return response, elapsed
+        finally:
+            self.socket.settimeout(old_timeout)
+
+    def products_version(self, timeout: int = 30) -> Tuple[dict, float]:
+        resp, dt = self.send_request('products_version', timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"products_version failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def get_dexs(self, timeout: int = 30) -> Tuple[List[dict], float]:
+        resp, dt = self.send_request('get_dexs', timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"get_dexs failed: {resp['error']}")
+        return list((resp.get('data') or {}).get('dexes') or []), dt
+
+    def get_perpetuals_for_dex(self, dex_name: str = "", offset: int = 0, limit: Optional[int] = None, timeout: int = 30) -> Tuple[List[dict], float]:
+        data = {'dex_name': dex_name, 'offset': offset}
+        if limit is not None:
+            data['limit'] = limit
+        resp, dt = self.send_request('get_perpetuals_for_dex', data, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"get_perpetuals_for_dex failed: {resp['error']}")
+        return list((resp.get('data') or {}).get('perpetuals') or []), dt
+
+    def get_funding_rates_for_all_perpetuals(self, offset: int = 0, limit: Optional[int] = None, timeout: int = 30) -> Tuple[List[dict], float]:
+        data = {'offset': offset}
+        if limit is not None:
+            data['limit'] = limit
+        resp, dt = self.send_request('get_funding_rates_for_all_perpetuals', data, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"get_funding_rates_for_all_perpetuals failed: {resp['error']}")
+        return list((resp.get('data') or {}).get('funding_rates') or []), dt
+
+    def perpetual_info(self, coin: str, timeout: int = 30) -> Tuple[dict, float]:
+        resp, dt = self.send_request('perpetual_info', {'coin': coin}, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"perpetual_info failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def search_perpetuals(self, keyword: str, limit: int = 10, timeout: int = 30) -> Tuple[List[str], float]:
+        resp, dt = self.send_request('search_perpetuals', {'keyword': keyword, 'limit': limit}, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"search_perpetuals failed: {resp['error']}")
+        return list((resp.get('data') or {}).get('perpetuals') or []), dt
+
+    def get_funding_rate(self, symbol: str, timeout: int = 30) -> Tuple[dict, float]:
+        resp, dt = self.send_request('get_funding_rate', {'symbol': symbol}, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"get_funding_rate failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def subscribe(self, coins: List[str], timeout: int = 30) -> Tuple[dict, float]:
+        """Subscribe to live order book updates for one or more coins (e.g. ['BTC'])."""
+        resp, dt = self.send_request('subscribe', coins, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"subscribe failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def unsubscribe(self, coins: List[str], timeout: int = 30) -> Tuple[dict, float]:
+        resp, dt = self.send_request('unsubscribe', coins, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"unsubscribe failed: {resp['error']}")
+        return dict(resp.get('data') or {}), dt
+
+    def receive_packets(self, timeout: float = 0.1) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Drain whatever packets are currently sitting on the socket, without
+        blocking, and return them split by type: (P2 order book packets,
+        P1 system pushes -- e.g. updated funding rates). Incomplete trailing
+        frames stay buffered for the next call.
+
+        `timeout` is accepted for API parity with poly_cli.py's client but unused
+        here for the same reason: a non-blocking recv() either returns available
+        bytes immediately or raises BlockingIOError, so the drain is inherently
+        instantaneous.
+        """
+        if not self.socket:
+            raise ConnectionError("Not connected to server")
+
+        _ = timeout
+        data = b''
+        self.socket.setblocking(False)
+        try:
+            while True:
+                try:
+                    chunk = self.socket.recv(131072)
+                except BlockingIOError:
+                    break
+                if not chunk:
+                    raise ConnectionError("Server closed connection.")
+                data += chunk
+        finally:
+            self.socket.setblocking(True)
+
+        frames, self._recv_buffer = extract_p1_p2_frames(self._recv_buffer + data)
+
+        p2_packets: List[Dict[str, Any]] = []
+        pushes: List[Dict[str, Any]] = []
+        for frame_type, frame_bytes in frames:
+            if frame_type == 'p2':
+                p2_packets.append(self.p2_parser.parse(frame_bytes))
+                continue
+            try:
+                payload = protocol.decode_packet(frame_bytes)
+                push = json.loads(payload.decode('utf-8'))
+                pushes.append(protocol.decompress_p1_response(push))
+            except (ValueError, UnicodeDecodeError):
+                continue  # unparseable push -- skip rather than kill the stream
+
+        return p2_packets, pushes
+
+    def receive_p2_packets(self, timeout: float = 0.1) -> List[Dict[str, Any]]:
+        """Return only the P2 (order book push) packets from receive_packets(),
+        discarding any P1 system pushes. Kept for the gauntlet's stream checks."""
+        packets, _ = self.receive_packets(timeout)
+        return packets
+
+
+# =============================================================================
+# Gauntlet (live "test mode" that exercises every known read-only action)
+# =============================================================================
+#
+# Reuses HyperArgusClient's own methods (no separate request-building logic),
+# so this stays honest about what the CLI actually calls. Trading actions are
+# intentionally excluded -- as of this writing none are wired into the
+# dispatcher's routing table yet (see argus/perpetuals/hyper/__init__.py).
+
+class GauntletFailure(AssertionError):
+    """Raised by a gauntlet check to record a readable failure reason."""
+
+
+def _check(condition: bool, message: str) -> None:
+    if not condition:
+        raise GauntletFailure(message)
+
+
+def _check_numeric(value: Any, field: str, context: str) -> None:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        raise GauntletFailure(f"{context}: field '{field}' = {value!r} is not numeric")
+
+
+def _validate_asset(asset: dict, context: str) -> None:
+    _check(isinstance(asset, dict), f"{context}: 'asset' is not an object")
+    for field in ('name', 'szDecimals', 'maxLeverage'):
+        _check(field in asset, f"{context}: asset missing '{field}'")
+    _check(isinstance(asset.get('name'), str) and asset['name'], f"{context}: asset 'name' is empty")
+
+
+def _validate_context(ctx: dict, context: str) -> None:
+    _check(isinstance(ctx, dict), f"{context}: 'context' is not an object")
+    for field in ('markPx', 'funding', 'openInterest', 'oraclePx', 'prevDayPx', 'dayNtlVlm'):
+        _check(field in ctx, f"{context}: context missing '{field}'")
+        _check_numeric(ctx.get(field), field, context)
+
+
+def _validate_perp(perp: dict, context: str) -> None:
+    _check(isinstance(perp, dict), f"{context}: perpetual is not an object")
+    _check('dex' in perp, f"{context}: perpetual missing 'dex'")
+    _validate_asset(perp.get('asset') or {}, context)
+    _validate_context(perp.get('context') or {}, context)
+
+
+def _gauntlet_products_version(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    data, dt = client.products_version(timeout=timeout)
+    _check(isinstance(data, dict), "response is not an object")
+    _check('argus' in data, "missing 'argus' version")
+    hl_version = data.get('hyperliquid_dispatcher')
+    _check(isinstance(hl_version, list) and len(hl_version) == 4, f"'hyperliquid_dispatcher' malformed: {hl_version!r}")
+    return dt, f"argus={data.get('argus')} hyperliquid_dispatcher={hl_version}"
+
+
+def _gauntlet_get_dexs(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    dexes, dt = client.get_dexs(timeout=timeout)
+    _check(isinstance(dexes, list), "'dexes' is not a list")
+    for dex in dexes:
+        _check(isinstance(dex, dict), "dex entry is not an object")
+        for field in ('name', 'fullName', 'deployer', 'feeRecipient'):
+            _check(field in dex, f"dex entry missing '{field}'")
+    return dt, f"{len(dexes)} dex(es)"
+
+
+def _gauntlet_get_perpetuals_default_dex(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, dt = client.get_perpetuals_for_dex("", offset=0, timeout=timeout)
+    _check(isinstance(perps, list), "'perpetuals' is not a list")
+    _check(len(perps) > 0, "expected at least one perpetual on the default dex")
+    for perp in perps:
+        _validate_perp(perp, "default dex")
+    return dt, f"{len(perps)} perp(s)"
+
+
+def _gauntlet_get_perpetuals_hip3_dex(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    dexes, _ = client.get_dexs(timeout=timeout)
+    if not dexes:
+        return 0.0, "skipped (no HIP-3 dexes registered)"
+    dex_name = dexes[0].get('name', '')
+    perps, dt = client.get_perpetuals_for_dex(dex_name, offset=0, timeout=timeout)
+    _check(isinstance(perps, list), "'perpetuals' is not a list")
+    for perp in perps:
+        _validate_perp(perp, f"dex '{dex_name}'")
+    return dt, f"dex='{dex_name}' -> {len(perps)} perp(s)"
+
+
+def _validate_perp_info(info: dict, coin: str, context: str) -> None:
+    _check(isinstance(info, dict), f"{context}: response is not an object")
+    _check(info.get('coin') == coin, f"{context}: 'coin' = {info.get('coin')!r} does not match requested {coin!r}")
+
+    annotation = info.get('annotation')
+    _check(annotation is None or isinstance(annotation, dict), f"{context}: 'annotation' is not null/object")
+    if isinstance(annotation, dict):
+        for field in ('category', 'description'):
+            _check(field in annotation, f"{context}: annotation missing '{field}'")
+
+    category = info.get('category')
+    _check(category is None or isinstance(category, str), f"{context}: 'category' is not null/string")
+
+    concise = info.get('concise_annotation')
+    _check(concise is None or isinstance(concise, dict), f"{context}: 'concise_annotation' is not null/object")
+    if isinstance(concise, dict):
+        _check('category' in concise, f"{context}: concise_annotation missing 'category'")
+        _check(isinstance(concise.get('keywords'), list), f"{context}: concise_annotation 'keywords' is not a list")
+
+    predicted = info.get('predicted_funding')
+    _check(predicted is None or isinstance(predicted, list), f"{context}: 'predicted_funding' is not null/list")
+    if isinstance(predicted, list):
+        for entry in predicted:
+            _check(isinstance(entry, list) and len(entry) == 2, f"{context}: predicted_funding entry malformed: {entry!r}")
+
+
+def _gauntlet_get_perpetual_info(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, _ = client.get_perpetuals_for_dex("", offset=0, timeout=timeout)
+    _check(len(perps) > 0, "expected at least one perpetual on the default dex to test perpetual_info with")
+    coin = perps[0]['asset']['name']
+    info, dt = client.perpetual_info(coin, timeout=timeout)
+    _validate_perp_info(info, coin, f"perpetual_info('{coin}')")
+    return dt, f"coin='{coin}' -> annotation={info.get('annotation') is not None} category={info.get('category')!r} predicted_funding={info.get('predicted_funding') is not None}"
+
+
+def _gauntlet_get_funding_rates(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, dt = client.get_funding_rates_for_all_perpetuals(offset=0, timeout=timeout)
+    _check(isinstance(perps, list), "'funding_rates' is not a list")
+    _check(len(perps) > 0, "expected at least one funding rate entry")
+    for perp in perps:
+        _validate_perp(perp, "funding rates")
+    fundings = [float(p['context']['funding']) for p in perps]
+    _check(fundings == sorted(fundings, reverse=True), "funding rates are not sorted descending")
+    return dt, f"{len(perps)} perp(s), top funding={fundings[0]:.6f}"
+
+
+def _gauntlet_search_perpetuals(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, _ = client.get_perpetuals_for_dex("", offset=0, timeout=int(timeout))
+    _check(len(perps) > 0, "expected at least one perpetual to search over")
+    coin = perps[0]['asset']['name']
+    matches, dt = client.search_perpetuals(coin, limit=10, timeout=int(timeout))
+    _check(isinstance(matches, list), "'perpetuals' search result is not a list")
+    _check(len(matches) > 0, f"search for {coin!r} returned no matches")
+    _check(all(isinstance(m, str) for m in matches), "search results contain non-string symbols")
+    _check(coin in matches, f"exact symbol {coin!r} missing from its own search results: {matches!r}")
+    return dt, f"keyword={coin!r} -> {len(matches)} match(es), best={matches[0]!r}"
+
+
+def _gauntlet_get_funding_rate(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, _ = client.get_perpetuals_for_dex("", offset=0, timeout=int(timeout))
+    _check(len(perps) > 0, "expected at least one perpetual to fetch a funding rate for")
+    coin = perps[0]['asset']['name']
+    data, dt = client.get_funding_rate(coin, timeout=int(timeout))
+    _check(isinstance(data, dict), "response is not an object")
+    _check(data.get('symbol') == coin, f"'symbol' = {data.get('symbol')!r} does not match requested {coin!r}")
+    _check(data.get('funding_rate') is not None, "missing 'funding_rate'")
+    float(data['funding_rate'])
+    return dt, f"symbol={coin} funding_rate={data.get('funding_rate')} apr={data.get('funding_rate_apr')}"
+
+
+# -----------------------------------------------------------------------------
+# Market-data streaming (P2) gauntlet check
+# -----------------------------------------------------------------------------
+#
+# Unlike the REST-backed checks above, this drives the live order book path:
+# subscribe -> receive + validate the pushed P2 book -> unsubscribe and assert
+# pushes stop -> re-subscribe and assert pushes resume. It is the CLI-level
+# counterpart to tests/hyper_wss_latency.py (which white-boxes the wss itself,
+# including the upstream reconnect); a CLI client cannot force the dispatcher's
+# upstream socket to drop, so this verifies the subscription lifecycle end to
+# end instead, including the refcounted teardown (`subscription_expired`).
+
+def _drain_p2(client: 'HyperArgusClient', seconds: float, stop_on_packet: bool) -> List[Dict[str, Any]]:
+    """Drain P2 packets for up to `seconds`. If `stop_on_packet`, return on the
+    first non-empty drain rather than waiting out the whole window."""
+    deadline = time.time() + seconds
+    collected: List[Dict[str, Any]] = []
+    while time.time() < deadline:
+        packets = client.receive_p2_packets()
+        if packets:
+            collected.extend(packets)
+            if stop_on_packet:
+                return collected
+        time.sleep(0.02)
+    return collected
+
+
+def _validate_p2_book(packet: Dict[str, Any], coin: str) -> float:
+    """Validate one decoded P2 order-book packet; return its latency in ms."""
+    _check(packet.get('symbol') == coin, f"P2 packet symbol {packet.get('symbol')!r} != subscribed {coin!r}")
+
+    bids, asks = [], []
+    for i in range(ORDERBOOK_DEPTH):
+        price, size = packet.get(f'bid_{i}_price', 0.0), packet.get(f'bid_{i}_size', 0.0)
+        if price > 0 and size > 0:
+            bids.append(price)
+    for i in range(ORDERBOOK_DEPTH):
+        price, size = packet.get(f'ask_{i}_price', 0.0), packet.get(f'ask_{i}_size', 0.0)
+        if price > 0 and size > 0:
+            asks.append(price)
+
+    _check(len(bids) > 0 or len(asks) > 0, f"P2 packet for {coin!r} carried no levels")
+    _check(bids == sorted(bids, reverse=True), f"bids not descending: {bids}")
+    _check(asks == sorted(asks), f"asks not ascending: {asks}")
+    if bids and asks:
+        _check(bids[0] < asks[0], f"crossed book bid={bids[0]} ask={asks[0]}")
+
+    book_ts = packet.get('book_timestamp', 0)
+    _check(book_ts > 0, "P2 packet missing/zero book_timestamp")
+    latency_ms = time.time() * 1000.0 - book_ts
+    _check(
+        -2000.0 < latency_ms < 5000.0,
+        f"implausible book latency {latency_ms:.1f}ms (clock skew or unit mismatch?)"
+    )
+    return latency_ms
+
+
+def _gauntlet_market_data_stream(client: 'HyperArgusClient', timeout: float) -> Tuple[float, str]:
+    perps, _ = client.get_perpetuals_for_dex("", offset=0, timeout=int(timeout))
+    _check(len(perps) > 0, "need at least one perpetual to stream")
+    coin = perps[0]['asset']['name']
+
+    window = max(2.0, min(timeout, 5.0))
+    start = time.perf_counter()
+
+    result, _ = client.subscribe([coin], timeout=int(timeout))
+    _check(coin in (result.get('subscribed') or []), f"subscribe did not confirm {coin!r}: {result!r}")
+    try:
+        first = _drain_p2(client, window, stop_on_packet=True)
+        _check(len(first) > 0, f"no P2 packets for {coin!r} within {window:.0f}s of subscribing")
+        latencies = [_validate_p2_book(packet, coin) for packet in first]
+
+        # Unsubscribe: this socket must stop receiving the coin's book.
+        client.unsubscribe([coin], timeout=int(timeout))
+        _drain_p2(client, 0.5, stop_on_packet=False)  # flush in-flight pushes
+        quiet = _drain_p2(client, 1.0, stop_on_packet=False)
+        _check(not quiet, f"received {len(quiet)} P2 packet(s) after unsubscribing from {coin!r}")
+
+        # Re-subscribe: pushes must resume.
+        client.subscribe([coin], timeout=int(timeout))
+        resumed = _drain_p2(client, window, stop_on_packet=True)
+        _check(len(resumed) > 0, f"no P2 packets for {coin!r} after re-subscribing")
+    finally:
+        try:
+            client.unsubscribe([coin], timeout=int(timeout))
+        except Exception:
+            pass
+
+    dt = time.perf_counter() - start
+    avg = sum(latencies) / len(latencies)
+    return dt, f"coin={coin} first_batch={len(first)} avg_latency={avg:.1f}ms (subscribe/unsubscribe/re-subscribe OK)"
+
+
+# (display name, check function) -- add new read-only actions here as the
+# dispatcher's routing table grows. Trading actions should never be added.
+GAUNTLET_CHECKS: List[Tuple[str, Callable[['HyperArgusClient', float], Tuple[float, str]]]] = [
+    ("products_version", _gauntlet_products_version),
+    ("get_dexs", _gauntlet_get_dexs),
+    ("get_perpetuals_for_dex (default dex)", _gauntlet_get_perpetuals_default_dex),
+    ("get_perpetuals_for_dex (HIP-3 dex)", _gauntlet_get_perpetuals_hip3_dex),
+    ("get_funding_rates_for_all_perpetuals", _gauntlet_get_funding_rates),
+    ("perpetual_info", _gauntlet_get_perpetual_info),
+    ("search_perpetuals", _gauntlet_search_perpetuals),
+    ("get_funding_rate", _gauntlet_get_funding_rate),
+    ("market_data (subscribe/P2 lifecycle)", _gauntlet_market_data_stream),
+]
+
+
+def run_gauntlet(client: 'HyperArgusClient', timeout: float = 15.0) -> bool:
+    """Calls every known read-only action against a live dispatcher and validates the shape of each response."""
+    print("\n" + "=" * 72)
+    print("HYPERLIQUID DISPATCHER GAUNTLET (read-only actions, live endpoint)")
+    print(f"  per-check timeout: {timeout:.0f}s")
+    print("=" * 72)
+
+    results: List[Tuple[str, str, float, str]] = []
+    for name, check in GAUNTLET_CHECKS:
+        start = time.perf_counter()
+        try:
+            dt, detail = check(client, timeout)
+            status, message = "PASS", detail
+        except GauntletFailure as e:
+            status, message, dt = "FAIL", str(e), time.perf_counter() - start
+        except socket.timeout:
+            status, message, dt = "FAIL", f"timed out after {timeout:.0f}s", time.perf_counter() - start
+        except Exception as e:
+            status, message, dt = "ERROR", f"{type(e).__name__}: {e}", time.perf_counter() - start
+
+        results.append((name, status, dt, message))
+        icon = {"PASS": "✓", "FAIL": "✗", "ERROR": "‼"}[status]
+        print(f"  {icon} {name:<40} {status:<6} {dt*1000:>8.1f}ms  {message}")
+
+    passed = sum(1 for _, status, _, _ in results if status == "PASS")
+    total = len(results)
+    print("=" * 72)
+    print(f"  {passed}/{total} checks passed")
+    print("=" * 72 + "\n")
+    return passed == total
+
+
+# =============================================================================
+# Formatting helpers
+# =============================================================================
+
+def format_version(data: dict) -> str:
+    output = []
+    output.append("\n" + "=" * 60)
+    output.append("PRODUCTS VERSION")
+    output.append("=" * 60)
+    output.append(f"  Argus core:              {data.get('argus')}")
+    output.append(f"  Hyperliquid dispatcher:  {data.get('hyperliquid_dispatcher')}")
+    sidecars = data.get('sidecars') or {}
+    if sidecars:
+        output.append("  Sidecars:")
+        for name, version in sidecars.items():
+            output.append(f"    {name}: {version}")
+    else:
+        output.append("  Sidecars: (none)")
+    output.append("=" * 60)
+    return "\n".join(output)
+
+
+def format_dexs(dexes: List[dict]) -> str:
+    output = []
+    output.append(f"\n{'NAME':<12} {'FULL NAME':<30} {'DEPLOYER':<44} {'ASSETS':<8}")
+    output.append("=" * 100)
+    for dex in dexes:
+        name = str(dex.get('name', ''))
+        full_name = str(dex.get('fullName', ''))[:28]
+        deployer = str(dex.get('deployer', ''))
+        assets = len(dex.get('assetToStreamingOiCap') or [])
+        output.append(f"{name:<12} {full_name:<30} {deployer:<44} {assets:<8}")
+    output.append(f"\nShowing {len(dexes)} dex(es)")
+    output.append("Tip: dex_name \"\" is the default dex and is not listed here.")
+    return "\n".join(output)
+
+
+def _perp_fields(perp: dict) -> Dict[str, Any]:
+    asset = perp.get('asset') or {}
+    ctx = perp.get('context') or {}
+
+    def _f(v, default=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    mark_px = _f(ctx.get('markPx'))
+    funding = _f(ctx.get('funding'))
+    open_interest = _f(ctx.get('openInterest'))
+    return {
+        'dex': perp.get('dex', ''),
+        'name': asset.get('name', 'Unknown'),
+        'max_leverage': asset.get('maxLeverage', 0),
+        'mark_px': mark_px,
+        'funding_hourly': funding,
+        'funding_apr_pct': funding * 24 * 365 * 100,
+        'open_interest': open_interest,
+        'open_interest_usd': open_interest * mark_px,
+        'day_volume': _f(ctx.get('dayNtlVlm')),
+    }
+
+
+def format_perp_info(info: dict) -> str:
+    output = []
+    output.append("\n" + "=" * 60)
+    output.append(f"PERPETUAL INFO: {info.get('coin')}")
+    output.append("=" * 60)
+
+    annotation = info.get('annotation')
+    if annotation:
+        output.append(f"  Category:     {annotation.get('category')}")
+        output.append(f"  Description:  {annotation.get('description')}")
+    else:
+        output.append("  Annotation:   (none)")
+
+    if info.get('category') is not None:
+        output.append(f"  Category tag: {info.get('category')}")
+
+    concise = info.get('concise_annotation')
+    if concise:
+        output.append(f"  Keywords:     {', '.join(concise.get('keywords') or [])}")
+
+    predicted = info.get('predicted_funding')
+    if predicted:
+        output.append("  Predicted funding by venue:")
+        for venue, data in predicted:
+            if data is None:
+                output.append(f"    {venue:<12} (none)")
+            else:
+                output.append(f"    {venue:<12} rate={data.get('fundingRate')} next={data.get('nextFundingTime')}")
+    else:
+        output.append("  Predicted funding: (none)")
+
+    output.append("=" * 60)
+    return "\n".join(output)
+
+
+def format_search_results(symbols: List[str]) -> str:
+    output = ["\n" + "=" * 60, "SEARCH RESULTS", "=" * 60]
+    if not symbols:
+        output.append("  (no matches)")
+    for i, symbol in enumerate(symbols):
+        output.append(f"  {i + 1:>2}. {symbol}")
+    output.append("=" * 60)
+    return "\n".join(output)
+
+
+def format_funding_rate(data: dict) -> str:
+    output = ["\n" + "=" * 60, f"FUNDING RATE: {data.get('symbol')}", "=" * 60]
+    output.append(f"  Hourly:       {data.get('funding_rate')}")
+    output.append(f"  Annualized:   {data.get('funding_rate_apr')}")
+    output.append("=" * 60)
+    return "\n".join(output)
+
+
+def format_perpetuals(perps: List[dict], limit: Optional[int] = None) -> str:
+    output = []
+    output.append(f"\n{'DEX':<10} {'NAME':<12} {'MARK PX':<14} {'FUNDING/HR':<12} {'FUNDING APR':<14} {'OI (USD)':<16} {'24H VOL':<16}")
+    output.append("=" * 100)
+    for perp in (perps[:limit] if limit is not None else perps):
+        f = _perp_fields(perp)
+        dex = f['dex'] or '(default)'
+        output.append(
+            f"{dex:<10} {f['name']:<12} {f['mark_px']:<14.4f} {f['funding_hourly']*100:<11.4f}% "
+            f"{f['funding_apr_pct']:<13.2f}% {f['open_interest_usd']:<16,.0f} {f['day_volume']:<16,.0f}"
+        )
+    shown = len(perps) if limit is None else min(limit, len(perps))
+    output.append(f"\nShowing {shown} of {len(perps)} perpetual(s)")
+    return "\n".join(output)
+
+
+def format_system_push(push: Dict[str, Any]) -> str:
+    """
+    Format one P1 system push (e.g. a funding-rate update sent by
+    _distribute_refreshed_perpetuals) for display in sub mode.
+    """
+    action = push.get('action', 'unknown')
+    data = push.get('data')
+    if isinstance(data, dict) and 'funding_rate' in data:
+        subject = data.get('coin') or data.get('symbol') or '?'
+        return f"[push] {action}: {subject} funding_rate={data.get('funding_rate')}"
+    return f"[push] {action}: {data}"
+
+
+# =============================================================================
+# Live market-data streaming (P2)
+# =============================================================================
+
+def subscribe_market_data_mode(client: HyperArgusClient, coin: str):
+    """
+    Subscribe to a coin's order book and display live updates + latency, along
+    with any P1 system pushes the dispatcher emits (e.g. updated funding rates).
+    Press Ctrl+C to stop, unsubscribe, and show aggregate statistics.
+    Mirrors tests/poly_cli.py's subscribe_clob_latency_mode.
+    """
+    latencies: List[float] = []
+    packet_count = 0
+    push_count = 0
+    start_time = time.time()
+
+    print(f"\n📡 Subscribing to order book: {coin}")
+    try:
+        result, rtt = client.subscribe([coin])
+        print(f"✓ Subscribed successfully (RTT: {rtt*1000:.1f}ms)")
+        print(f"  Subscribed: {result.get('subscribed', [])}")
+        print(f"  Failed: {result.get('failed', [])}")
+    except Exception as e:
+        print(f"✗ Subscription failed: {e}")
+        return
+
+    print(f"\n📊 Monitoring order book... Press Ctrl+C to stop and view statistics.")
+    print(f"   Orderbook depth: {ORDERBOOK_DEPTH} levels")
+    print(f"   System pushes (e.g. funding rate updates) print as [push] lines")
+    print(f"\n{'PACKET':<8} {'LATENCY(ms)':<14} {'BEST BID':<14} {'BEST ASK':<14}")
+    print("-" * 60)
+
+    try:
+        while True:
+            packets, pushes = client.receive_packets(timeout=0.1)
+
+            for push in pushes:
+                push_count += 1
+                print(format_system_push(push))
+
+            for packet_data in packets:
+                packet_count += 1
+                receive_time = time.time()
+
+                book_ts = packet_data.get('book_timestamp', 0)
+                if book_ts > 0:
+                    latency_ms = (receive_time * 1000) - book_ts
+                    latencies.append(latency_ms)
+                else:
+                    latency_ms = 0.0
+
+                best_bid = packet_data.get('bid_0_price', 0)
+                best_ask = packet_data.get('ask_0_price', 0)
+
+                print(f"{packet_count:<8} {latency_ms:<14.2f} {best_bid:<14.4f} {best_ask:<14.4f}")
+
+                if packet_count % 10 == 0:
+                    print(format_orderbook(packet_data, depth=3))
+                    print(f"\n{'PACKET':<8} {'LATENCY(ms)':<14} {'BEST BID':<14} {'BEST ASK':<14}")
+                    print("-" * 60)
+
+    except KeyboardInterrupt:
+        print(f"\n\n🛑 Stopped by user.")
+
+        try:
+            print(f"📡 Unsubscribing from: {coin}")
+            client.unsubscribe([coin])
+            print(f"✓ Unsubscribed successfully")
+        except Exception as e:
+            print(f"⚠ Unsubscribe warning: {e}")
+
+        duration = time.time() - start_time
+        print(f"\n📈 Session Summary:")
+        print(f"  Duration: {duration:.1f} seconds")
+        print(f"  Total packets: {packet_count}")
+        print(f"  System pushes: {push_count}")
+        if duration > 0:
+            print(f"  Packets/sec: {packet_count/duration:.1f}")
+        if latencies:
+            print(f"  Avg latency: {sum(latencies)/len(latencies):.2f}ms")
+            print(f"  Min/Max latency: {min(latencies):.2f}ms / {max(latencies):.2f}ms")
+
+
+# =============================================================================
+# Interactive CLI
+# =============================================================================
+
+def print_banner(host: str, port: int):
+    print("\n" + "=" * 50)
+    print("  Argus Hyperliquid Interactive CLI")
+    print(f"  Connected to {host}:{port}")
+    print("  Type 'help' for commands, 'quit' to exit")
+    print("=" * 50 + "\n")
+
+
+def print_help():
+    print("\nAvailable commands:")
+    print("  version                    - Show dispatcher/component version info")
+    print("  dexs                       - List HIP-3 (builder-deployed) perp dexes")
+    print("  perps [dex_name] [offset] [limit] - List perpetuals for a dex (default: \"\" main dex, offset 0, limit set by server)")
+    print("  funding [N]                - Show top N perpetuals by funding rate (default: 20)")
+    print("  info <coin>                - Show annotation/category/keywords/predicted funding for one coin")
+    print("  search <keyword>           - Fuzzy-search perpetual symbols (e.g. search BTC)")
+    print("  rate <symbol>              - Show the live hourly + annualized funding rate for one symbol")
+    print("  sub <coin>                 - Subscribe to live order book + system pushes (e.g. funding rate updates), Ctrl+C to stop")
+    print("  test | gauntlet            - Call every known read-only action and validate the responses")
+    print("  clear                      - Clear screen")
+    print("  help                       - Show this help")
+    print("  quit                       - Exit the program")
+    print("\nExamples:")
+    print("  perps                      # main dex perpetuals")
+    print("  perps xyz                  # perpetuals for the 'xyz' HIP-3 dex")
+    print("  perps xyz 0 20             # first 20 perpetuals for the 'xyz' dex")
+    print("  funding 10                 # top 10 perpetuals by hourly funding rate")
+    print("  info BTC                   # info for the default-dex BTC perpetual")
+    print("  info xyz:AAPL              # info for a HIP-3 dex perpetual")
+    print("  search BTC                 # fuzzy-search perpetual symbols for 'BTC'")
+    print("  rate BTC                   # live funding rate for BTC")
+    print("  sub BTC                    # stream BTC's live order book")
+    print()
+
+
+def interactive_loop(client: HyperArgusClient):
+    while True:
+        try:
+            query = input("hyper> ").strip()
+
+            if not query:
+                continue
+
+            if query.lower() in ['quit', 'exit', 'q']:
+                print("Goodbye!")
+                break
+            elif query.lower() in ['help', 'h', '?']:
+                print_help()
+            elif query.lower() == 'clear':
+                import os
+                os.system('clear' if os.name == 'posix' else 'cls')
+                print_banner(client.host, client.port)
+            elif query.lower() == 'version':
+                try:
+                    data, dt = client.products_version()
+                    print(format_version(data))
+                    print(f"  ({dt*1000:.1f}ms)")
+                except Exception as e:
+                    print(f"✗ Failed to fetch version: {e}")
+            elif query.lower() == 'dexs':
+                try:
+                    print("Fetching dexes...")
+                    dexes, dt = client.get_dexs()
+                    print(f"✓ Fetched in {dt*1000:.1f}ms")
+                    print(format_dexs(dexes))
+                except Exception as e:
+                    print(f"✗ Failed to fetch dexes: {e}")
+            elif query.lower().startswith('perps'):
+                parts = query.split()[1:]
+                dex_name = parts[0].strip() if len(parts) > 0 else ""
+                offset = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+                limit = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+                try:
+                    print(f"Fetching perpetuals for dex '{dex_name or '(default)'}' (offset={offset}, limit={'server default' if limit is None else limit})...")
+                    perps, dt = client.get_perpetuals_for_dex(dex_name, offset=offset, limit=limit)
+                    print(f"✓ Fetched in {dt*1000:.1f}ms")
+                    print(format_perpetuals(perps, limit=limit))
+                except Exception as e:
+                    print(f"✗ Failed to fetch perpetuals: {e}")
+            elif query.lower().startswith('funding'):
+                parts = query.split()
+                limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 20
+                try:
+                    print(f"Fetching top {limit} perpetuals by funding rate...")
+                    perps, dt = client.get_funding_rates_for_all_perpetuals(offset=0, limit=limit)
+                    print(f"✓ Fetched in {dt*1000:.1f}ms")
+                    print(format_perpetuals(perps, limit=limit))
+                except Exception as e:
+                    print(f"✗ Failed to fetch funding rates: {e}")
+            elif query.lower().startswith('info'):
+                parts = query.split()[1:]
+                if not parts:
+                    print("Usage: info <coin>")
+                else:
+                    coin = parts[0].strip()
+                    try:
+                        print(f"Fetching info for '{coin}'...")
+                        info, dt = client.perpetual_info(coin)
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_perp_info(info))
+                    except Exception as e:
+                        print(f"✗ Failed to fetch perpetual info: {e}")
+            elif query.lower().startswith('search'):
+                parts = query.split()[1:]
+                if not parts:
+                    print("Usage: search <keyword>")
+                else:
+                    keyword = " ".join(parts)
+                    try:
+                        print(f"Searching perpetuals for '{keyword}'...")
+                        symbols, dt = client.search_perpetuals(keyword)
+                        print(f"✓ Searched in {dt*1000:.1f}ms")
+                        print(format_search_results(symbols))
+                    except Exception as e:
+                        print(f"✗ Search failed: {e}")
+            elif query.lower().startswith('rate'):
+                parts = query.split()[1:]
+                if not parts:
+                    print("Usage: rate <symbol>")
+                else:
+                    symbol = parts[0].strip()
+                    try:
+                        print(f"Fetching funding rate for '{symbol}'...")
+                        data, dt = client.get_funding_rate(symbol)
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_funding_rate(data))
+                    except Exception as e:
+                        print(f"✗ Failed to fetch funding rate: {e}")
+            elif query.lower().startswith('sub '):
+                coin = query[4:].strip()
+                if not coin:
+                    print("✗ Please provide a coin. Usage: sub <coin>")
+                else:
+                    subscribe_market_data_mode(client, coin)
+            elif query.lower() in ('test', 'gauntlet'):
+                run_gauntlet(client)
+            else:
+                print(f"Unknown command: '{query}'. Type 'help' for a list of commands.")
+
+        except KeyboardInterrupt:
+            print("\nType 'quit' to exit.")
+        except EOFError:
+            print("\nGoodbye!")
+            break
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Argus Hyperliquid Interactive CLI Client')
+    parser.add_argument('--host', default='localhost', help='Argus server host (default: localhost)')
+    parser.add_argument('--port', type=int, default=9972, help='Argus server port (default: 9972)')
+    parser.add_argument('--test', action='store_true', help='Run the read-only gauntlet against a live dispatcher and exit (no interactive prompt)')
+    parser.add_argument('--test-timeout', type=float, default=15.0, help='Per-check timeout in seconds for --test (default: 15)')
+
+    args = parser.parse_args()
+
+    client = HyperArgusClient(args.host, args.port)
+
+    try:
+        print(f"Connecting to Argus Hyperliquid dispatcher at {args.host}:{args.port}...")
+        client.connect()
+
+        # Test connection (no ping action on this dispatcher; use products_version instead).
+        version, rtt = client.products_version()
+        print(f"✓ Connected (hyperliquid_dispatcher: {version.get('hyperliquid_dispatcher')}, {rtt*1000:.1f}ms)")
+
+        if args.test:
+            ok = run_gauntlet(client, timeout=args.test_timeout)
+            sys.exit(0 if ok else 1)
+
+        print_banner(args.host, args.port)
+        interactive_loop(client)
+
+    except ConnectionError as e:
+        print(f"Connection error: {e}")
+        print("Make sure the Argus Hyperliquid dispatcher is running.")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nOperation cancelled.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+    finally:
+        client.disconnect()
+
+
+if __name__ == '__main__':
+    main()

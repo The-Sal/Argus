@@ -7,7 +7,7 @@ import datetime
 import websocket
 import traceback
 import pandas as pd
-from dotenv import load_dotenv
+from argus._argus_utils import load_dotenv
 
 
 load_dotenv()
@@ -47,6 +47,45 @@ def force_print_traceback(func):
 
     return wrapper
 
+# Quote fields requested from TradingView. Shared by QuoteSession.setup_qs and the
+# dispatcher (argus.tv.dispatcher) so both request the same data.
+QUOTE_FIELDS = [
+    "base-currency-logoid",
+    "ch",
+    "chp",
+    "currency-logoid",
+    "currency_code",
+    "currency_id",
+    "base_currency_id",
+    "current_session",
+    "description",
+    "exchange",
+    "format",
+    "fractional",
+    "is_tradable",
+    "language",
+    "local_description",
+    "listed_exchange",
+    "logoid",
+    "lp",
+    "lp_time",
+    "minmov",
+    "minmove2",
+    "original_name",
+    "pricescale",
+    "pro_name",
+    "short_name",
+    "type",
+    "typespecs",
+    "update_mode",
+    "volume",
+    "variable_tick_size",
+    "value_unit_id",
+    "unit_id",
+    "measure"
+]
+
+
 class TradingViewConnection:
     def __init__(self, send_auth=True):
         self.ws = websocket.WebSocketApp(
@@ -61,9 +100,19 @@ class TradingViewConnection:
         raise NotImplementedError("on_message method not implemented")
 
     def heartbeat_reply(self, heartbeat_msg):
-        """Handle heartbeat messages"""
-        # Heartbeat messages are usually just echoed back
-        self.ws.send(heartbeat_msg)
+        """Echo TradingView's heartbeat(s) back.
+
+        A single websocket frame can bundle several ~m~-framed messages (e.g. a heartbeat
+        followed by qsd quote data), and heartbeat_reply receives the RAW frame. Echo only
+        the heartbeat segments -- replaying the bundled quote JSON back to TradingView is
+        both pointless and noisy.
+        """
+        if isinstance(heartbeat_msg, (bytes, bytearray)):
+            heartbeat_msg = bytes(heartbeat_msg).decode('utf-8', errors='replace')
+        delim = '~m~'
+        for part in heartbeat_msg.split(delim):
+            if part.startswith('~h~'):
+                self.ws.send(f"{delim}{len(part)}{delim}{part}")
 
     def on_open(self, ws):
         """Handle WebSocket connection open event"""
@@ -175,40 +224,7 @@ class QuoteSession(TradingViewConnection):
 
             self.craft_message("quote_create_session", [self.quote_session_id]),
             self.craft_message("quote_set_fields", [
-                self.quote_session_id,
-                "base-currency-logoid",
-                "ch",
-                "chp",
-                "currency-logoid",
-                "currency_code",
-                "currency_id",
-                "base_currency_id",
-                "current_session",
-                "description",
-                "exchange",
-                "format",
-                "fractional",
-                "is_tradable",
-                "language",
-                "local_description",
-                "listed_exchange",
-                "logoid",
-                "lp",
-                "lp_time",
-                "minmov",
-                "minmove2",
-                "original_name",
-                "pricescale",
-                "pro_name",
-                "short_name",
-                "type",
-                "typespecs",
-                "update_mode",
-                "volume",
-                "variable_tick_size",
-                "value_unit_id",
-                "unit_id",
-                "measure"
+                self.quote_session_id, *QUOTE_FIELDS
             ]),
             self.craft_message("quote_add_symbols", [
                 self.quote_session_id, self.symbol
@@ -223,40 +239,7 @@ class QuoteSession(TradingViewConnection):
             ]),
             self.craft_message("quote_create_session", [self.quote_snapshotter]),
             self.craft_message("quote_set_fields", [
-                self.quote_session_id,
-                "base-currency-logoid",
-                "ch",
-                "chp",
-                "currency-logoid",
-                "currency_code",
-                "currency_id",
-                "base_currency_id",
-                "current_session",
-                "description",
-                "exchange",
-                "format",
-                "fractional",
-                "is_tradable",
-                "language",
-                "local_description",
-                "listed_exchange",
-                "logoid",
-                "lp",
-                "lp_time",
-                "minmov",
-                "minmove2",
-                "original_name",
-                "pricescale",
-                "pro_name",
-                "short_name",
-                "type",
-                "typespecs",
-                "update_mode",
-                "volume",
-                "variable_tick_size",
-                "value_unit_id",
-                "unit_id",
-                "measure"
+                self.quote_session_id, *QUOTE_FIELDS
             ]),
             self.craft_message("quote_add_symbols", [
                 self.quote_snapshotter, self.symbol
@@ -446,3 +429,7 @@ class NewsSession(TradingViewConnection):
         self.callback = callback
         super().__init__(send_auth=False)
         self.messages = 0
+
+# Dispatcher (P1 subscribe/unsubscribe + P2 streaming). Imported last so that
+# argus.tv.dispatcher can do `from argus.tv import QuoteSession` without a cycle.
+from argus.tv.dispatcher import TradingViewDispatcher, TVP2ConvertClass  # noqa: E402,F401
