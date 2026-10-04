@@ -46,3 +46,23 @@ class AbstractMethodNotImplementedError(FatalDispatcherError, NotImplementedErro
     logic can specifically exempt it instead of swallowing it.
     """
     pass
+
+class AccountNotConfiguredError(DispatcherError):
+    """
+    Raised by an account-data action when the dispatcher has no account to query
+    (e.g. LIGHTER_ACCOUNT_INDEX unset) or the venue needs an auth token for that
+    particular read and none was configured (e.g. LIGHTER_AUTH_TOKEN). This is a
+    per-request client-facing error, not a FatalDispatcherError: market-data actions
+    keep working on a dispatcher whose account side is unconfigured.
+    """
+    pass
+
+
+class OrderExecutionDisabledError(DispatcherError):
+    """
+    Raised by an order-placing action (place_order, place_multiple_orders, set_leverage, ...)
+    while the dispatcher's "Block Order Execution" switch is on. Mirrors Polymarket's error of
+    the same name. Cancels are never blocked: they only reduce risk, and an operator who blocks
+    execution in an emergency still needs to pull resting orders.
+    """
+    pass

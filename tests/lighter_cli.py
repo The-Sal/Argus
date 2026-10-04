@@ -29,6 +29,7 @@ import os
 import sys
 import json
 import time
+from datetime import datetime
 import uuid
 import socket
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -354,6 +355,60 @@ class LighterArgusClient:
             raise Exception(f"get_funding_rate failed: {resp['error']}")
         return dict(resp.get('data') or {}), dt
 
+    # --- account (shared actions; see argus/perpetuals/shared/account.py) ---
+    #
+    # Same action names as poly_cli / PolymarketDispatcher (get_balance, get_positions,
+    # get_orders, get_order_status, get_trades) plus get_funding_payments. Every list
+    # action is paginated with offset/limit because each record carries the venue's
+    # full payload under "venue" and a P1 packet caps at ~10KB.
+
+    def _account_request(self, action: str, data: dict, key: Optional[str], timeout: int) -> Tuple[Any, float]:
+        resp, dt = self.send_request(action, data, timeout=timeout)
+        if resp.get('error'):
+            raise Exception(f"{action} failed: {resp['error']}")
+        payload = resp.get('data') or {}
+        return (payload if key is None else payload.get(key)), dt
+
+    def get_balance(self, timeout: int = 30) -> Tuple[dict, float]:
+        data: Dict[str, Any] = {}
+        return self._account_request('get_balance', data, None, timeout)
+
+    def get_positions(self, offset: int = 0, limit: Optional[int] = None, timeout: int = 30) -> Tuple[List[dict], float]:
+        data: Dict[str, Any] = {'offset': offset}
+        if limit is not None:
+            data['limit'] = limit
+        positions, dt = self._account_request('get_positions', data, 'positions', timeout)
+        return list(positions or []), dt
+
+    def get_orders(self, offset: int = 0, limit: Optional[int] = None, timeout: int = 30) -> Tuple[List[dict], float]:
+        data: Dict[str, Any] = {'offset': offset}
+        if limit is not None:
+            data['limit'] = limit
+        orders, dt = self._account_request('get_orders', data, 'orders', timeout)
+        return list(orders or []), dt
+
+    def get_order_status(self, order_id: str, timeout: int = 30) -> Tuple[dict, float]:
+        return self._account_request('get_order_status', {'order_id': order_id}, None, timeout)
+
+    def get_trades(self, offset: int = 0, limit: Optional[int] = None, timeout: int = 30) -> Tuple[List[dict], float]:
+        data: Dict[str, Any] = {'offset': offset}
+        if limit is not None:
+            data['limit'] = limit
+        trades, dt = self._account_request('get_trades', data, 'trades', timeout)
+        return list(trades or []), dt
+
+    def get_funding_payments(self, start_time: Optional[int] = None, end_time: Optional[int] = None,
+                             offset: int = 0, limit: Optional[int] = None, timeout: int = 30) -> Tuple[dict, float]:
+        """Returns the whole payload ({'account', 'start_time', 'end_time', 'funding_payments'}); times are unix ms."""
+        data: Dict[str, Any] = {'offset': offset}
+        if limit is not None:
+            data['limit'] = limit
+        if start_time is not None:
+            data['start_time'] = start_time
+        if end_time is not None:
+            data['end_time'] = end_time
+        return self._account_request('get_funding_payments', data, None, timeout)
+
     def subscribe(self, symbols: List[str], timeout: int = 30) -> Tuple[dict, float]:
         """Subscribe to live order book updates for one or more symbols (e.g. ['BTC'])."""
         resp, dt = self.send_request('subscribe', symbols, timeout=timeout)
@@ -429,6 +484,14 @@ class LighterArgusClient:
 # so this stays honest about what the CLI actually calls. Trading actions are
 # intentionally excluded -- as of this writing none are wired into the
 # dispatcher's routing table yet (see argus/perpetuals/lighter/__init__.py).
+
+VENUE_NAME = "Lighter"
+
+
+class GauntletSkip(Exception):
+    """A check that cannot run against this dispatcher as configured (e.g. no account
+    credentials). Reported as SKIP and not counted as a failure."""
+
 
 class GauntletFailure(AssertionError):
     """Raised by a gauntlet check to record a readable failure reason."""
@@ -642,6 +705,100 @@ def _gauntlet_market_data_stream(client: 'LighterArgusClient', timeout: float) -
 
 # (display name, check function) -- add new read-only actions here as the
 # dispatcher's routing table grows. Trading actions should never be added.
+# -----------------------------------------------------------------------------
+# Account gauntlet checks
+# -----------------------------------------------------------------------------
+#
+# These validate the homogenous account records (argus/perpetuals/shared/account.py):
+# common fields present + numeric, and the venue payload nested under "venue". They
+# SKIP (rather than fail) when the dispatcher reports AccountNotConfiguredError, so
+# the gauntlet stays useful on a market-data-only deployment.
+
+_ACCOUNT_UNCONFIGURED_MARKERS = ("no account configured", "LIGHTER_ACCOUNT_INDEX", "LIGHTER_AUTH_TOKEN")
+
+
+def _account_call(fn):
+    try:
+        return fn()
+    except Exception as e:
+        if any(marker in str(e) for marker in _ACCOUNT_UNCONFIGURED_MARKERS):
+            raise GauntletSkip(str(e).split(': ', 1)[-1]) from e
+        raise
+
+
+def _validate_common(record: dict, fields: Tuple[str, ...], numeric: Tuple[str, ...], context: str) -> None:
+    _check(isinstance(record, dict), f"{context}: record is not an object")
+    for field in fields:
+        _check(field in record, f"{context}: missing '{field}'")
+    for field in numeric:
+        if record.get(field) is not None:
+            _check_numeric(record[field], field, context)
+    _check(isinstance(record.get('venue'), dict), f"{context}: 'venue' payload missing")
+
+
+def _gauntlet_get_balance(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    data, dt = _account_call(lambda: client.get_balance(timeout=int(timeout)))
+    _validate_common(data, ('account', 'account_value', 'available_balance', 'total_margin_used', 'total_position_notional'),
+                     ('account_value', 'available_balance', 'total_margin_used', 'total_position_notional'), 'balance')
+    return dt, f"account={data['account']} value={data['account_value']} available={data['available_balance']}"
+
+
+def _gauntlet_get_positions(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    positions, dt = _account_call(lambda: client.get_positions(timeout=int(timeout)))
+    _check(isinstance(positions, list), "'positions' is not a list")
+    for i, pos in enumerate(positions):
+        _validate_common(pos, ('name', 'signed_size', 'side', 'notional', 'unrealized_pnl'),
+                         ('signed_size', 'notional', 'unrealized_pnl', 'entry_price', 'liquidation_price'), f"positions[{i}]")
+        _check(pos['side'] in ('long', 'short'), f"positions[{i}]: bad side {pos['side']!r}")
+    return dt, f"{len(positions)} open position(s)" + (f", first={positions[0]['name']} {positions[0]['signed_size']}" if positions else "")
+
+
+def _gauntlet_get_orders(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    orders, dt = _account_call(lambda: client.get_orders(timeout=int(timeout)))
+    _check(isinstance(orders, list), "'orders' is not a list")
+    for i, order in enumerate(orders):
+        _validate_common(order, ('order_id', 'name', 'side', 'price', 'original_size', 'remaining_size', 'order_type', 'status', 'timestamp_ms'),
+                         ('price', 'original_size', 'remaining_size'), f"orders[{i}]")
+        _check(isinstance(order['order_id'], str), f"orders[{i}]: order_id must be a string")
+    return dt, f"{len(orders)} resting order(s)"
+
+
+def _gauntlet_get_order_status(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    orders, _ = _account_call(lambda: client.get_orders(limit=1, timeout=int(timeout)))
+    if orders:
+        order_id = orders[0]['order_id']
+        data, dt = client.get_order_status(order_id, timeout=int(timeout))
+        _check(data.get('found') is True, f"resting order {order_id} not found via get_order_status")
+        _check(data['order']['order_id'] == order_id, "returned order_id does not match")
+        return dt, f"order_id={order_id} status={data['order']['status']}"
+    data, dt = client.get_order_status("0", timeout=int(timeout))
+    _check(data.get('found') is False and data.get('order') is None, f"unknown order should be found=False, got {data!r}")
+    return dt, "no resting orders; unknown id correctly reports found=False"
+
+
+def _gauntlet_get_trades(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    trades, dt = _account_call(lambda: client.get_trades(limit=5, timeout=int(timeout)))
+    _check(isinstance(trades, list), "'trades' is not a list")
+    _check(len(trades) <= 5, "limit=5 not honoured")
+    for i, trade in enumerate(trades):
+        _validate_common(trade, ('trade_id', 'order_id', 'name', 'side', 'price', 'size', 'fee', 'is_maker', 'timestamp_ms'),
+                         ('price', 'size', 'fee', 'realized_pnl'), f"trades[{i}]")
+    return dt, f"{len(trades)} recent fill(s)" + (f", latest={trades[0]['name']} {trades[0]['side']} {trades[0]['size']}@{trades[0]['price']}" if trades else "")
+
+
+def _gauntlet_get_funding_payments(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    data, dt = _account_call(lambda: client.get_funding_payments(limit=5, timeout=int(timeout)))
+    _check(isinstance(data, dict), "response is not an object")
+    for field in ('account', 'start_time', 'end_time', 'funding_payments'):
+        _check(field in data, f"missing '{field}'")
+    payments = data['funding_payments']
+    _check(isinstance(payments, list) and len(payments) <= 5, "'funding_payments' malformed or limit not honoured")
+    for i, pay in enumerate(payments):
+        _validate_common(pay, ('name', 'timestamp_ms', 'rate', 'position_size', 'payment'),
+                         ('rate', 'position_size', 'payment'), f"funding_payments[{i}]")
+    return dt, f"{len(payments)} settlement(s) in the default 7-day window"
+
+
 GAUNTLET_CHECKS: List[Tuple[str, Callable[['LighterArgusClient', float], Tuple[float, str]]]] = [
     ("products_version", _gauntlet_products_version),
     ("get_markets", _gauntlet_get_markets),
@@ -650,6 +807,12 @@ GAUNTLET_CHECKS: List[Tuple[str, Callable[['LighterArgusClient', float], Tuple[f
     ("get_funding_history", _gauntlet_get_funding_history),
     ("search_perpetuals", _gauntlet_search_perpetuals),
     ("get_funding_rate", _gauntlet_get_funding_rate),
+    ("get_balance", _gauntlet_get_balance),
+    ("get_positions", _gauntlet_get_positions),
+    ("get_orders", _gauntlet_get_orders),
+    ("get_order_status", _gauntlet_get_order_status),
+    ("get_trades", _gauntlet_get_trades),
+    ("get_funding_payments", _gauntlet_get_funding_payments),
     ("market_data (subscribe/P2 lifecycle)", _gauntlet_market_data_stream),
 ]
 
@@ -669,21 +832,24 @@ def run_gauntlet(client: 'LighterArgusClient', timeout: float = 15.0) -> bool:
             status, message = "PASS", detail
         except GauntletFailure as e:
             status, message, dt = "FAIL", str(e), time.perf_counter() - start
+        except GauntletSkip as e:
+            status, message, dt = "SKIP", str(e), time.perf_counter() - start
         except socket.timeout:
             status, message, dt = "FAIL", f"timed out after {timeout:.0f}s", time.perf_counter() - start
         except Exception as e:
             status, message, dt = "ERROR", f"{type(e).__name__}: {e}", time.perf_counter() - start
 
         results.append((name, status, dt, message))
-        icon = {"PASS": "✓", "FAIL": "✗", "ERROR": "‼"}[status]
+        icon = {"PASS": "✓", "FAIL": "✗", "ERROR": "‼", "SKIP": "-"}[status]
         print(f"  {icon} {name:<40} {status:<6} {dt*1000:>8.1f}ms  {message}")
 
     passed = sum(1 for _, status, _, _ in results if status == "PASS")
+    skipped = sum(1 for _, status, _, _ in results if status == "SKIP")
     total = len(results)
     print("=" * 72)
-    print(f"  {passed}/{total} checks passed")
+    print(f"  {passed}/{total} checks passed" + (f" ({skipped} skipped)" if skipped else ""))
     print("=" * 72 + "\n")
-    return passed == total
+    return passed + skipped == total
 
 
 # =============================================================================
@@ -782,6 +948,86 @@ def format_perpetuals(perps: List[dict], limit: Optional[int] = None) -> str:
         )
     shown = len(perps) if limit is None else min(limit, len(perps))
     output.append(f"\nShowing {shown} of {len(perps)} market(s)")
+    return "\n".join(output)
+
+
+def _ts(ms: Any) -> str:
+    try:
+        return datetime.fromtimestamp(int(ms) / 1000).strftime('%Y-%m-%d %H:%M:%S')
+    except (TypeError, ValueError, OSError):
+        return str(ms)
+
+
+def format_balance(data: dict) -> str:
+    return "\n".join([
+        "\n" + "=" * 60,
+        f"BALANCE ({VENUE_NAME} account {data.get('account')})",
+        "=" * 60,
+        f"  Account value:      {data.get('account_value')}",
+        f"  Available:          {data.get('available_balance')}",
+        f"  Margin used:        {data.get('total_margin_used')}",
+        f"  Position notional:  {data.get('total_position_notional')}",
+        "=" * 60,
+    ])
+
+
+def format_positions(positions: List[dict]) -> str:
+    output = [f"\n{'NAME':<12} {'SIDE':<6} {'SIZE':<16} {'ENTRY':<14} {'NOTIONAL':<14} {'UPNL':<14} {'LIQ PX':<14} {'LEV':<6}", "=" * 100]
+    if not positions:
+        output.append("  (no open positions)")
+    for p in positions:
+        output.append(f"{p.get('name', ''):<12} {p.get('side', ''):<6} {p.get('signed_size', ''):<16} {str(p.get('entry_price')):<14} "
+                      f"{p.get('notional', ''):<14} {p.get('unrealized_pnl', ''):<14} {str(p.get('liquidation_price')):<14} {str(p.get('leverage')):<6}")
+    output.append("=" * 100)
+    return "\n".join(output)
+
+
+def format_orders(orders: List[dict]) -> str:
+    output = [f"\n{'ORDER ID':<20} {'NAME':<12} {'SIDE':<5} {'PRICE':<14} {'REMAINING/ORIG':<22} {'TYPE':<12} {'STATUS':<10} {'PLACED':<20}", "=" * 120]
+    if not orders:
+        output.append("  (no orders)")
+    for o in orders:
+        output.append(f"{o.get('order_id', ''):<20} {o.get('name', ''):<12} {o.get('side', ''):<5} {o.get('price', ''):<14} "
+                      f"{o.get('remaining_size', '')}/{o.get('original_size', ''):<12} {o.get('order_type', ''):<12} {o.get('status', ''):<10} {_ts(o.get('timestamp_ms')):<20}")
+    output.append("=" * 120)
+    return "\n".join(output)
+
+
+def format_order_status(data: dict) -> str:
+    if not data.get('found'):
+        return "\n  Order not found."
+    return format_orders([data['order']])
+
+
+def format_trades(trades: List[dict]) -> str:
+    output = [f"\n{'TIME':<20} {'NAME':<12} {'SIDE':<5} {'SIZE':<14} {'PRICE':<14} {'FEE':<12} {'MAKER':<6} {'PNL':<12} {'ORDER ID':<20}", "=" * 120]
+    if not trades:
+        output.append("  (no fills)")
+    for t in trades:
+        output.append(f"{_ts(t.get('timestamp_ms')):<20} {t.get('name', ''):<12} {t.get('side', ''):<5} {t.get('size', ''):<14} {t.get('price', ''):<14} "
+                      f"{t.get('fee', ''):<12} {str(t.get('is_maker')):<6} {str(t.get('realized_pnl')):<12} {t.get('order_id', ''):<20}")
+    output.append("=" * 120)
+    return "\n".join(output)
+
+
+def format_funding_payments(data: dict) -> str:
+    payments = data.get('funding_payments') or []
+    output = [
+        f"\nFunding payments {_ts(data.get('start_time'))} -> {_ts(data.get('end_time'))} (account {data.get('account')})",
+        f"{'TIME':<20} {'NAME':<12} {'RATE':<14} {'POSITION':<16} {'PAYMENT':<14}",
+        "=" * 80,
+    ]
+    if not payments:
+        output.append("  (no settlements in window)")
+    total = 0.0
+    for p in payments:
+        output.append(f"{_ts(p.get('timestamp_ms')):<20} {p.get('name', ''):<12} {p.get('rate', ''):<14} {p.get('position_size', ''):<16} {p.get('payment', ''):<14}")
+        try:
+            total += float(p.get('payment') or 0)
+        except (TypeError, ValueError):
+            pass
+    output.append("=" * 80)
+    output.append(f"  Net over shown page: {total:+.6f}")
     return "\n".join(output)
 
 
@@ -903,6 +1149,12 @@ def print_help():
     print("  search <keyword>           - Fuzzy-search market symbols (e.g. search BTC)")
     print("  rate <symbol>              - Show the live hourly + annualized funding rate for one symbol")
     print("  sub <symbol>               - Subscribe to live order book + system pushes (e.g. funding rate updates), Ctrl+C to stop")
+    print("  balance                    - Account equity/margin")
+    print("  positions [offset] [limit] - Open positions")
+    print("  orders [offset] [limit]    - Resting orders, newest first")
+    print("  order <order_id>           - Look up one order by venue id (any state)")
+    print("  trades [offset] [limit]    - Recent fills, newest first")
+    print("  fundingpay [days] [limit]  - Funding settlements over the last N days (default: 7)")
     print("  test | gauntlet            - Call every known read-only action and validate the responses")
     print("  clear                      - Clear screen")
     print("  help                       - Show this help")
@@ -937,6 +1189,45 @@ def interactive_loop(client: LighterArgusClient):
                 import os
                 os.system('clear' if os.name == 'posix' else 'cls')
                 print_banner(client.host, client.port)
+            elif query.lower().split()[0] in ('balance', 'positions', 'orders', 'order', 'trades', 'fundingpay'):
+                cmd, *parts = query.split()
+                cmd = cmd.lower()
+                nums = [int(p) for p in parts if p.isdigit()]
+                offset = nums[0] if len(nums) > 0 else 0
+                limit = nums[1] if len(nums) > 1 else None
+                try:
+                    if cmd == 'balance':
+                        data, dt = client.get_balance()
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_balance(data))
+                    elif cmd == 'positions':
+                        positions, dt = client.get_positions(offset=offset, limit=limit)
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_positions(positions))
+                    elif cmd == 'orders':
+                        orders, dt = client.get_orders(offset=offset, limit=limit)
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_orders(orders))
+                    elif cmd == 'order':
+                        if not parts:
+                            print("Usage: order <order_id>")
+                        else:
+                            data, dt = client.get_order_status(parts[0])
+                            print(f"✓ Fetched in {dt*1000:.1f}ms")
+                            print(format_order_status(data))
+                    elif cmd == 'trades':
+                        trades, dt = client.get_trades(offset=offset, limit=limit)
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_trades(trades))
+                    elif cmd == 'fundingpay':
+                        days = nums[0] if len(nums) > 0 else 7
+                        page_limit = nums[1] if len(nums) > 1 else None
+                        now_ms = int(time.time() * 1000)
+                        data, dt = client.get_funding_payments(start_time=now_ms - days * 86_400_000, end_time=now_ms, limit=page_limit)
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(format_funding_payments(data))
+                except Exception as e:
+                    print(f"✗ {cmd} failed: {e}")
             elif query.lower() == 'version':
                 try:
                     data, dt = client.products_version()
