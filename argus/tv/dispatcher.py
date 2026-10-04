@@ -213,6 +213,14 @@ class DispatcherQuoteSession(QuoteSession):
             super().send_msg(msg)
 
 
+# TradingView silently stops delivering `qsd` quote updates on a long-lived quote session
+# (the socket stays open -- ~h~ heartbeats keep flowing -- but the server-side symbol
+# subscription goes stale) after roughly a minute of no session activity. Replaying the
+# roster (quote_remove_symbols + quote_add_symbols) counts as session activity and
+# restarts the quote stream, so the dispatcher nudges the roster on this cadence.
+KEEPALIVE_INTERVAL_SECONDS = 25
+
+
 class TradingViewQuoteWss:
     """
     Lifecycle wrapper around DispatcherQuoteSession: runs the single shared upstream
@@ -220,22 +228,41 @@ class TradingViewQuoteWss:
     the dispatcher. Reconnection is websocket-client's built-in `reconnect=1` (1s delay,
     forever); DispatcherQuoteSession re-runs its handshake and replays the full roster on
     every (re)connect, so clients never need to re-subscribe.
+
+    A background keepalive thread also replays the roster periodically -- without it the
+    upstream stops pushing quotes after ~a minute even though the socket stays open (see
+    KEEPALIVE_INTERVAL_SECONDS).
     """
 
     def __init__(self, on_quote=None, send_auth=False, initial_symbols=()):
         self._on_quote = on_quote
         self.session = DispatcherQuoteSession(initial_symbols=initial_symbols,
                                               callback=self._dispatch, sendAuth=send_auth)
+        self._keepalive_stop = threading.Event()
 
     def _dispatch(self, symbol: str, values: dict):
         if self._on_quote is not None:
             self._on_quote(symbol, values)
+
+    def _keepalive_loop(self):
+        """Periodically replay the symbol roster to keep the upstream quote subscription
+        fresh; exits once close() is called."""
+        while not self._keepalive_stop.wait(KEEPALIVE_INTERVAL_SECONDS):
+            symbols = self.session.symbols
+            if not symbols:
+                continue
+            try:
+                self.session.remove_symbols(symbols)
+                self.session.add_symbols(symbols)
+            except Exception as e:
+                pi.prt(f"TradingView keepalive failed for {symbols}: {e}")
 
     @runAsThread
     def run(self, main_thread=False):
         """Run the upstream session forever. `main_thread` is accepted for API parity
         with the other Argus market-data WSS classes (it is always a background thread)."""
         _ = main_thread
+        threading.Thread(target=self._keepalive_loop, name='tv-quote-keepalive', daemon=True).start()
         try:
             self.session.ws.run_forever(reconnect=1, skip_utf8_validation=True)
         except KeyboardInterrupt:
@@ -244,6 +271,7 @@ class TradingViewQuoteWss:
             traceback.print_exc()
 
     def close(self):
+        self._keepalive_stop.set()
         self.session.ws.keep_running = False
         try:
             self.session.ws.close()

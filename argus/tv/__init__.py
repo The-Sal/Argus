@@ -100,9 +100,19 @@ class TradingViewConnection:
         raise NotImplementedError("on_message method not implemented")
 
     def heartbeat_reply(self, heartbeat_msg):
-        """Handle heartbeat messages"""
-        # Heartbeat messages are usually just echoed back
-        self.ws.send(heartbeat_msg)
+        """Echo TradingView's heartbeat(s) back.
+
+        A single websocket frame can bundle several ~m~-framed messages (e.g. a heartbeat
+        followed by qsd quote data), and heartbeat_reply receives the RAW frame. Echo only
+        the heartbeat segments -- replaying the bundled quote JSON back to TradingView is
+        both pointless and noisy.
+        """
+        if isinstance(heartbeat_msg, (bytes, bytearray)):
+            heartbeat_msg = bytes(heartbeat_msg).decode('utf-8', errors='replace')
+        delim = '~m~'
+        for part in heartbeat_msg.split(delim):
+            if part.startswith('~h~'):
+                self.ws.send(f"{delim}{len(part)}{delim}{part}")
 
     def on_open(self, ws):
         """Handle WebSocket connection open event"""

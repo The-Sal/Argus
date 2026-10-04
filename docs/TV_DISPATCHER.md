@@ -37,6 +37,23 @@ d.interactive_mode()    # REPL: toggle P2 printing, list upstream symbols, clear
 Optional auth: set the `TOKEN` env var to a TradingView auth token (same convention as the rest
 of `argus.tv`). Without it the dispatcher connects anonymously.
 
+### Interactive CLI client
+
+`tests/tv_cli.py` is an interactive TCP client for the dispatcher (same house style as
+`tests/hyper_cli.py` / `tests/lighter_cli.py`). It speaks the P1/P2 protocol directly and
+supports one-shot commands plus live quote streaming:
+
+```bash
+python tests/tv_cli.py --host localhost --port 9974   # interactive prompt
+python tests/tv_cli.py --test                          # read-only gauntlet, then exit
+```
+
+Interactive commands: `ping`, `version`, `subs` (this client's subscriptions),
+`sub <EXCHANGE:SYMBOL> [more...]` (live streaming with per-packet latency; Ctrl+C stops and
+prints stats), `unsub <symbol...>`, `snap <symbol>` (one-shot quote snapshot), `test`/
+`gauntlet`, `clear`, `help`, `quit`. Symbols use TradingView's `EXCHANGE:SYMBOL` format
+(e.g. `BINANCE:BTCUSD`, `NASDAQ:AAPL`).
+
 ---
 
 ## Protocol 1 — request/response
@@ -251,4 +268,5 @@ while True:
 |-----------------------------|-------------------------------------------------------------------------------|
 | `argus/tv/dispatcher.py`    | `TradingViewDispatcher`, `TVP2ConvertClass`, `TradingViewQuoteWss`, `DispatcherQuoteSession` |
 | `argus/tv/__init__.py`      | pre-existing TV protocol classes (`QuoteSession`, ...); now also exports the dispatcher |
+| `tests/tv_cli.py`           | interactive CLI client (P1 commands + live quote streaming; `--test` gauntlet) |
 | `tests/test_tv_dispatcher.py` | offline unit tests (P2 round-trip, session roster logic, P1 routing)        |
