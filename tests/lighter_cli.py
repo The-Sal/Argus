@@ -11,9 +11,12 @@ Usage:
 Protocol:
     - P1 (control): ~NNNN|<json-payload>
     Every Lighter request MUST include a "correlation_id".
-    Once a client has subscribed, the same socket also carries unsolicited P1
-    system pushes (e.g. the hourly refreshed funding rate, action "market_info";
-    see LighterDispatcher._distribute_refreshed_perpetuals).
+    Every connected client also receives unsolicited P1 `account_update` pushes
+    (event "order" / "fill" / "gap") with no `subscribe` required -- so a client must
+    skip pushes (and any stale replies) while waiting for a request's reply; see
+    `LighterArgusClient.send_request` / `PUSH_ACTIONS`.
+    Once a client has subscribed, the same socket also carries the hourly refreshed
+    funding rate push; see LighterDispatcher._distribute_refreshed_perpetuals.
     - P2 (async market-data push): ~<packet-length><symbol-length>|<symbol><csv-data>L
     Pushed unsolicited once a client has `subscribe`d to one or more symbols (see
     LighterDispatcher._order_book_update_callback / argus/perpetuals/lighter/wss.py).
@@ -230,6 +233,8 @@ class LighterArgusClient:
         self.socket: Optional[socket.socket] = None
         self.p2_parser = P2PacketParser()
         self._recv_buffer = b''
+        #: Server pushes (e.g. account_update) encountered while waiting for a request's reply.
+        self.pushes: List[Dict[str, Any]] = []
 
     def connect(self) -> None:
         try:
@@ -267,6 +272,9 @@ class LighterArgusClient:
                 raise ConnectionError("Server closed connection before responding.")
             self._recv_buffer += chunk
 
+    #: Server-initiated message actions that can interleave with a request's reply.
+    PUSH_ACTIONS = ('account_update', 'fatal_error', 'funding_rate_update')
+
     def send_request(self, action: str, data: Any = None, timeout: int = 30) -> Tuple[dict, float]:
         """Send a P1 request (with a fresh correlation_id) and return (response, round-trip time)."""
         if data is None:
@@ -284,15 +292,28 @@ class LighterArgusClient:
         try:
             t0 = time.perf_counter()
             self.socket.sendall(packet)
-            payload = self._recv_framed_payload()
+            deadline = t0 + timeout
+            while True:
+                # The dispatcher pushes account_update / fatal_error / funding_rate_update on the same
+                # stream (e.g. an order event right after place_order), so the next frame is not
+                # necessarily this request's reply: skip pushes and stale replies until ours comes back.
+                self.socket.settimeout(max(deadline - time.perf_counter(), 0.001))
+                payload = self._recv_framed_payload()
+                response = json.loads(payload.decode('utf-8'))
+                response = protocol.decompress_p1_response(response)
+                action_field = response.get('action')
+                resp_corr_id = response.get('correlation_id')
+
+                # An unsolicited push is never a reply, even if it somehow carried our correlation id.
+                if action_field in self.PUSH_ACTIONS:
+                    self.pushes.append(response)
+                    continue
+                if resp_corr_id == correlation_id:
+                    break
+                if resp_corr_id is None:
+                    break  # an error raised before the packet was attributed carries no correlation_id
+                print(f"  ⚠ Skipping stale response {resp_corr_id} (waiting for {correlation_id})")
             elapsed = time.perf_counter() - t0
-
-            response = json.loads(payload.decode('utf-8'))
-            response = protocol.decompress_p1_response(response)
-
-            resp_corr_id = response.get('correlation_id')
-            if resp_corr_id is not None and resp_corr_id != correlation_id:
-                print(f"  ⚠ Warning: response correlation_id {resp_corr_id} does not match request {correlation_id}")
 
             return response, elapsed
         finally:
@@ -408,6 +429,75 @@ class LighterArgusClient:
         if end_time is not None:
             data['end_time'] = end_time
         return self._account_request('get_funding_payments', data, None, timeout)
+
+    # --- trading (signed; see argus/perpetuals/lighter/exchange.py) ---
+    #
+    # Lighter has no synchronous per-order status: place_order answers status "submitted" and
+    # confirmation arrives via get_orders / get_order_status. A client order id is Lighter's
+    # `client_order_index` (a uint48 integer), not a 0x cloid.
+
+    def get_leverage(self, coin: str, timeout: int = 30) -> Tuple[dict, float]:
+        """The leverage in force on `coin` plus its max / allowed margin modes (read-only)."""
+        return self._account_request('get_leverage', {'coin': coin}, None, timeout)
+
+    def set_leverage(self, coin: str, leverage: int, margin_mode: Optional[str] = None,
+                     timeout: int = 30) -> Tuple[dict, float]:
+        """Set `coin`'s leverage (REAL account change). `margin_mode` None keeps the current mode."""
+        data: Dict[str, Any] = {'coin': coin, 'leverage': leverage}
+        if margin_mode:
+            data['margin_mode'] = margin_mode
+        return self._account_request('set_leverage', data, None, timeout)
+
+    @staticmethod
+    def order_spec(coin: str, side: str, price: Any, size: Any, leverage: int, margin_mode: Optional[str] = None,
+                   order_type: str = 'GTC', reduce_only: bool = False, cloid: Optional[int] = None) -> Dict[str, Any]:
+        """One order dict in the shape `place_order` / `place_multiple_orders` take (leverage is required).
+        `cloid` is Lighter's `client_order_index` (a uint48 integer); omit it to let the venue choose one."""
+        spec: Dict[str, Any] = {'coin': coin, 'side': side, 'price': price, 'size': size,
+                                'leverage': leverage, 'order_type': order_type}
+        if margin_mode:
+            spec['margin_mode'] = margin_mode
+        if reduce_only:
+            spec['reduce_only'] = True
+        if cloid is not None:
+            spec['cloid'] = cloid
+        return spec
+
+    def place_order(self, coin: str, side: str, price: Any, size: Any, leverage: int,
+                    margin_mode: Optional[str] = None, order_type: str = 'GTC',
+                    reduce_only: bool = False, cloid: Optional[int] = None,
+                    timeout: int = 30) -> Tuple[dict, float]:
+        """Place one limit order at `leverage`. The reply's `status` is always "submitted"; confirm via
+        get_orders. A venue-level rejection comes back in the reply's 'error' field, not as an exception."""
+        data = self.order_spec(coin, side, price, size, leverage, margin_mode, order_type, reduce_only, cloid)
+        return self._account_request('place_order', data, None, timeout)
+
+    def place_multiple_orders(self, orders: List[Dict[str, Any]], timeout: int = 30) -> Tuple[dict, float]:
+        """Place several orders in one signed batch; build items with `order_spec`."""
+        return self._account_request('place_multiple_orders', {'orders': orders}, None, timeout)
+
+    def cancel_order(self, order_id: Any, coin: Optional[str] = None, timeout: int = 30) -> Tuple[dict, float]:
+        """Cancel one order. `order_id` is a numeric `order_index`, a venue `order_id` string, or a client
+        id written 'c:<client_order_index>'. Omitting `coin` makes the dispatcher resolve it (one read)."""
+        data: Dict[str, Any] = {'order_id': order_id}
+        if coin:
+            data['coin'] = coin
+        return self._account_request('cancel_order', data, None, timeout)
+
+    def cancel_multiple_orders(self, orders: List[Dict[str, Any]], timeout: int = 30) -> Tuple[dict, float]:
+        """Cancel several orders; items are {'order_id': order_index|order_id|'c:<client>', 'coin': optional}."""
+        return self._account_request('cancel_multiple_orders', {'orders': orders}, None, timeout)
+
+    def cancel_all_orders(self, coin: Optional[str] = None, dex: Optional[str] = None,
+                          timeout: int = 60) -> Tuple[dict, float]:
+        """Cancel EVERY resting order (optionally one market) via Lighter's native immediate cancel-all.
+        Real and indiscriminate. Returns {'status': 'submitted', 'txHash', 'marketIndex'}."""
+        data: Dict[str, Any] = {}
+        if coin:
+            data['coin'] = coin
+        if dex is not None:
+            data['dex'] = dex
+        return self._account_request('cancel_all_orders', data, None, timeout)
 
     def subscribe(self, symbols: List[str], timeout: int = 30) -> Tuple[dict, float]:
         """Subscribe to live order book updates for one or more symbols (e.g. ['BTC'])."""
@@ -799,6 +889,146 @@ def _gauntlet_get_funding_payments(client: 'LighterArgusClient', timeout: float)
     return dt, f"{len(payments)} settlement(s) in the default 7-day window"
 
 
+# --- trading checks (side-effect-free, then opt-in execution) -----------------------------------------
+
+TRADE_COIN = 'BTC'
+SAFE_LIMIT_FRACTION = 0.4       # buy at 40% of mark: cannot be crossed, so it only ever rests
+
+#: Set from `--enable-execution` in `main`; the lifecycle check SKIPs unless it is on.
+EXECUTION_ENABLED = False
+
+
+def _require_trade_opt_in() -> None:
+    if not EXECUTION_ENABLED:
+        raise GauntletSkip("pass --enable-execution to run checks that touch the real account")
+
+
+def _gauntlet_get_leverage(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    data, dt = client.get_leverage('BTC', timeout=int(timeout))
+    for field in ('coin', 'leverage', 'max_leverage', 'allowed_margin_modes'):
+        _check(field in data, f"missing '{field}'")
+    lev = data['leverage']
+    _check(lev.get('type') in ('cross', 'isolated') and isinstance(lev.get('value'), int), f"bad leverage {lev!r}")
+    _check(1 <= lev['value'] <= data['max_leverage'], f"leverage {lev['value']} outside 1..{data['max_leverage']}")
+    return dt, f"BTC {lev['value']}x {lev['type']} (max {data['max_leverage']}x)"
+
+
+def _gauntlet_kill_switch_flag(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    data, dt = client.products_version(timeout=int(timeout))
+    _check(isinstance(data.get('order_execution_blocked'), bool), "products_version lacks boolean 'order_execution_blocked'")
+    return dt, f"order_execution_blocked={data['order_execution_blocked']}"
+
+
+def _expect_error(client: 'LighterArgusClient', action: str, data: dict, fragment: str, timeout: float) -> None:
+    """Send a deliberately invalid request and require the dispatcher to refuse it (nothing is placed)."""
+    resp, _ = client.send_request(action, data, timeout=int(timeout))
+    error = resp.get('error')
+    if error and 'blocked' in error.lower():
+        raise GauntletSkip("order execution is blocked on this dispatcher")
+    _check(bool(error) and fragment in error, f"{action}: expected an error containing {fragment!r}, got {resp!r}")
+
+
+def _gauntlet_trading_validation(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    """Side-effect-free: every request here is invalid and must be refused before anything is signed."""
+    start = time.perf_counter()
+    _expect_error(client, 'place_order', {'coin': 'BTC', 'side': 'buy', 'price': '1', 'size': '1'}, 'leverage', timeout)
+    _expect_error(client, 'place_order', {'coin': 'BTC', 'side': 'buy', 'price': '1', 'size': '1', 'leverage': 1.5}, 'leverage', timeout)
+    _expect_error(client, 'place_multiple_orders', {'orders': []}, 'orders', timeout)
+    _expect_error(client, 'set_leverage', {'coin': 'BTC'}, 'leverage', timeout)
+    _expect_error(client, 'cancel_multiple_orders', {'orders': []}, 'orders', timeout)
+    return time.perf_counter() - start, "5 invalid trading requests refused client-side"
+
+
+def _find_test_order(client: 'LighterArgusClient', cloid: int, timeout: float) -> Optional[dict]:
+    """Poll get_orders until the order with this client_order_index is resting (place is async on Lighter)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        orders, _ = client.get_orders(timeout=int(timeout))
+        match = next((o for o in orders if o.get('client_order_id') == str(cloid)), None)
+        if match is not None:
+            return match
+        time.sleep(0.5)
+    return None
+
+
+def _wait_until_absent(client: 'LighterArgusClient', cloid: int, timeout: float) -> bool:
+    """Poll get_orders until the order with this client_order_index is gone (cancel is async too)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        orders, _ = client.get_orders(timeout=int(timeout))
+        if not any(o.get('client_order_id') == str(cloid) for o in orders):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _gauntlet_trading_lifecycle(client: 'LighterArgusClient', timeout: float) -> Tuple[float, str]:
+    """place_order / place_multiple_orders / cancel_order / cancel_multiple_orders / cancel_all_orders end to
+    end, using far-below-market buys at the leverage already in force. Everything is swept in `finally`."""
+    import math
+    _require_trade_opt_in()
+    t = int(timeout)
+    start = time.perf_counter()
+    info, _ = client.market_info(symbol=TRADE_COIN, timeout=t)
+    _check(info is not None, f"unknown market {TRADE_COIN}")
+    context = info.get('context') or {}
+    market = info.get('market') or {}
+    mark = float(context.get('mark_price'))
+    price_decimals = int(market.get('price_decimals', 0))
+    size_decimals = int(market.get('size_decimals', 0))
+    min_quote = float(market.get('min_quote_amount', 0))
+    min_base = float(market.get('min_base_amount', 0))
+    lev_info, _ = client.get_leverage(TRADE_COIN, timeout=t)
+    lev = lev_info['leverage']
+    px = round(mark * SAFE_LIMIT_FRACTION, price_decimals)
+    unit = 10 ** -size_decimals
+    size = f"{max(math.ceil(min_quote / px / unit) * unit, min_base):.{size_decimals}f}"
+    base = int(time.time() * 1000) % (1 << 40)
+    cloids = [base + i for i in range(5)]
+    spec = lambda c: client.order_spec(TRADE_COIN, 'buy', str(px), size, lev['value'], lev['type'], cloid=c)
+
+    def sweep() -> None:
+        try:
+            client.cancel_all_orders(coin=TRADE_COIN, timeout=t)
+        except Exception:
+            pass
+
+    try:
+        single, _ = client.place_order(TRADE_COIN, 'buy', str(px), size, lev['value'], lev['type'], cloid=cloids[0], timeout=t)
+        _check(not single.get('error') and single.get('status') == 'submitted', f"place_order rejected: {single!r}")
+        _check(single.get('clientOrderIndex') == cloids[0], f"clientOrderIndex mismatch: {single!r}")
+        resting = _find_test_order(client, cloids[0], t)
+        _check(resting is not None, f"order {cloids[0]} did not rest within {t}s")
+        _check(resting['name'] == TRADE_COIN, f"unexpected symbol {resting['name']!r}")
+        cancelled, _ = client.cancel_order(resting['order_id'], coin=TRADE_COIN, timeout=t)
+        _check(not cancelled.get('errors'), f"cancel_order errors: {cancelled!r}")
+        _check(_wait_until_absent(client, cloids[0], t), f"order {cloids[0]} still resting after cancel")
+
+        batch, _ = client.place_multiple_orders([spec(cloids[1]), spec(cloids[2])], timeout=t)
+        _check(batch['ok_count'] == 2 and len(batch['results']) == 2, f"batch not fully accepted: {batch!r}")
+        _check(_find_test_order(client, cloids[1], t) and _find_test_order(client, cloids[2], t),
+               "batch orders did not rest")
+        cancel2, _ = client.cancel_multiple_orders(
+            [{'order_id': f'c:{cloids[1]}', 'coin': TRADE_COIN}, {'order_id': f'c:{cloids[2]}', 'coin': TRADE_COIN}], timeout=t)
+        _check(cancel2['ok_count'] == 2, f"cancel_multiple_orders: {cancel2!r}")
+        _check(_wait_until_absent(client, cloids[1], t) and _wait_until_absent(client, cloids[2], t),
+               "batch orders still resting after cancel")
+
+        client.place_multiple_orders([spec(cloids[3]), spec(cloids[4])], timeout=t)
+        _check(_find_test_order(client, cloids[3], t) and _find_test_order(client, cloids[4], t),
+               "sweep orders did not rest")
+        swept, _ = client.cancel_all_orders(coin=TRADE_COIN, timeout=t)
+        _check(swept.get('status') == 'submitted', f"cancel_all_orders: {swept!r}")
+        _check(_wait_until_absent(client, cloids[3], t) and _wait_until_absent(client, cloids[4], t),
+               "sweep orders still resting")
+        left, _ = client.get_orders(timeout=t)
+        mine = [o for o in left if o.get('client_order_id') in [str(c) for c in cloids]]
+        _check(not mine, f"{len(mine)} test order(s) still resting")
+    finally:
+        sweep()
+    return time.perf_counter() - start, f"{TRADE_COIN} {size} @ {px} at {lev['value']}x {lev['type']}: place/batch/cancel/sweep ok, nothing left"
+
+
 GAUNTLET_CHECKS: List[Tuple[str, Callable[['LighterArgusClient', float], Tuple[float, str]]]] = [
     ("products_version", _gauntlet_products_version),
     ("get_markets", _gauntlet_get_markets),
@@ -813,14 +1043,19 @@ GAUNTLET_CHECKS: List[Tuple[str, Callable[['LighterArgusClient', float], Tuple[f
     ("get_order_status", _gauntlet_get_order_status),
     ("get_trades", _gauntlet_get_trades),
     ("get_funding_payments", _gauntlet_get_funding_payments),
+    ("get_leverage", _gauntlet_get_leverage),
+    ("kill switch flag", _gauntlet_kill_switch_flag),
+    ("trading validation (no side effects)", _gauntlet_trading_validation),
+    ("trading lifecycle (opt-in)", _gauntlet_trading_lifecycle),
     ("market_data (subscribe/P2 lifecycle)", _gauntlet_market_data_stream),
 ]
 
 
 def run_gauntlet(client: 'LighterArgusClient', timeout: float = 15.0) -> bool:
-    """Calls every known read-only action against a live dispatcher and validates the shape of each response."""
+    """Calls every known action against a live dispatcher and validates the shape of each response.
+    Trading checks are side-effect-free unless `--enable-execution` set EXECUTION_ENABLED."""
     print("\n" + "=" * 72)
-    print("LIGHTER DISPATCHER GAUNTLET (read-only actions, live endpoint)")
+    print("LIGHTER DISPATCHER GAUNTLET (live endpoint; trading lifecycle is opt-in)")
     print(f"  per-check timeout: {timeout:.0f}s")
     print("=" * 72)
 
@@ -1044,6 +1279,55 @@ def format_system_push(push: Dict[str, Any]) -> str:
     return f"[push] {action}: {data}"
 
 
+def format_account_update(push: Dict[str, Any]) -> str:
+    """Format one `account_update` push (event: order | fill | gap) as a single line."""
+    data = push.get('data') or {}
+    event = data.get('event')
+    if event == 'order':
+        o = data.get('order') or {}
+        cid = f" c:{o['client_order_id']}" if o.get('client_order_id') else ""
+        return (f"[{_ts(o.get('status_timestamp_ms'))}] ORDER  {o.get('name')} {o.get('side')} "
+                f"px={o.get('price')} size={o.get('remaining_size')}/{o.get('original_size')} "
+                f"status={o.get('status')} id={o.get('order_id')}{cid}")
+    if event == 'fill':
+        t = data.get('trade') or {}
+        role = 'maker' if t.get('is_maker') else 'taker'
+        return (f"[{_ts(t.get('timestamp_ms'))}] FILL   {t.get('name')} {t.get('side')} "
+                f"px={t.get('price')} size={t.get('size')} fee={t.get('fee')} ({role}) "
+                f"pnl={t.get('realized_pnl')} order={t.get('order_id')}")
+    if event == 'gap':
+        return (f"[gap] account stream interrupted ({data.get('reason')}), events since "
+                f"{_ts(data.get('since_ms'))} may be missed -- reconcile with `orders` / `trades`")
+    return format_system_push(push)
+
+
+def watch_account_mode(client: LighterArgusClient):
+    """
+    Print the dispatcher's `account_update` pushes (order transitions, fills, gaps) live.
+    Every connected client receives them without subscribing. Ctrl+C to stop.
+    """
+    counts: Dict[str, int] = {}
+
+    def show(push: Dict[str, Any]) -> None:
+        if push.get('action') == 'account_update':
+            event = (push.get('data') or {}).get('event', '?')
+            counts[event] = counts.get(event, 0) + 1
+        print(format_account_update(push))
+
+    print("\n👀 Watching account updates (orders, fills, gaps)... Press Ctrl+C to stop.")
+    backlog, client.pushes = client.pushes, []
+    for push in backlog:
+        show(push)
+    try:
+        while True:
+            _, pushes = client.receive_packets(timeout=0.1)
+            for push in pushes:
+                show(push)
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        print(f"\n🛑 Stopped. Events seen: {counts or 'none'}")
+
+
 # =============================================================================
 # Live market-data streaming (P2)
 # =============================================================================
@@ -1155,7 +1439,13 @@ def print_help():
     print("  order <order_id>           - Look up one order by venue id (any state)")
     print("  trades [offset] [limit]    - Recent fills, newest first")
     print("  fundingpay [days] [limit]  - Funding settlements over the last N days (default: 7)")
-    print("  test | gauntlet            - Call every known read-only action and validate the responses")
+    print("  leverage <symbol>          - Leverage in force + max/allowed margin modes (read-only)")
+    print("  setlev <symbol> <n> [mode] - Set leverage (REAL account change); mode is cross|isolated")
+    print("  place <sym> <side> <px> <sz> <lev> [type] - Place a limit order (REAL; type GTC|IOC|ALO)")
+    print("  cancel <order_id> [symbol] - Cancel one order (REAL); order_id = order_index | order_id | c:<client>")
+    print("  cancelall [symbol]         - Cancel EVERY resting order via native immediate cancel-all (REAL)")
+    print("  watch                      - Live-print account updates (order transitions, fills, gaps), Ctrl+C to stop")
+    print("  test | gauntlet            - Call every known action and validate the responses")
     print("  clear                      - Clear screen")
     print("  help                       - Show this help")
     print("  quit                       - Exit the program")
@@ -1321,6 +1611,62 @@ def interactive_loop(client: LighterArgusClient):
                     print("✗ Please provide a symbol. Usage: sub <symbol>")
                 else:
                     subscribe_market_data_mode(client, symbol)
+            elif query.lower().startswith('leverage '):
+                parts = query.split()[1:]
+                if not parts:
+                    print("Usage: leverage <symbol>")
+                else:
+                    try:
+                        data, dt = client.get_leverage(parts[0])
+                        lev = data.get('leverage') or {}
+                        print(f"✓ Fetched in {dt*1000:.1f}ms")
+                        print(f"  {data.get('coin')}: {lev.get('value')}x {lev.get('type')} "
+                              f"(max {data.get('max_leverage')}x, modes {data.get('allowed_margin_modes')})")
+                    except Exception as e:
+                        print(f"✗ leverage failed: {e}")
+            elif query.lower().startswith('setlev '):
+                parts = query.split()[1:]
+                if len(parts) < 2 or not parts[1].isdigit():
+                    print("Usage: setlev <symbol> <leverage> [cross|isolated]")
+                else:
+                    try:
+                        data, dt = client.set_leverage(parts[0], int(parts[1]), parts[2] if len(parts) > 2 else None)
+                        print(f"✓ Set in {dt*1000:.1f}ms: {data}")
+                    except Exception as e:
+                        print(f"✗ setlev failed: {e}")
+            elif query.lower().startswith('place '):
+                parts = query.split()[1:]
+                if len(parts) < 5:
+                    print("Usage: place <symbol> <side> <price> <size> <leverage> [GTC|IOC|ALO]")
+                else:
+                    try:
+                        symbol, side, px, sz, lev = parts[0], parts[1], parts[2], parts[3], int(parts[4])
+                        otype = parts[5] if len(parts) > 5 else 'GTC'
+                        data, dt = client.place_order(symbol, side, px, sz, lev, order_type=otype)
+                        print(f"✓ Placed in {dt*1000:.1f}ms: status={data.get('status')} "
+                              f"clientOrderIndex={data.get('clientOrderIndex')} txHash={data.get('txHash')} error={data.get('error')}")
+                        print("  (confirm with `orders`)")
+                    except Exception as e:
+                        print(f"✗ place failed: {e}")
+            elif query.lower().startswith('cancelall'):
+                parts = query.split()[1:]
+                try:
+                    data, dt = client.cancel_all_orders(coin=parts[0] if parts else None)
+                    print(f"✓ Cancel-all submitted in {dt*1000:.1f}ms: {data}")
+                except Exception as e:
+                    print(f"✗ cancelall failed: {e}")
+            elif query.lower().startswith('cancel '):
+                parts = query.split()[1:]
+                if not parts:
+                    print("Usage: cancel <order_id> [symbol]")
+                else:
+                    try:
+                        data, dt = client.cancel_order(parts[0], coin=parts[1] if len(parts) > 1 else None)
+                        print(f"✓ Cancelled in {dt*1000:.1f}ms: {data}")
+                    except Exception as e:
+                        print(f"✗ cancel failed: {e}")
+            elif query.lower() == 'watch':
+                watch_account_mode(client)
             elif query.lower() in ('test', 'gauntlet'):
                 run_gauntlet(client)
             else:
@@ -1339,10 +1685,15 @@ def main():
     parser = argparse.ArgumentParser(description='Argus Lighter Interactive CLI Client')
     parser.add_argument('--host', default='localhost', help='Argus server host (default: localhost)')
     parser.add_argument('--port', type=int, default=9974, help='Argus server port (default: 9974)')
-    parser.add_argument('--test', action='store_true', help='Run the read-only gauntlet against a live dispatcher and exit (no interactive prompt)')
+    parser.add_argument('--test', action='store_true', help='Run the gauntlet against a live dispatcher and exit (no interactive prompt)')
     parser.add_argument('--test-timeout', type=float, default=15.0, help='Per-check timeout in seconds for --test (default: 15)')
+    parser.add_argument('--enable-execution', action='store_true',
+                        help='With --test: also run the checks that touch the REAL account (a no-op set_leverage, and a far-below-market place / batch / cancel / cancel_all_orders lifecycle on BTC; cancel_all_orders cancels ALL resting BTC orders)')
 
     args = parser.parse_args()
+
+    global EXECUTION_ENABLED
+    EXECUTION_ENABLED = args.enable_execution
 
     client = LighterArgusClient(args.host, args.port)
 

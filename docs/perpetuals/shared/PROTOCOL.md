@@ -117,7 +117,9 @@ Pushes use the P1 envelope with `correlation_id: null` and are delivered only to
 
 **Hyperliquid** pushes `account_update` (events `order`, `fill`, `gap`; one record per message) to every
 connected client with no `subscribe` required; see `docs/perpetuals/hyperliquid/DISPATCHER.md#account_update`.
-**Lighter** has no `account_update` push yet; poll `get_orders` / `get_order_status` / `get_trades`.
+**Lighter** pushes the same events, also to every connected client; see
+`docs/perpetuals/lighter/DISPATCHER.md#account_update`. Both venues' payloads reuse the `get_orders` /
+`get_trades` record shapes.
 
 ### `fatal_error`
 
@@ -212,7 +214,7 @@ clients to it rather than to the Argus version.
 | `correlation_id` | optional | **required**, unique |
 | Response `action` | echoes the request action | `"response"` / `"error"` |
 | Tradable only if subscribed | yes | **no**; trading and account reads need no subscription |
-| `account_update` push | yes, only to clients that subscribed | Hyperliquid: yes, to every connected client, differently shaped (`data.event` = `order` / `fill` / `gap`); Lighter: none |
+| `account_update` push | yes, only to clients that subscribed | yes (Hyperliquid and Lighter), to every connected client, differently shaped (`data.event` = `order` / `fill` / `gap`) |
 | `ping`, `rtt_to_exchange`, `version` | yes | none (`products_version` instead) |
 | `orderbook_snapshot` | yes | none |
 | Large collections | some un-paginated | every list paginated |

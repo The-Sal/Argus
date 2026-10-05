@@ -5,7 +5,6 @@ Track the PR for hyperliquid [here](https://github.com/The-Sal/Argus/pull/96)
 """
 import os
 import traceback
-from decimal import Decimal
 from utils3 import runAsThread
 from argus.perpetuals.hyper import wss
 from argus._argus_utils import ArgsObject
@@ -13,17 +12,18 @@ from argus import __version__ as argus_version
 from argus.perpetuals.hyper import _errors as _ers
 from argus.perpetuals.hyper import _classes as _cls
 from argus.perpetuals.shared import account as _acct
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 from argus.perpetuals.hyper.rest import HyperLiquidRest
 from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.hyper.exchange import HyperLiquidExchange, MAX_BATCH_SIZE
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate, AccountUpdate, fatal_decorator
+from argus.perpetuals.shared.trading import TradingHandlersMixin
 
 __version__ = [1, 0, 0, 0]
 pi = PrintInterface('HyperLiquid')
 
 
-class HyperLiquidDispatcher(BaseDispatcher):
+class HyperLiquidDispatcher(TradingHandlersMixin, BaseDispatcher):
     """
     Hyperliquid (Hl) dispatcher.
 
@@ -465,94 +465,91 @@ class HyperLiquidDispatcher(BaseDispatcher):
         return {'perpetuals': self._all_perps.value.search(keyword, limit)}
 
     ########################################
-    # Trading (signed `exchange` endpoint)
+    # Trading hooks (the venue half of shared.trading.TradingHandlersMixin)
+    #
+    # The cross-venue control flow (read current -> apply -> place -> roll back) and the seven
+    # handlers (get_leverage/set_leverage/place_order/place_multiple_orders/cancel_*) live in
+    # `argus.perpetuals.shared.trading`. These hooks are what is actually Hyperliquid-specific:
+    # how its leverage is read and written, how orders are signed, and how ids are parsed.
     ########################################
 
-    def _apply_leverage(self, wanted: Dict[str, _cls.LeverageSetting]) -> Dict[str, _cls.LeverageChange]:
-        """
-        Bring each coin in `wanted` to the requested leverage and return what that did. For every coin the
-        CURRENT leverage is read first (that is the roll-back target; if the read fails nothing has changed and
-        the call fails); the signed update is only sent when the coin is not already there. If any coin fails
-        part-way, the coins already changed are rolled back before the error propagates.
-        """
-        changes: Dict[str, _cls.LeverageChange] = {}
-        try:
-            for coin, setting in wanted.items():
-                previous = self.rest.get_active_asset_data(coin).leverage
-                applied = setting.resolve(previous)
-                change = _cls.LeverageChange(coin=coin, previous=previous, applied=applied)
-                if change.changed:
-                    self.exchange.update_leverage(coin, applied.value, is_cross=applied.type == "cross")
-                changes[coin] = change
-        except Exception:
-            self._revert_leverage(changes.values())
-            raise
-        return changes
+    def _trading_read_leverage(self, coin: str) -> _cls.PositionLeverage:
+        """The leverage in force for the account on `coin` ("activeAssetData"), i.e. the roll-back target."""
+        return self.rest.get_active_asset_data(coin).leverage
 
-    def _revert_leverage(self, changes: Iterable[_cls.LeverageChange]) -> Dict[str, str]:
-        """Best-effort roll back of every changed coin to its previous leverage. Returns {coin: error} for the
-        coins that could NOT be rolled back (empty when everything is restored)."""
-        failed: Dict[str, str] = {}
-        for change in changes:
-            if not change.changed:
-                continue
-            try:
-                self.exchange.update_leverage(
-                    change.coin, change.previous.value, is_cross=change.previous.type == "cross"
-                )
-            except Exception as e:
-                pi.prt(f"Could not roll back leverage on {change.coin} to {change.previous.to_dict()}: {e}")
-                failed[change.coin] = str(e)
-        return failed
+    def _trading_set_leverage(self, coin: str, applied: _cls.PositionLeverage) -> None:
+        """Sign and submit the leverage update putting `coin` on `applied`."""
+        self.exchange.update_leverage(coin, applied.value, is_cross=applied.type == "cross")
 
-    def _revert_or_raise(self, changes: Iterable[_cls.LeverageChange], cause: Exception) -> None:
-        """Roll back after a DEFINITIVE order failure; if the roll-back itself fails raise
-        `LeverageRevertError` (which trips the contingency) naming the coins left on the wrong leverage."""
-        failed = self._revert_leverage(changes)
-        if failed:
-            raise _ers.LeverageRevertError(
-                f"Order failed ({cause}) and leverage could not be restored for {failed}; "
-                f"check get_leverage and repair with set_leverage"
-            ) from cause
-
-    @staticmethod
-    def _definitive_failure(error: Exception) -> bool:
-        """True when `error` proves the order was NOT accepted (rejected before sending, or an err envelope).
-        Anything else (a timeout mid-POST, an unparsable reply) leaves the order's fate unknown: rolling the
-        leverage back under a possibly-live order would be wrong, so we leave it and let the contingency run."""
-        return isinstance(error, (_ers.HyperLiquidError, _shared_ers.DispatcherError))
-
-    @staticmethod
-    def _leverage_report(change: _cls.LeverageChange, result: _cls.OrderPlacementResult,
-                         size: Any, reduce_only: bool, reverted: bool) -> _cls.OrderLeverage:
-        """The `OrderLeverage` for one finished order (see its docstring for the margin estimate)."""
-        margin = None
-        if result.ok and not reduce_only and result.price is not None:
-            margin = result.price * Decimal(str(size)) / change.applied.value
-        return _cls.OrderLeverage(
-            leverage=change.previous if reverted else change.applied,
-            previous=change.previous,
-            changed=change.changed,
-            reverted=reverted,
-            estimated_initial_margin=None if reverted else margin,
+    def _trading_place_order(self, coin, side, price, size, tif, reduce_only, cloid):
+        """Sign and submit one limit order on the signed `exchange` endpoint."""
+        return self.exchange.place_order(
+            coin=coin, side=side, price=price, size=size, tif=tif, reduce_only=reduce_only, cloid=cloid,
         )
 
-    @fatal_decorator('get_leverage')
-    def _get_leverage(self, args: ArgsObject) -> dict:
-        """
-        The leverage in force for the account on one coin, and what it may be set to. Read-only, so the kill
-        switch does not apply.
+    def _trading_place_orders(self, requests: List[_cls.OrderRequest]) -> List[_cls.OrderPlacementResult]:
+        """Sign and submit several limit orders in ONE batch action."""
+        return self.exchange.place_orders(requests)
 
-        :param args: Accepts 'coin' (required, e.g. "BTC" or "xyz:AAPL").
-        :return: {'coin', 'dex', 'leverage': {type, value, rawUsd?}, 'max_leverage',
-            'allowed_margin_modes' (["cross", "isolated"], or ["isolated"] for isolated-only assets),
-            'mark_price', 'max_trade_sizes', 'available_to_trade'} -- the two size arrays are passed through in
-            the venue's order, which is undocumented (believed [buy, sell]); do not rely on it.
+    def _trading_cancel(self, coin: str, kind: str, identifier):
+        """Cancel one order by venue oid or client cloid."""
+        return (
+            self.exchange.cancel_by_oid(coin, identifier)
+            if kind == 'oid'
+            else self.exchange.cancel_by_cloid(coin, identifier)
+        )
+
+    def _trading_cancel_many(self, items: List[tuple]) -> _cls.BatchCancelResult:
+        """Cancel several orders; `items` are `(coin, kind, identifier)` triples. Hyperliquid's `cancel_many`
+        infers the id kind from the identifier's own type, so `kind` is dropped here."""
+        return self.exchange.cancel_many([(coin, identifier) for coin, _kind, identifier in items])
+
+    def _trading_cancel_all(self, coin: Optional[str], dex: Optional[str]) -> dict:
+        """Hyperliquid has no immediate cancel-all, so this is a point-in-time sweep: read the open orders,
+        then batch-cancel them. Orders placed after the read are not affected."""
+        orders = self.account_rest.get_open_orders(dex)
+        if coin is not None:
+            orders = [o for o in orders if o.name == coin]
+        if not orders:
+            return _cls.BatchCancelResult().to_summary_dict()
+        result = self.exchange.cancel_many([(o.name, int(o.order_id)) for o in orders])
+        return result.to_summary_dict()
+
+    def _trading_resolve_order_coin(self, kind: str, identifier) -> Optional[str]:
+        """Resolve the coin of an order via `orderStatus` -- Hyperliquid's only by-id lookup."""
+        status = self.account_rest.get_order_status_detail(identifier)
+        return status.order.coin if status.order is not None else None
+
+    def _trading_open_orders_index(self) -> Dict[str, str]:
+        """`{str(oid): coin}` and `{cloid: coin}` over the open orders, for batch-cancel coin resolution."""
+        index: Dict[str, str] = {}
+        for order in self.account_rest.get_open_orders(None):
+            index[str(order.order_id)] = order.name
+            if order.client_order_id:
+                index[order.client_order_id] = order.name
+        return index
+
+    @staticmethod
+    def _trading_is_definitive_failure(error: Exception) -> bool:
+        """True when `error` proves the order was NOT accepted (a venue rejection, or a shared
+        DispatcherError raised before submission)."""
+        return isinstance(error, (_ers.HyperLiquidError, _shared_ers.DispatcherError))
+
+    @property
+    def _trading_max_batch_size(self) -> int:
+        """Hyperliquid's cap on orders per signed batch action (our own conservative cap)."""
+        return MAX_BATCH_SIZE
+
+    def _trading_leverage_info(self, coin: str) -> dict:
         """
-        data = self._read_args(args, 'coin')
-        if data.get('coin') is None:
-            raise _shared_ers.MissingArgumentError("Missing required argument 'coin'")
-        coin = data['coin']
+        Hyperliquid's `get_leverage` payload for one coin: `activeAssetData` (the leverage in force, mark
+        price and the venue's size limits) plus the asset's max leverage and margin modes.
+
+        :return: {'coin', 'dex', 'leverage': {type, value, rawUsd?}, 'max_leverage', 'allowed_margin_modes'
+            (["cross", "isolated"], or ["isolated"] for isolated-only assets), 'mark_price',
+            'max_trade_sizes', 'available_to_trade'} -- the two size arrays are passed through in the venue's
+            order, which is undocumented (believed [buy, sell]); do not rely on it.
+        """
         asset = self.exchange.asset(coin)
         active = self.rest.get_active_asset_data(coin)
         out = active.to_dict()
@@ -562,175 +559,6 @@ class HyperLiquidDispatcher(BaseDispatcher):
             'allowed_margin_modes': ['isolated'] if asset.is_isolated_only else ['cross', 'isolated'],
         })
         return out
-
-    @fatal_decorator('set_leverage')
-    def _set_leverage(self, args: ArgsObject) -> dict:
-        """
-        Set the leverage (and margin mode) used for NEW positions on one coin. Blocked by the kill switch.
-
-        :param args: Accepts 'coin' (required), 'leverage' (required integer, 1..the coin's max) and
-            'margin_mode' (optional "cross" | "isolated"; omitted keeps the coin's current mode).
-        :return: {'coin', 'leverage', 'margin_mode', 'previous': {type, value}}. Lowering leverage or
-            switching mode with an open position may be rejected by the venue (the error says so).
-        """
-        self._require_order_execution_enabled()
-        data = self._read_args(args, 'coin', 'leverage', 'margin_mode')
-        for required in ('coin', 'leverage'):
-            if data.get(required) is None:
-                raise _shared_ers.MissingArgumentError(f"Missing required argument {required!r}")
-        setting = _cls.LeverageSetting.from_args(data['leverage'], data.get('margin_mode'))
-        change = self._apply_leverage({data['coin']: setting})[data['coin']]
-        return {
-            'coin': change.coin,
-            'leverage': change.applied.value,
-            'margin_mode': change.applied.type,
-            'previous': {'type': change.previous.type, 'value': change.previous.value},
-        }
-
-    @fatal_decorator('place_order')
-    def _place_order(self, args: ArgsObject) -> dict:
-        """
-        Place a single limit order on the account's master wallet at an explicit leverage. Blocked by the
-        kill switch (checked before anything else).
-
-        Leverage is per coin on Hyperliquid, so the order names it: the coin's current leverage is read, the
-        requested one applied (one signed action, skipped when already in force), then the order placed. If the
-        venue rejects the order, or the submission definitively fails, a changed leverage is ROLLED BACK so a
-        failed order never leaves a position's liquidation price moved. If the submission fails ambiguously
-        (e.g. a timeout) the order may be live, so leverage is left alone and the fatal contingency runs.
-
-        :param args: Accepts 'coin' (required, e.g. "BTC" or "xyz:AAPL"), 'side' (required,
-            "buy" or "sell"), 'price' (required, limit price), 'size' (required, size in coins),
-            'leverage' (required integer), 'margin_mode' (optional "cross" | "isolated", default: the coin's
-            current mode), 'order_type' (optional, "GTC" | "IOC" | "ALO", default "GTC"), 'reduce_only'
-            (optional bool, default False), 'cloid' (optional client order id: 0x + 32 hex chars).
-        :return: {'coin', 'oid', 'status', 'avgPx', 'price', 'requestedPrice', 'priceAdjusted', 'error',
-            'leverage', 'margin_mode', 'previous_leverage', 'leverage_changed', 'leverage_reverted',
-            'estimated_initial_margin', ['leverage_revert_error']} -- `price` is the tick-rounded limit price
-            actually submitted, `requestedPrice` what the caller sent. `status` is "resting" or "filled" and
-            `oid` the venue order id; a venue-level rejection comes back with `error` set and `oid` null
-            instead of a packet error. `leverage` is what is in force after the call (the previous value when
-            reverted); `estimated_initial_margin` is size * price / leverage, an estimate, null for reduce-only.
-        """
-        self._require_order_execution_enabled()
-        data = self._read_args(
-            args, 'coin', 'side', 'price', 'size', 'leverage', 'margin_mode', 'order_type', 'reduce_only', 'cloid'
-        )
-        for required in ('coin', 'side', 'price', 'size', 'leverage'):
-            if data.get(required) is None:
-                raise _shared_ers.MissingArgumentError(f"Missing required argument {required!r}")
-        coin = data['coin']
-        order_type = str(data.get('order_type') or 'GTC').upper()
-        tif = {'GTC': 'Gtc', 'IOC': 'Ioc', 'ALO': 'Alo'}.get(order_type)
-        if tif is None:
-            raise _shared_ers.MissingArgumentError(
-                f"Invalid order_type {order_type!r}: expected GTC, IOC or ALO"
-            )
-        setting = _cls.LeverageSetting.from_args(data['leverage'], data.get('margin_mode'))
-        reduce_only = bool(data.get('reduce_only') or False)
-
-        changes = self._apply_leverage({coin: setting})
-        change = changes[coin]
-        try:
-            result = self.exchange.place_order(
-                coin=coin,
-                side=str(data['side']),
-                price=data['price'],
-                size=data['size'],
-                tif=tif,
-                reduce_only=reduce_only,
-                cloid=data.get('cloid'),
-            )
-        except Exception as e:
-            if self._definitive_failure(e):
-                self._revert_or_raise(changes.values(), e)
-            raise
-        reverted = False
-        if not result.ok and change.changed:
-            failed = self._revert_leverage([change])
-            reverted = not failed
-            report = self._leverage_report(change, result, data['size'], reduce_only, reverted)
-            if failed:
-                report.revert_error = failed[coin]
-                pi.throw_fuss(f"Order rejected and leverage on {coin} could not be restored: {failed}",
-                              title="Leverage Revert Failed", notify=True)
-        else:
-            report = self._leverage_report(change, result, data['size'], reduce_only, False)
-        result.leverage_report = report
-        return result.to_dict()
-
-    @fatal_decorator('place_multiple_orders')
-    def _place_multiple_orders(self, args: ArgsObject) -> dict:
-        """
-        Place several limit orders in ONE signed action. Blocked by the kill switch.
-
-        Every order carries its own 'leverage' (required) and optional 'margin_mode'; leverage is per coin, so
-        two orders on the same coin must agree. Everything is validated before any leverage is changed or
-        anything is signed (size cap, fields, duplicate cloids, per-coin consistency). Leverage is then
-        applied per distinct coin, the batch submitted, and any coin on which NO order was accepted is rolled
-        back to its previous leverage (a coin with at least one accepted order keeps the new one, since the
-        resting order was opened under it). Same ambiguity rule as `place_order` for non-definitive errors.
-
-        :param args: Accepts 'orders': a non-empty list (at most MAX_BATCH_SIZE) of
-            {coin, side, price, size, leverage, margin_mode?, order_type?, reduce_only?, cloid?}.
-        :return: {'results': [<place_order result>, ...] (index i answers orders[i]), 'ok_count',
-            'error_count'}. A venue rejection of one order is that result's 'error', not a packet error.
-        """
-        self._require_order_execution_enabled()
-        data = self._read_args(args, 'orders')
-        raw_orders = data.get('orders')
-        if not isinstance(raw_orders, list) or not raw_orders:
-            raise _shared_ers.MissingArgumentError("'orders' must be a non-empty list")
-        if len(raw_orders) > MAX_BATCH_SIZE:
-            raise _shared_ers.DispatcherError(f"Too many orders: {len(raw_orders)} > {MAX_BATCH_SIZE}")
-
-        requests: List[_cls.OrderRequest] = []
-        wanted: Dict[str, _cls.LeverageSetting] = {}
-        for raw in raw_orders:
-            if not isinstance(raw, dict):
-                raise _shared_ers.MissingArgumentError("Each order must be an object")
-            if raw.get('leverage') is None:
-                raise _shared_ers.MissingArgumentError("Missing required order field 'leverage'")
-            order_fields = {k: v for k, v in raw.items() if k not in ('leverage', 'margin_mode')}
-            request = _cls.OrderRequest.from_dict(order_fields)
-            setting = _cls.LeverageSetting.from_args(raw['leverage'], raw.get('margin_mode'))
-            if wanted.setdefault(request.coin, setting) != setting:
-                raise _shared_ers.DispatcherError(
-                    f"Orders on {request.coin} disagree on leverage/margin_mode; leverage is per coin"
-                )
-            requests.append(request)
-        cloids = [r.cloid for r in requests if r.cloid is not None]
-        if len(set(cloids)) != len(cloids):
-            raise _shared_ers.DispatcherError("Duplicate cloid within the batch")
-
-        changes = self._apply_leverage(wanted)
-        try:
-            results = self.exchange.place_orders(requests)
-        except Exception as e:
-            if self._definitive_failure(e):
-                self._revert_or_raise(changes.values(), e)
-            raise
-
-        accepted = {r.coin for r in results if r.ok}
-        to_revert = [c for coin, c in changes.items() if coin not in accepted]
-        failed = self._revert_leverage(to_revert)
-        reverted_coins = {c.coin for c in to_revert if c.changed and c.coin not in failed}
-        if failed:
-            pi.throw_fuss(f"Orders rejected and leverage could not be restored: {failed}",
-                          title="Leverage Revert Failed", notify=True)
-        for request, result in zip(requests, results):
-            change = changes[request.coin]
-            report = self._leverage_report(change, result, request.size, request.reduce_only,
-                                           change.coin in reverted_coins)
-            if request.coin in failed:
-                report.revert_error = failed[request.coin]
-            result.leverage_report = report
-        ok_count = sum(1 for r in results if r.ok)
-        return {
-            'results': [r.to_dict() for r in results],
-            'ok_count': ok_count,
-            'error_count': len(results) - ok_count,
-        }
 
     @staticmethod
     def _parse_order_id(value: Any) -> tuple:
@@ -752,112 +580,6 @@ class HyperLiquidDispatcher(BaseDispatcher):
         raise _shared_ers.DispatcherError(
             f"Invalid order_id {value!r}: expected a numeric oid or a 0x-prefixed 16-byte cloid"
         )
-
-    @fatal_decorator('cancel_order')
-    def _cancel_order(self, args: ArgsObject) -> dict:
-        """
-        Cancel one order by its venue oid or client cloid.
-
-        :param args: Accepts 'order_id' (required: a numeric oid or a 0x-prefixed 16-byte
-            cloid) and an optional 'coin'. When 'coin' is omitted it is resolved from the
-            order itself via orderStatus -- which also fails cleanly if the order no longer
-            exists. Note the resolution costs one extra info call per cancel.
-        :return: {'coin', 'canceledOids', 'errors'} -- the venue reports per-id statuses,
-            so an id it could not cancel (already filled/canceled, or unknown) appears in
-            'errors' and `canceledOids` stays empty; callers must check for that rather
-            than assume a submitted cancel worked.
-        """
-        data = self._read_args(args, 'order_id', 'coin')
-        if data.get('order_id') is None:
-            raise _shared_ers.MissingArgumentError("Missing required argument 'order_id'")
-        kind, identifier = self._parse_order_id(data['order_id'])
-        coin = data.get('coin')
-        if coin is None:
-            status = self.account_rest.get_order_status_detail(identifier)
-            if status.order is None:
-                raise _shared_ers.DispatcherError(
-                    f"Order {identifier} not found (and no 'coin' given to skip the lookup)"
-                )
-            coin = status.order.coin
-        result = (
-            self.exchange.cancel_by_oid(coin, identifier)
-            if kind == 'oid'
-            else self.exchange.cancel_by_cloid(coin, identifier)
-        )
-        return result.to_dict()
-
-    @fatal_decorator('cancel_multiple_orders')
-    def _cancel_multiple_orders(self, args: ArgsObject) -> dict:
-        """
-        Cancel several orders by venue oid or client cloid. NOT blocked by the kill switch (cancels only
-        reduce risk).
-
-        :param args: Accepts 'orders': a non-empty list of {order_id, coin?}. When every item has a 'coin' no
-            lookup is needed; when any lacks one, ONE read of the open orders (all dexes) resolves them (much
-            cheaper than a per-order lookup), and an id not among the open orders is reported as an error
-            outcome without calling the venue.
-        :return: {'outcomes': [{order_id, coin, ok, error}, ...] in request order, 'ok_count', 'error_count'}.
-            Partial success is normal; an order that filled in the meantime is an item-level error.
-        """
-        data = self._read_args(args, 'orders')
-        raw_orders = data.get('orders')
-        if not isinstance(raw_orders, list) or not raw_orders:
-            raise _shared_ers.MissingArgumentError("'orders' must be a non-empty list")
-        parsed = []  # (order_id as given, kind, identifier, coin or None)
-        for raw in raw_orders:
-            if not isinstance(raw, dict):
-                raise _shared_ers.MissingArgumentError("Each order must be an object with an 'order_id'")
-            unknown = sorted(set(raw) - {'order_id', 'coin'})
-            if unknown:
-                raise _shared_ers.MissingArgumentError(
-                    f"Unknown order field(s) {unknown}; accepted: ['coin', 'order_id']")
-            if raw.get('order_id') is None:
-                raise _shared_ers.MissingArgumentError("Missing required order field 'order_id'")
-            kind, identifier = self._parse_order_id(raw['order_id'])
-            parsed.append((raw['order_id'], kind, identifier, raw.get('coin')))
-
-        coin_by_id: Dict[str, str] = {}
-        if any(p[3] is None for p in parsed):
-            for order in self.account_rest.get_open_orders(None):
-                coin_by_id[str(order.order_id)] = order.name
-                if order.client_order_id:
-                    coin_by_id[order.client_order_id] = order.name
-
-        outcomes: List[Optional[_cls.CancelOutcome]] = [None] * len(parsed)
-        sendable = []  # (index, (coin, identifier))
-        for i, (original, kind, identifier, coin) in enumerate(parsed):
-            coin = coin or coin_by_id.get(str(identifier))
-            if coin is None:
-                outcomes[i] = _cls.CancelOutcome(str(original), None, False, "not found among open orders")
-            else:
-                sendable.append((i, (coin, identifier)))
-        if sendable:
-            sent = self.exchange.cancel_many([item for _, item in sendable])
-            for (i, _), outcome in zip(sendable, sent.outcomes):
-                outcomes[i] = outcome
-        return _cls.BatchCancelResult(outcomes=outcomes).to_dict()
-
-    @fatal_decorator('cancel_all_orders')
-    def _cancel_all_orders(self, args: ArgsObject) -> dict:
-        """
-        Cancel every resting order (optionally only one coin's / one dex's). Hyperliquid has no immediate
-        cancel-all, so this is a point-in-time sweep: read the open orders, then batch-cancel them. Orders
-        placed after the read are not affected. NOT blocked by the kill switch.
-
-        :param args: Accepts 'coin' (optional, only that coin's orders) and 'dex' (optional: "" = default dex,
-            else a HIP-3 dex name; omitted = every dex).
-        :return: {'requested', 'canceled', 'failed', 'failures': [{order_id, coin, ok, error}, ... up to 50],
-            'failures_truncated'} -- compact on purpose (up to ~1000 orders must fit Protocol 1's byte cap).
-            'failed' > 0 means some orders may still be resting: check get_orders.
-        """
-        data = self._read_args(args, 'coin', 'dex')
-        orders = self.account_rest.get_open_orders(data.get('dex'))
-        if data.get('coin') is not None:
-            orders = [o for o in orders if o.name == data['coin']]
-        if not orders:
-            return _cls.BatchCancelResult().to_summary_dict()
-        result = self.exchange.cancel_many([(o.name, int(o.order_id)) for o in orders])
-        return result.to_summary_dict()
 
     def _get_account_fees(self, args: ArgsObject) -> dict:
         """

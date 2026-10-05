@@ -4,9 +4,10 @@ import zlib
 import base64
 from argus import protocol
 from decimal import Decimal
+from dataclasses import dataclass, field
 from collections.abc import Mapping
 from argus.perpetuals.shared import errors as ers
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:  # account.py imports this module, so these are annotation-only
     from argus.perpetuals.shared.account import OrderUpdate, Trade
@@ -246,3 +247,226 @@ class AccountUpdate:
 
     def convert_to_protocol_1(self):
         return OutboundMessage(action="account_update", data=self.to_dict()).convert_to_protocol_1()
+
+
+# --- shared trading shapes ---------------------------------------------------
+#
+# These are the venue-agnostic value objects the trading handlers in
+# `argus.perpetuals.shared.trading` (and every venue's exchange client) pass around. They
+# used to live in `argus/perpetuals/hyper/_classes.py`; they are here because the trading
+# control flow that consumes them (read current leverage -> apply -> place -> roll back) is
+# identical on every venue. Venue-specific result records (`OrderPlacementResult`,
+# `CancelResult`, `BatchCancelResult`) deliberately stay in each venue's `_classes.py` -- the
+# mixin only relies on the small shape they expose (`.ok`, `.price`, `.to_dict()`, ...).
+#
+# The only venue semantics baked in is the *margin-mode vocabulary* ("cross" / "isolated")
+# and the TIF vocabulary ("Gtc" / "Ioc" / "Alo"); a venue whose wire spelling differs
+# translates at its exchange boundary, not here.
+
+
+def _dec_or_none(value: Any) -> Optional[Decimal]:
+    """Decimal(value), or None for a null upstream field. Local copy so this module stays free of
+    a module-level import of `account.py` (which imports `paginate` from here)."""
+    return Decimal(value) if value is not None else None
+
+
+@dataclass
+class PositionLeverage:
+    """Leverage applied to one position. `raw_usd` is only present for isolated margin on Hyperliquid."""
+
+    type: Literal["cross", "isolated"]
+    value: int
+    raw_usd: Optional[Decimal] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PositionLeverage":
+        return cls(
+            type=data["type"],
+            value=int(data["value"]),
+            raw_usd=_dec_or_none(data.get("rawUsd")),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"type": self.type, "value": self.value}
+        if self.raw_usd is not None:
+            out["rawUsd"] = format(self.raw_usd)
+        return out
+
+
+@dataclass
+class OrderLeverage:
+    """
+    Leverage bookkeeping for one order, attached to its `OrderPlacementResult` by the dispatcher.
+
+    `leverage` is what is in force on the coin AFTER the call. The dispatcher applies the caller's leverage
+    before submitting; if the order then fails (venue rejection or exception) a changed leverage is rolled
+    back to `previous`, flagged by `reverted` (and `revert_error` if the rollback itself failed, in which case
+    the caller must check/repair leverage with `get_leverage` / `set_leverage`).
+    `estimated_initial_margin` is ``size * price / leverage`` -- an ESTIMATE (a marketable IOC fills at the book
+    price and cross margin also nets unrealized PnL); None for reduce-only orders and failed orders.
+    """
+
+    leverage: PositionLeverage
+    previous: PositionLeverage
+    changed: bool = False
+    reverted: bool = False
+    revert_error: Optional[str] = None
+    estimated_initial_margin: Optional[Decimal] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "leverage": {"type": self.leverage.type, "value": self.leverage.value},
+            "margin_mode": self.leverage.type,
+            "previous_leverage": {"type": self.previous.type, "value": self.previous.value},
+            "leverage_changed": self.changed,
+            "leverage_reverted": self.reverted,
+            "estimated_initial_margin": format(self.estimated_initial_margin) if self.estimated_initial_margin is not None else None,
+        }
+        if self.revert_error is not None:
+            out["leverage_revert_error"] = self.revert_error
+        return out
+
+
+@dataclass
+class OrderRequest:
+    """
+    One limit order to place, as the dispatcher and exchange layers pass it around (no raw dicts).
+
+    `from_dict` takes the wire-facing dispatcher shape (``coin, side, price, size, order_type?, reduce_only?,
+    cloid?``) and does ALL the validation `place_order` does, so a batch fails client-side, before anything is
+    signed, on its first bad item. `tif` is the venue-agnostic spelling ("Gtc" | "Ioc" | "Alo"); a venue
+    maps it to its own wire enum at the exchange boundary. `cloid` is the caller-supplied client order id in
+    the venue's own format (a Hyperliquid 0x-prefixed 16-byte hex string, a Lighter uint48 for a venue whose
+    client id is an integer); the venue validates/converts it.
+    """
+
+    coin: str
+    side: str  # "buy" | "sell"
+    price: Any
+    size: Any
+    tif: str = "Gtc"  # "Gtc" | "Ioc" | "Alo"
+    reduce_only: bool = False
+    cloid: Optional[str] = None
+
+    _TIFS = {"GTC": "Gtc", "IOC": "Ioc", "ALO": "Alo"}
+    FIELDS = ("coin", "side", "price", "size", "order_type", "reduce_only", "cloid")
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OrderRequest":
+        if not isinstance(data, dict):
+            raise ers.DispatcherError(f"Order must be an object, got {type(data).__name__}")
+        unknown = sorted(set(data) - set(cls.FIELDS))
+        if unknown:
+            raise ers.DispatcherError(f"Unknown order field(s) {unknown}; accepted: {sorted(cls.FIELDS)}")
+        for required in ("coin", "side", "price", "size"):
+            if data.get(required) is None:
+                raise ers.DispatcherError(f"Missing required order field {required!r}")
+        order_type = str(data.get("order_type") or "GTC").upper()
+        tif = cls._TIFS.get(order_type)
+        if tif is None:
+            raise ers.DispatcherError(f"Invalid order_type {order_type!r}: expected GTC, IOC or ALO")
+        side = str(data["side"]).lower()
+        if side not in ("buy", "sell"):
+            raise ers.DispatcherError(f"Invalid side {data['side']!r}: expected 'buy' or 'sell'")
+        return cls(
+            coin=data["coin"], side=side, price=data["price"], size=data["size"], tif=tif,
+            reduce_only=bool(data.get("reduce_only") or False), cloid=data.get("cloid"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "coin": self.coin, "side": self.side, "price": str(self.price), "size": str(self.size),
+            "order_type": self.tif.upper(), "reduce_only": self.reduce_only,
+        }
+        if self.cloid is not None:
+            out["cloid"] = self.cloid
+        return out
+
+
+@dataclass(frozen=True)
+class LeverageSetting:
+    """
+    The leverage a caller wants for one coin, as passed to `place_order` / `place_multiple_orders` /
+    `set_leverage`. Leverage is stored per coin and margin mode, so every order names its own.
+    `margin_mode` None means "keep the coin's current mode".
+    """
+
+    leverage: int
+    margin_mode: Optional[Literal["cross", "isolated"]] = None
+
+    @classmethod
+    def from_args(cls, leverage: Any, margin_mode: Any = None) -> "LeverageSetting":
+        """Validate wire-facing values: an integer (not bool/float/str) and a known mode."""
+        if isinstance(leverage, bool) or not isinstance(leverage, int):
+            raise ers.DispatcherError(f"Invalid leverage {leverage!r}: expected an integer")
+        if margin_mode is not None and margin_mode not in ("cross", "isolated"):
+            raise ers.DispatcherError(f"Invalid margin_mode {margin_mode!r}: expected 'cross' or 'isolated'")
+        return cls(leverage=leverage, margin_mode=margin_mode)
+
+    def resolve(self, current: "PositionLeverage") -> "PositionLeverage":
+        """The leverage this setting yields given the coin's `current` one (mode defaults to current)."""
+        return PositionLeverage(type=self.margin_mode or current.type, value=self.leverage)
+
+
+@dataclass(frozen=True)
+class LeverageChange:
+    """What applying a `LeverageSetting` to one coin did: the leverage it had (`previous`, the roll-back
+    target) and the one now in force (`applied`). `changed` is False when the coin already had it, in which
+    case nothing was signed and there is nothing to roll back."""
+
+    coin: str
+    previous: PositionLeverage
+    applied: PositionLeverage
+
+    @property
+    def changed(self) -> bool:
+        return (self.previous.type, self.previous.value) != (self.applied.type, self.applied.value)
+
+
+@dataclass
+class CancelOutcome:
+    """One item of a batch cancel: the id the caller gave (a venue id as str, or a client id), its coin, and
+    whether the venue acknowledged it. A cancel for an order that filled/cancelled in the meantime is an
+    item-level error."""
+
+    order_id: str
+    coin: Optional[str]
+    ok: bool
+    error: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"order_id": self.order_id, "coin": self.coin, "ok": self.ok, "error": self.error}
+
+
+@dataclass
+class BatchCancelResult:
+    """Per-item outcomes of a batch cancel, in the caller's original order. Partial success is normal."""
+
+    outcomes: List[CancelOutcome] = field(default_factory=list)
+
+    @property
+    def ok_count(self) -> int:
+        return sum(1 for o in self.outcomes if o.ok)
+
+    @property
+    def error_count(self) -> int:
+        return len(self.outcomes) - self.ok_count
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "outcomes": [o.to_dict() for o in self.outcomes],
+            "ok_count": self.ok_count,
+            "error_count": self.error_count,
+        }
+
+    def to_summary_dict(self, max_failures: int = 50) -> Dict[str, Any]:
+        """Compact form for sweeps of up to ~1000 orders (one record per order would blow Protocol 1's
+        byte cap): counts plus at most `max_failures` failure records."""
+        failures = [o.to_dict() for o in self.outcomes if not o.ok]
+        return {
+            "requested": len(self.outcomes),
+            "canceled": self.ok_count,
+            "failed": self.error_count,
+            "failures": failures[:max_failures],
+            "failures_truncated": len(failures) > max_failures,
+        }

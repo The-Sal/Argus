@@ -4,6 +4,7 @@ from utils3.networking import Session
 from argus.perpetuals.shared import ers as _ers
 from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.lighter import _classes as _cls
+from argus.perpetuals.lighter import _errors as _lighter_ers
 from typing import Any, Callable, Dict, List, Optional
 from argus.perpetuals.shared import BaseDispatcherCompatibleRest, BaseDispatcherCompatibleAccountRest
 
@@ -54,6 +55,9 @@ class LighterRest(BaseDispatcherCompatibleRest, BaseDispatcherCompatibleAccountR
         }
         self.account_index = int(account_index) if account_index is not None else None
         self.auth_token = auth_token or None
+        # Optional callable that mints a fresh native token; see set_auth_token_provider.
+        self._auth_token_provider: Optional[Callable[[], str]] = None
+        self._auth_token_expiry = 0
         if self.auth_token is not None:
             match = _RO_TOKEN_RE.match(self.auth_token)
             if match is None:
@@ -77,9 +81,48 @@ class LighterRest(BaseDispatcherCompatibleRest, BaseDispatcherCompatibleAccountR
         self._auth_session.headers = {**self.session.headers, 'authorization': self.auth_token or ''}
         self._symbol_by_market_id: Dict[int, str] = {}
 
+    def set_auth_token_provider(self, provider: Callable[[], str]) -> None:
+        """Use `provider()` to (re)mint the auth token on demand.
+
+        A native token's deadline is short (Lighter rejects one past ~6h for REST), so a long-running
+        dispatcher cannot mint once at startup. The provider is called lazily and the returned token is
+        refreshed when it is within 30 minutes of expiring.
+        """
+        self._auth_token_provider = provider
+        self._auth_token_expiry = 0
+        self._ensure_auth_token()
+
+    def _ensure_auth_token(self) -> None:
+        if self._auth_token_provider is None:
+            return
+        if self.auth_token and self._auth_token_expiry - int(time.time()) > 1800:
+            return
+        token = self._auth_token_provider()
+        self.set_auth_token(token)
+        try:
+            self._auth_token_expiry = int(token.split(':', 1)[0])
+        except (ValueError, IndexError):
+            self._auth_token_expiry = int(time.time()) + 300
+
+    def set_auth_token(self, auth_token: Optional[str]) -> None:
+        """Replace the token used for auth-gated reads.
+
+        Lets the dispatcher mint a native token from the API key when `LIGHTER_AUTH_TOKEN` is unset
+        (`LighterExchange.auth_token`), so `get_orders` / `get_trades` / ... keep working. Unlike the
+        constructor this bypasses the `ro:` shape check -- a native token
+        (`<expiry>:<account>:<api_key>:<hex>`) is not an `ro:` token -- but it is only ever called with
+        a token the native signer just produced.
+        """
+        self.auth_token = auth_token or None
+        self._auth_session.headers = {**self.session.headers, 'authorization': self.auth_token or ''}
+
     def _get(self, path: str, params: Optional[dict] = None, auth: bool = False) -> dict:
+        if auth:
+            self._ensure_auth_token()
         session = self._auth_session if auth else self.session
         response = session.get(url=f'{self.base_url}{path}', params=params)
+        if getattr(response, 'status_code', None) == 429:
+            raise _lighter_ers.RateLimitError(f"Lighter rate limit hit on {path} (HTTP 429)")
         payload = response.json()
         # Lighter wraps every payload in {code, message, ...}; non-200 codes carry the
         # reason in `message` (e.g. auth failures) rather than an HTTP error.
@@ -164,11 +207,15 @@ class LighterRest(BaseDispatcherCompatibleRest, BaseDispatcherCompatibleAccountR
                 "(mint one in the Lighter web UI or via POST /api/v1/tokens_create)."
             )
 
-    def get_account(self, account_index: Optional[int] = None) -> _cls.AccountSummary:
-        """Balance + positions for one account (public; no token needed). Positions
-        for markets the account is flat in are excluded server-side (`active_only`)."""
+    def get_account(self, account_index: Optional[int] = None, active_only: bool = True) -> _cls.AccountSummary:
+        """Balance + positions for one account (public; no token needed). With `active_only`
+        (the default) the venue excludes rows for markets the account is flat in; pass False to
+        also get those rows, which still carry the per-market margin settings (used by
+        `LighterExchange.read_leverage` to roll back leverage on a flat-but-configured market)."""
         wanted = self._require_account_index() if account_index is None else int(account_index)
-        response = self._get('/api/v1/account', params={'by': 'index', 'value': str(wanted), 'active_only': 'true'})
+        response = self._get('/api/v1/account', params={
+            'by': 'index', 'value': str(wanted), 'active_only': 'true' if active_only else 'false',
+        })
         accounts = response.get('accounts') or []
         if not accounts:
             raise RuntimeError(f"Lighter returned no account for index {wanted}")

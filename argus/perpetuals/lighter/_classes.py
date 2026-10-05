@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.shared import P2OrderBookConvertClass
+from argus.perpetuals.shared._classes import OrderLeverage
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 
@@ -822,6 +823,34 @@ class LighterOrder:
             venue=self,
         )
 
+    def to_order_update_common(self, symbol: str) -> _acct.OrderUpdate:
+        """Convert to the shared `OrderUpdate` the account stream pushes (event "order").
+
+        Deliberately NOT `to_common`, even though the websocket `Order` shape matches the REST
+        one closely: `Order` requires an `order_type` / `reduce_only` pair the stream does not
+        promise (Hyperliquid's stream update has the same gap, which is why `OrderUpdate`
+        exists), and `OrderUpdate` is already the shared contract every venue's `account_update`
+        uses. `symbol` is resolved from `market_index` by the caller (the stream's
+        `symbol_for_market_id`), and `dex` is always "" -- Lighter has a single unified ledger,
+        unlike Hyperliquid's HIP-3 sub-dexes. `status_timestamp_ms` prefers `updated_at` and
+        falls back to `timestamp` (Lighter is not consistent about which it sends); both are
+        normalised through the shared `normalize_timestamp_ms` since Lighter mixes seconds/ms/us.
+        """
+        return _acct.OrderUpdate(
+            order_id=self.order_id,
+            client_order_id=self.client_order_id or None,
+            name=symbol,
+            is_buy=self.is_buy,
+            price=self.price,
+            original_size=self.initial_base_amount,
+            remaining_size=self.remaining_base_amount,
+            status=self.status,
+            status_timestamp_ms=_acct.normalize_timestamp_ms(self.updated_at or self.timestamp),
+            timestamp_ms=_acct.normalize_timestamp_ms(self.timestamp),
+            dex="",
+            venue=self,
+        )
+
 
 @dataclass
 class LighterTrade:
@@ -923,7 +952,13 @@ class LighterTrade:
         }
 
     def side_for(self, account_index: int) -> Optional[bool]:
-        """True if `account_index` was the bid (buyer), False if the ask, None if neither."""
+        """True if `account_index` was the bid (buyer), False if the ask, None if neither.
+
+        A self-trade (`bid_account_id == ask_account_id == account_index`) matches the bid first,
+        so it is reported as a buy (with the bid-side fee/pnl) rather than as both legs. Lighter's
+        self-trade prevention makes this a rare corner; the account stream has no record shape that
+        could represent both sides in one push.
+        """
         if self.bid_account_id == account_index:
             return True
         if self.ask_account_id == account_index:
@@ -1049,3 +1084,86 @@ class LighterP2ConvertClass(P2OrderBookConvertClass):
             market_data=market_data,
             order_book_depth=order_book_depth,
         )
+
+
+# --- signed-write result records ---------------------------------------------
+
+@dataclass
+class LighterOrderPlacementResult:
+    """
+    Outcome of an order submission accepted by `sendTx`.
+
+    **Lighter's `sendTx` does not return per-order status** -- a `code: 200` means "accepted by
+    the sequencer", not "resting" or "filled", and the only synchronous identifier is the
+    `tx_hash`. Lighter's analog of a cloid is `client_order_index` (uint48, unique across markets),
+    which the venue echoes on the order record. So `status` is always "submitted" here; the truth
+    arrives through the account stream (`account_all_orders`) or a follow-up `get_orders` /
+    `get_order_status` by `client_order_index` / `order_index`.
+
+    A venue-level envelope rejection (a non-200 `code`) is raised as `ExchangeActionError` by the
+    exchange, not packed here; `error` exists so the shared trading mixin's `.ok` contract holds and
+    to leave room for a per-order rejection on a future batch endpoint.
+
+    `leverage_report` is attached by the dispatcher (LighterRedispatcher), exactly as on Hyperliquid.
+    """
+
+    coin: str
+    client_order_index: Optional[int] = None
+    tx_hash: Optional[str] = None
+    status: str = "submitted"
+    error: Optional[str] = None
+    price: Optional[Decimal] = None
+    requested_price: Optional[Decimal] = None
+    leverage_report: Optional[OrderLeverage] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
+
+    @property
+    def price_adjusted(self) -> bool:
+        return self.price is not None and self.requested_price is not None and self.price != self.requested_price
+
+    def to_dict(self) -> Dict[str, Any]:
+        out: Dict[str, Any] = {
+            "coin": self.coin,
+            "clientOrderIndex": self.client_order_index,
+            "txHash": self.tx_hash,
+            "status": self.status,
+            "price": _str_or_none(self.price),
+            "requestedPrice": _str_or_none(self.requested_price),
+            "priceAdjusted": self.price_adjusted,
+            "error": self.error,
+        }
+        if self.leverage_report is not None:
+            out.update(self.leverage_report.to_dict())
+        return out
+
+
+@dataclass
+class LighterCancelResult:
+    """
+    Outcome of a cancel submission accepted by `sendTx`.
+
+    As with order placement, `sendTx` confirms only acceptance, so `canceled_order_indexes` are
+    the indexes the caller asked to cancel and `errors` is empty unless the venue rejected the
+    whole submission (which the exchange raises as `ExchangeActionError`). A cancel for an order
+    that already filled is NOT knowable here -- reconcile with `get_orders`.
+    """
+
+    coin: str
+    canceled_order_indexes: List[int] = field(default_factory=list)
+    tx_hashes: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors and bool(self.canceled_order_indexes)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "coin": self.coin,
+            "canceledOrderIndexes": list(self.canceled_order_indexes),
+            "txHashes": list(self.tx_hashes),
+            "errors": list(self.errors),
+        }
