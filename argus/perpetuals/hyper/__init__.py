@@ -19,9 +19,6 @@ from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.hyper.exchange import HyperLiquidExchange, MAX_BATCH_SIZE
 from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate, AccountUpdate, fatal_decorator
 
-
-
-
 __version__ = [1, 0, 0, 0]
 pi = PrintInterface('HyperLiquid')
 
@@ -812,7 +809,8 @@ class HyperLiquidDispatcher(BaseDispatcher):
                 raise _shared_ers.MissingArgumentError("Each order must be an object with an 'order_id'")
             unknown = sorted(set(raw) - {'order_id', 'coin'})
             if unknown:
-                raise _shared_ers.MissingArgumentError(f"Unknown order field(s) {unknown}; accepted: ['coin', 'order_id']")
+                raise _shared_ers.MissingArgumentError(
+                    f"Unknown order field(s) {unknown}; accepted: ['coin', 'order_id']")
             if raw.get('order_id') is None:
                 raise _shared_ers.MissingArgumentError("Missing required order field 'order_id'")
             kind, identifier = self._parse_order_id(raw['order_id'])
