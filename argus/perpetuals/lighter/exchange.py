@@ -43,15 +43,15 @@ import time
 import functools
 import itertools
 import threading
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_EVEN
 from utils3.networking import Session
+from argus.perpetuals.lighter import _signer
 from typing import Any, Dict, List, Optional, Tuple
-
 from argus.perpetuals.lighter import _errors as _ers
 from argus.perpetuals.lighter import _classes as _cls
-from argus.perpetuals.lighter import _signer
 from argus.perpetuals.lighter.rest import LighterRest
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_EVEN
 from argus.perpetuals.shared import errors as _shared_ers
+
 from argus.perpetuals.shared._classes import (
     BatchCancelResult,
     CancelOutcome,

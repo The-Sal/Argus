@@ -10,14 +10,14 @@ from argus.perpetuals.hyper import wss
 from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
 from argus.perpetuals.hyper import _errors as _ers
+from typing import Any, Dict, List, Optional, Tuple
 from argus.perpetuals.hyper import _classes as _cls
 from argus.perpetuals.shared import account as _acct
-from typing import Any, Dict, List, Optional
 from argus.perpetuals.hyper.rest import HyperLiquidRest
 from argus.protocol import transmit_mkt_data_with_protocol_2
-from argus.perpetuals.hyper.exchange import HyperLiquidExchange, MAX_BATCH_SIZE
-from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate, AccountUpdate, fatal_decorator
 from argus.perpetuals.shared.trading import TradingHandlersMixin
+from argus.perpetuals.hyper.exchange import HyperLiquidExchange, MAX_BATCH_SIZE
+from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate, AccountUpdate
 
 __version__ = [1, 0, 0, 0]
 pi = PrintInterface('HyperLiquid')
@@ -561,7 +561,7 @@ class HyperLiquidDispatcher(TradingHandlersMixin, BaseDispatcher):
         return out
 
     @staticmethod
-    def _parse_order_id(value: Any) -> tuple:
+    def _parse_order_id(value: Any) -> Tuple[str, Any]:
         """
         Split an order id into ('oid', int) or ('cloid', str). Oids are venue-assigned
         integers; cloids are client ids (0x + 32 hex chars, 16 bytes). Anything else is

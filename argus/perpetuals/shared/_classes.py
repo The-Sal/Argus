@@ -4,8 +4,8 @@ import zlib
 import base64
 from argus import protocol
 from decimal import Decimal
-from dataclasses import dataclass, field
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from argus.perpetuals.shared import errors as ers
 from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING
 

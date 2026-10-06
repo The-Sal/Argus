@@ -26,14 +26,14 @@ ABI notes (mirrored from `lighter/signer_client.py` @ `lighter-sdk==1.1.6`):
     28-day default); IOC uses `0`. `0` on a GTT order is rejected by the signer.
   - Chain id: 304 mainnet, 300 testnet (the SDK derives it from the base URL).
 """
-import ctypes
 import os
+import time
+import ctypes
 import platform
 import threading
-import time
 from typing import Optional, Tuple
-
 from argus.perpetuals.lighter import _errors as _ers
+
 
 
 # --- ctypes structures (must match the native headers exactly) ---------------

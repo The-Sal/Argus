@@ -20,18 +20,19 @@ stays on `market_id` throughout.
 """
 import os
 import traceback
+from typing import Any, Tuple
 from utils3 import runAsThread
 from argus.perpetuals.lighter import wss
 from argus._argus_utils import ArgsObject
 from argus import __version__ as argus_version
 from argus.perpetuals.lighter import _errors as _ers
+from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.lighter import _classes as _cls
 from argus.perpetuals.lighter.rest import LighterRest
-from argus.perpetuals.lighter.exchange import LighterExchange, MAX_BATCH_SIZE
 from argus.protocol import transmit_mkt_data_with_protocol_2
-from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate, AccountUpdate
-from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.shared.trading import TradingHandlersMixin
+from argus.perpetuals.lighter.exchange import LighterExchange, MAX_BATCH_SIZE
+from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInterface, LockedState, NewFundingRate, AccountUpdate
 
 
 __version__ = [1, 0, 0, 0]
@@ -559,7 +560,7 @@ class LighterDispatcher(TradingHandlersMixin, BaseDispatcher):
         return self.exchange
 
     @staticmethod
-    def _parse_order_id(value):
+    def _parse_order_id(value: Any) -> Tuple[str, Any]:
         """A Lighter cancel id is a venue `order_index` (numeric), a venue `order_id` string, or a
         client id written `"c:<client_order_index>"`. All are resolved to an `order_index` before
         signing (see `_resolve_order_index`). The `c:` prefix exists because a client id and an

@@ -16,10 +16,26 @@ import argus
 import logging
 import platform
 import argparse
+import subprocess
 from argus import secure_load_dotenv, check_env_compatibility
 
 
 choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid', 'lighter']
+
+def git_info():
+    """
+    Returns the git commit hash and branch name of the current Argus installation.
+    :return:
+    """
+    proc = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        return None, None
+    commit_hash = proc.stdout.decode('utf-8').strip()
+    proc = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode != 0:
+        return commit_hash, None
+    branch_name = proc.stdout.decode('utf-8').strip()
+    return commit_hash, branch_name
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
@@ -139,4 +155,7 @@ if __name__ == '__main__':
     print('Argus:', argus)
     print('Running on', platform_running)
     print('Arguments:', sys.argv)
+    commit_hx, branch = git_info()
+    if commit_hx and branch:
+        print(f'Git commit: {commit_hx}, branch: {branch}')
     main(sys.argv[1:])

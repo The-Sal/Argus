@@ -4,8 +4,8 @@ from utils3.networking import Session
 from argus.perpetuals.shared import ers as _ers
 from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.lighter import _classes as _cls
-from argus.perpetuals.lighter import _errors as _lighter_ers
 from typing import Any, Callable, Dict, List, Optional
+from argus.perpetuals.lighter import _errors as _lighter_ers
 from argus.perpetuals.shared import BaseDispatcherCompatibleRest, BaseDispatcherCompatibleAccountRest
 
 _ep = {

@@ -3,8 +3,8 @@ from decimal import Decimal
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from argus.perpetuals.shared import account as _acct
-from argus.perpetuals.shared import P2OrderBookConvertClass
 from argus.perpetuals.shared._classes import OrderLeverage
+from argus.perpetuals.shared import P2OrderBookConvertClass
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 

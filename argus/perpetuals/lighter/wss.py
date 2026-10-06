@@ -81,9 +81,9 @@ import bisect
 import logging
 import threading
 from collections import OrderedDict
-from typing import Callable, Optional, Union
-from argus.perpetuals.lighter import _classes as _cls
+from typing import Any, Callable, Optional, Union
 from argus.perpetuals.shared import account as _acct
+from argus.perpetuals.lighter import _classes as _cls
 from argus.perpetuals.shared.wss import MarketDataWssBase, VenueWSSBase
 
 #: Lighter's public websocket endpoint. Both the market-data and account streams use it; they are kept
@@ -101,6 +101,10 @@ class LighterFramingMixin:
     our timer/lock state (that reply is what actually keeps the server-side connection alive). List
     this *before* the `WSSBase` subclass in the bases so these hooks override the base's abstract ones.
     """
+
+    # Provided by the `WSSBase` this mixin is combined with (instance attributes there shadow these).
+    _name: str = ''
+    _ws: Any = None
 
     def _ping_frame(self) -> str:
         return json.dumps({"type": "ping"})

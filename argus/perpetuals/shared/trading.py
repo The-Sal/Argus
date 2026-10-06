@@ -46,11 +46,11 @@ The mixin also expects the host to be a `BaseDispatcher` (for `self._read_args`,
 `self.account_rest`). The host's `_expected_errors` must include the venue's own
 trading error type so ordinary rejections do not trip the contingency.
 """
-from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
-
 from argus._argus_utils import ArgsObject
 from argus.perpetuals.shared import errors as ers
 from argus.perpetuals.shared import fatal_decorator
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+
 from argus.perpetuals.shared._classes import (
     BatchCancelResult,
     CancelOutcome,
@@ -125,7 +125,8 @@ class TradingVenue(Protocol):
         """True when `error` proves the order was NOT accepted, so rolling leverage back is safe."""
         ...
 
-    def _parse_order_id(self, value: Any) -> Tuple[str, Any]:
+    @staticmethod
+    def _parse_order_id(value: Any) -> Tuple[str, Any]:
         """Classify a caller-supplied order id into `(kind, identifier)`. Venue-specific: a client id is a
         0x-hex string on Hyperliquid but an integer on Lighter, so each venue defines its own grammar. The
         `kind` is passed back to `_trading_cancel` / `_trading_cancel_many`."""
@@ -151,6 +152,13 @@ class TradingHandlersMixin:
     A venue's cancel result must expose `.to_dict()`; a batch cancel result `.outcomes` and `.to_dict()`.
     """
 
+    if TYPE_CHECKING:
+        # Provided by the host `BaseDispatcher`; declared here for type checkers only (a real stub would
+        # shadow the host's implementation in the MRO).
+        def _read_args(self, args: ArgsObject, *accepted: str) -> Dict[str, Any]: ...
+
+        def _require_order_execution_enabled(self) -> None: ...
+
     ########################################
     # Venue hooks (must be overridden; see TradingVenue)
     ########################################
@@ -164,13 +172,13 @@ class TradingHandlersMixin:
     def _trading_set_leverage(self, coin: str, applied: PositionLeverage) -> None:
         raise NotImplementedError("_trading_set_leverage is not implemented by this venue.")
 
-    def _trading_place_order(self, coin, side, price, size, tif, reduce_only, cloid):
+    def _trading_place_order(self, coin, side, price, size, tif, reduce_only, cloid) -> Any:
         raise NotImplementedError("_trading_place_order is not implemented by this venue.")
 
-    def _trading_place_orders(self, requests: List[OrderRequest]) -> list:
+    def _trading_place_orders(self, requests: List[OrderRequest]) -> List[Any]:
         raise NotImplementedError("_trading_place_orders is not implemented by this venue.")
 
-    def _trading_cancel(self, coin: str, kind: str, identifier):
+    def _trading_cancel(self, coin: str, kind: str, identifier) -> Any:
         raise NotImplementedError("_trading_cancel is not implemented by this venue.")
 
     def _trading_cancel_many(self, items: List[tuple]) -> BatchCancelResult:
@@ -193,7 +201,8 @@ class TradingHandlersMixin:
     def _trading_is_definitive_failure(error: Exception) -> bool:
         raise NotImplementedError("_trading_is_definitive_failure is not implemented by this venue.")
 
-    def _parse_order_id(self, value: Any) -> Tuple[str, Any]:
+    @staticmethod
+    def _parse_order_id(value: Any) -> Tuple[str, Any]:
         raise NotImplementedError("_parse_order_id is not implemented by this venue.")
 
     @property
@@ -378,7 +387,6 @@ class TradingHandlersMixin:
             if self._definitive_failure(e):
                 self._revert_or_raise(changes.values(), e)
             raise
-        reverted = False
         if not result.ok and change.changed:
             failed = self._revert_leverage([change])
             reverted = not failed
