@@ -11,11 +11,14 @@ Argus runtime entrypoint.
 - Use .env (or Environment Variables) to configure dispatcher behavior (see docs)
 - Automatically loads .env file if present in a working directory.
 """
+import os
 import sys
+import time
 import argus
 import logging
 import platform
 import argparse
+import sysconfig
 import subprocess
 from argus import secure_load_dotenv, check_env_compatibility
 
@@ -36,6 +39,56 @@ def git_info():
         return commit_hash, None
     branch_name = proc.stdout.decode('utf-8').strip()
     return commit_hash, branch_name
+
+
+def interpreter_info():
+    """
+    Returns the Python interpreter version, implementation and if its free thread or not.
+    :return:
+    """
+    version = platform.python_version()
+    implementation = platform.python_implementation()
+    supports_free_threading = (
+            sysconfig.get_config_var("Py_GIL_DISABLED") == 1
+    )
+    gil_enabled = sys._is_gil_enabled()
+    free_threading_active = gil_enabled is False
+    return version, implementation, supports_free_threading, free_threading_active
+
+def bootstrap():
+    print('Checking Argus runtime...')
+
+    version, implementation, supports_free_threading, free_threading_active = interpreter_info()
+
+    print(f'Python version: {version}')
+    print(f'Python implementation: {implementation}')
+    print(f'Free threading supported: {supports_free_threading}')
+    print(f'Free threading active: {free_threading_active}')
+    
+    if supports_free_threading:
+        # check if the set PYTHON_GIL=0 if not that means when the module imports ckzg the GIL will be re-enabled
+        # the code is already tested with GIL disabled extensively so you should force it to be disabled.
+        # re-executes the script with GIL force disabled.
+        if os.environ.get("PYTHON_GIL") is None:
+            print(
+                f"Warning: You are running Python {version} which supports free threading, you have no explicitly set PYTHON_GIL=0/1, "
+                f"re-executing with PYTHON_GIL=0 to force GIL disabled for better performance.")
+            print("Restarting in 3 seconds...")
+            for _ in range(3, 0, -1):
+                print(f"\r{_}...", end="")
+                time.sleep(1)
+            print("")
+            os.environ["PYTHON_GIL"] = "0"
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+    else:
+        pass
+    
+
+    commit_hx, branch = git_info()
+    if commit_hx and branch:
+        print(f'Git commit: {commit_hx}, branch: {branch}')
+
+    check_env_compatibility()
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
@@ -61,7 +114,7 @@ def main(argv=None):
     if args.target is not None:
         if not secure_load_dotenv():
             print("Warning: .env was not loaded")
-        check_env_compatibility()
+        bootstrap()
 
     if args.target == 'ib.forecast':
         from argus.ib.forecast import FXCDispatcher
@@ -155,7 +208,4 @@ if __name__ == '__main__':
     print('Argus:', argus)
     print('Running on', platform_running)
     print('Arguments:', sys.argv)
-    commit_hx, branch = git_info()
-    if commit_hx and branch:
-        print(f'Git commit: {commit_hx}, branch: {branch}')
     main(sys.argv[1:])
