@@ -72,11 +72,69 @@ def _install_httpx_ok_ping_filter():
 REST_CACHE = DomainCache("polymarket_direct.rest")
 endpoints = {
     "events": "https://gamma-api.polymarket.com/events",
-    "positions": "https://data-api.polymarket.com/positions",
+    # Data API v2 (v1 is retired 2026-10-24). v1 URL kept only so a rollback is a one-line change.
+    "positions": "https://data-api.polymarket.com/v2/positions",
+    "positions_v1": "https://data-api.polymarket.com/positions",
     "geo_block_test": "https://polymarket.com/api/geoblock",
     "page_data": "https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json",
 }
 qw = "[{}]".format(__name__)
+
+# v1 sortBy value -> v2 sort_by value (unknown values are passed through; v2 answers 400 for them).
+_V1_POSITION_SORT_MAP = {
+    "CURRENT": "CURRENT_VALUE",
+    "CASHPNL": "UNREALIZED_PNL",
+    "TOKENS": "TOKENS",
+    "PRICE": "PRICE",
+}
+_POSITIONS_MAX_PAGES = 1000
+
+
+def _translate_positions_params(user: str, params: dict) -> tuple[dict, dict]:
+    """Translate v1 /positions query params to Data API v2 /v2/positions params.
+
+    Returns (query, local) where `local` holds filters v2 cannot express and which are
+    applied client-side: redeemable/mergeable == False, offset (v2 has no offset) and limit
+    (treated as a cap on the TOTAL rows returned, like the old single-page semantics; the
+    page size sent to v2 is min(limit, 1000)).
+    v2-native (snake_case or camelCase) params are passed through untouched.
+    """
+    query: dict = {"user": user}
+    local: dict = {}
+    params = dict(params)
+
+    if "market" in params:
+        query["condition"] = params.pop("market")
+    if "eventId" in params:
+        query["event_id"] = params.pop("eventId")
+    if "sizeThreshold" in params:
+        query["filter_type"] = "TOKENS"
+        query["filter_amount"] = params.pop("sizeThreshold")
+    if "sortDirection" in params:
+        query["sort_direction"] = params.pop("sortDirection")
+    if "sortBy" in params:
+        v1_sort = str(params.pop("sortBy"))
+        query["sort_by"] = _V1_POSITION_SORT_MAP.get(v1_sort.upper(), v1_sort)
+
+    # v1 'redeemable'/'mergeable' were boolean row filters; v2 uses a status lifecycle filter.
+    explicit_status = "status" in params
+    for flag, status in (("redeemable", "REDEEMABLE"), ("mergeable", "MERGEABLE")):
+        if flag not in params:
+            continue
+        raw = params.pop(flag)
+        want = raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw)
+        if want and not explicit_status and "status" not in query:
+            query["status"] = status
+        else:
+            local[flag] = want  # False (or a second flag): filter on the row flag locally
+    if "limit" in params:
+        local["limit"] = int(params.pop("limit"))
+        query["limit"] = min(max(local["limit"], 1), 1000)
+    if "offset" in params:
+        local["offset"] = int(params.pop("offset"))
+    query.update(params)
+    return query, local
+
 
 
 def retry(max_attempts=3, delay=0.35):
@@ -914,21 +972,60 @@ class PolyRestAPI:
     @fatal_decorator("get_positions")
     def get_positions(self, user: str | None = None, **params) -> PositionData:
         """
-        Get the current aggregated positions for a wallet from Polymarket's data-api.
+        Get the current positions for a wallet from Polymarket's Data API v2
+        (GET /v2/positions), following the cursor until the full list is fetched.
+
+        With no ``filter_amount``/``sizeThreshold`` a 1-share floor is applied (the v1 default).
+        With no ``status`` the v2 default OPEN is used, which is a superset that includes
+        settled-but-unredeemed (redeemable) positions, matching what v1 /positions returned.
 
         :param user: The wallet address to fetch positions for. Defaults to this client's
             proxy_funder address if not provided.
-        :param params: Additional optional query parameters supported by the data-api,
-            e.g., market, eventId, sizeThreshold, redeemable, mergeable, limit, offset,
-            sortBy, sortDirection.
+        :param params: Optional query parameters. v2 names (status, condition, event_id,
+            filter_type, filter_amount, sort_by, sort_direction, title, ...) pass straight
+            through. Legacy v1 names are translated: market -> condition, eventId -> event_id,
+            sizeThreshold -> filter_type=TOKENS&filter_amount, sortBy/sortDirection,
+            redeemable=true -> status=REDEEMABLE, mergeable=true -> status=MERGEABLE.
+            limit caps the total rows returned and offset skips rows client-side.
         :return: A PositionData object containing the list of PolymarketPosition objects.
         """
-        query = {"user": user or self.proxy_funder}
-        query.update(params)
+        query, local = _translate_positions_params(user or self.proxy_funder, params)
+        query.setdefault("limit", 1000)  # v2 max page size: fewest round trips
+        # v1 defaulted sizeThreshold=1 (hide holdings under 1 share); v2's default dust floor is 0.1.
+        # Verified live: v2 filter_amount=1 reproduces the v1 default row set exactly.
+        if "filter_amount" not in query and "filterAmount" not in query:
+            query["filter_amount"] = 1
+        limit = local.get("limit")
+        offset = local.get("offset", 0)
 
-        response = self.raw_session.get(endpoints["positions"], params=query)
-        response.raise_for_status()
-        return PositionData.from_list(response.json())
+        rows: list = []
+        cursor = None
+        seen_cursors = set()
+        for _ in range(_POSITIONS_MAX_PAGES):
+            page_query = dict(query)
+            if cursor:
+                # Filters are re-sent on every page: the cursor binds user/status/sort only.
+                page_query["cursor"] = cursor
+            response = self.raw_session.get(endpoints["positions"], params=page_query)
+            response.raise_for_status()
+            body = response.json() or {}
+            rows.extend(body.get("data") or [])
+            cursor = (body.get("pagination") or {}).get("next_cursor")
+            if not cursor or cursor in seen_cursors:
+                break
+            seen_cursors.add(cursor)
+            if limit is not None and not {"redeemable", "mergeable"} & local.keys() and offset + limit <= len(rows):
+                break
+
+        positions = PositionData.from_v2_list(rows).positions
+        for flag in ("redeemable", "mergeable"):
+            if flag in local:
+                positions = [p for p in positions if getattr(p, flag) == local[flag]]
+        if offset:
+            positions = positions[offset:]
+        if limit is not None:
+            positions = positions[:limit]
+        return PositionData(positions=positions)
 
     @fatal_decorator("get_order_status")
     @retry(max_attempts=3, delay=0.35)

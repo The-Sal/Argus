@@ -417,6 +417,43 @@ class TradeEvent:
         }
 
 
+def _v2_str(value, default: str = '') -> str:
+    """Coerce a Data API v2 value to str; None/missing -> default. Numeric ids (e.g. an int
+    event_id) become their decimal string."""
+    if value is None:
+        return default
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _v2_float(value, default: float = 0.0) -> float:
+    """Coerce a Data API v2 value to float; None/''/unparseable -> default.
+    v2 documents that a null numeric means 'unavailable, never zero', but the downstream
+    Rust SDK needs a non-null f64, so the documented fallback is 0.0."""
+    if value is None or value == '':
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _v2_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ('true', '1', 'yes')
+    return bool(value) if value is not None else False
+
+
+def _v2_int(value, default: int) -> int:
+    if value is None or value == '':
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class PolymarketPosition:
     """Represents a single aggregated position for a wallet, as returned by Polymarket's
@@ -521,6 +558,57 @@ class PolymarketPosition:
             negative_risk=bool(data['negativeRisk']),
         )
 
+    @classmethod
+    def from_v2_dict(cls, data: dict) -> 'PolymarketPosition':
+        """Build from one row of Data API v2 (GET /v2/positions -> data[]), snake_case.
+
+        All 26 fields are always populated with the contract types (never None).
+        Field mapping (v2 -> dataclass):
+            proxy_wallet -> proxy_wallet          token_id -> asset
+            condition_id -> condition_id          current_size -> size
+            avg_price -> avg_price                entry_cost_usdc -> initial_value (fee-exclusive, == v1 initialValue)
+            current_value -> current_value        unrealized_pnl -> cash_pnl (== v1 cashPnl)
+            percent_pnl -> percent_pnl            total_size -> total_bought
+            realized_pnl -> realized_pnl          percent_realized_pnl -> percent_realized_pnl
+            current_price -> cur_price            redeemable/mergeable/negative_risk -> same
+            title, slug, icon, event_id, event_slug, outcome, outcome_index, opposite_outcome,
+            end_date -> same                      opposite_token_id -> opposite_asset
+        Fallbacks (only when v2 omits or nulls the field): strings -> '', floats -> 0.0,
+        bools -> False, outcome_index -> 999 (v2's own 'could not be labeled' sentinel; 0 would
+        silently claim the first outcome). Numeric ids are coerced to str.
+        Ignored v2-only fields: status, archived, entry_fees_usdc, total_cost_usdc, total_pnl,
+        last_event_at, first_entry_at, name, profile_image, verified.
+        """
+        g = data.get
+        return cls(
+            proxy_wallet=_v2_str(g('proxy_wallet')),
+            asset=_v2_str(g('token_id')),
+            condition_id=_v2_str(g('condition_id')),
+            size=_v2_float(g('current_size')),
+            avg_price=_v2_float(g('avg_price')),
+            initial_value=_v2_float(g('entry_cost_usdc')),
+            current_value=_v2_float(g('current_value')),
+            cash_pnl=_v2_float(g('unrealized_pnl')),
+            percent_pnl=_v2_float(g('percent_pnl')),
+            total_bought=_v2_float(g('total_size')),
+            realized_pnl=_v2_float(g('realized_pnl')),
+            percent_realized_pnl=_v2_float(g('percent_realized_pnl')),
+            cur_price=_v2_float(g('current_price')),
+            redeemable=_v2_bool(g('redeemable')),
+            mergeable=_v2_bool(g('mergeable')),
+            title=_v2_str(g('title')),
+            slug=_v2_str(g('slug')),
+            icon=_v2_str(g('icon')),
+            event_id=_v2_str(g('event_id')),
+            event_slug=_v2_str(g('event_slug')),
+            outcome=_v2_str(g('outcome')),
+            outcome_index=_v2_int(g('outcome_index'), 999),
+            opposite_outcome=_v2_str(g('opposite_outcome')),
+            opposite_asset=_v2_str(g('opposite_token_id')),
+            end_date=_v2_str(g('end_date')),
+            negative_risk=_v2_bool(g('negative_risk')),
+        )
+
     def to_dict(self) -> dict:
         return {
             'proxyWallet': self.proxy_wallet,
@@ -572,6 +660,11 @@ class PositionData:
     def from_list(cls, data: list) -> 'PositionData':
         positions = [PolymarketPosition.from_dict(position_dict) for position_dict in data]
         return cls(positions=positions)
+
+    @classmethod
+    def from_v2_list(cls, data: list) -> 'PositionData':
+        """Build from a list of Data API v2 position rows (the `data` array)."""
+        return cls(positions=[PolymarketPosition.from_v2_dict(d) for d in (data or [])])
 
     @classmethod
     def from_json(cls, json_str: str) -> 'PositionData':
