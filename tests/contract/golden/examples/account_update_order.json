@@ -10,7 +10,7 @@
     "original_size": "100",
     "size_matched": "0",
     "price": "0.45",
-    "associate_trades": null,
+    "associate_trades": [],
     "outcome": "Up",
     "type": "PLACEMENT",
     "created_at": "1770413401",

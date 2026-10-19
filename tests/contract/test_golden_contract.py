@@ -102,7 +102,8 @@ def test_scalar_types():
 
 
 def test_nullability_locked():
-    assert load("clob_info")["keys"]["outcome"]["nullable"] is True
+    # Was nullable in the baseline, which violated the Rust SDK (CLOBInfo.outcome: String); fixed in protocol-v2.
+    assert load("clob_info")["keys"]["outcome"]["nullable"] is False
     for n in ("envelope_ok", "envelope_compressed"):
         assert load(n)["keys"]["error"]["type"] == "null"   # success: error is null
     assert load("envelope_error")["keys"]["data"]["nullable"] is True

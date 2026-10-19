@@ -18,7 +18,7 @@ Run: `/home/avm/Argus/.venv/bin/python -m pytest tests/contract -q`
 - `golden/*.json` - key -> type/nullable schema, one per response type the SDK parses.
 - `golden/examples/*.json` - actual JSON instances (envelope for `account_update_*`
   and `envelope_*`, bare `data` payload otherwise) for the Rust SDK to deserialize
-  in its own tests. `*__variantN.json` are nullability variants (e.g. `clob_info` with `outcome: null`).
+  in its own tests. `*__variantN.json` are nullability variants (e.g. `clob_info` with an unresolvable outcome).
 - `test_golden_contract.py` - current output vs goldens (key sets and types).
 - `test_p2_roundtrip.py` - Python P2 encoder -> Python port of the Rust decoder.
 - `regen_golden.py` - regenerates goldens and examples.
@@ -35,9 +35,13 @@ and review the `git diff` of `tests/contract/golden/` line by line.
 
 ## Known issues recorded
 
-- `fetch_clob_id_information` can return `outcome: null` (Python side), while the
-  Rust `CLOBInfo.outcome` is a non-optional `String`. Locked as nullable.
-- An empty market-data `timestamp` yields `,,` in the P2 body, which the Rust decoder
-  panics on (`xfail` test; fix in progress elsewhere).
+Baseline violations of the Rust SDK contract, fixed on `feat/protocol-v2` (goldens regenerated deliberately):
+
+- `fetch_clob_id_information` returned `outcome: null`; Rust `CLOBInfo.outcome` is a non-optional
+  `String`. Now `""` when unresolvable.
+- `account_update` order events forwarded `associate_trades: null`; Rust `#[serde(default)] Vec<Value>`
+  rejects null. Now `[]`.
+- An empty market-data `timestamp` produced `,,` in the P2 body, which panics the Rust decoder.
+  Now falls back to receive time (the old `xfail` test now passes).
 
 Note: the repo .gitignore ignores *.json, so new/changed goldens must be staged with `git add -f tests/contract/golden`.

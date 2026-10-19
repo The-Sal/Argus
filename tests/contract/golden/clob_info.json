@@ -17,7 +17,7 @@
       "type": "string"
     },
     "outcome": {
-      "nullable": true,
+      "nullable": false,
       "type": "string"
     },
     "ticker": {

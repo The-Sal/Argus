@@ -15,8 +15,12 @@
           "type": "string"
         },
         "associate_trades": {
-          "nullable": true,
-          "type": "null"
+          "items": {
+            "nullable": false,
+            "type": "any"
+          },
+          "nullable": false,
+          "type": "array"
         },
         "created_at": {
           "nullable": false,
