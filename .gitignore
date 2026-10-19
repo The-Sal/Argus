@@ -12,5 +12,4 @@ examples/ADX_data
 *.pkl*
 *.toon
 *.enc.se
-polymarket_events*!tests/contract/golden/
-!tests/contract/golden/**/*.json
+polymarket_events*

@@ -39,3 +39,5 @@ and review the `git diff` of `tests/contract/golden/` line by line.
   Rust `CLOBInfo.outcome` is a non-optional `String`. Locked as nullable.
 - An empty market-data `timestamp` yields `,,` in the P2 body, which the Rust decoder
   panics on (`xfail` test; fix in progress elsewhere).
+
+Note: the repo .gitignore ignores *.json, so new/changed goldens must be staged with `git add -f tests/contract/golden`.
