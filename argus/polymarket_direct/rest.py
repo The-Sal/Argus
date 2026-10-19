@@ -214,6 +214,11 @@ class PolyRestAPI:
         )
         self.clob.set_api_creds(self._create_or_derive_api_key())
 
+        # py-clob-client-v2 >= 1.1.0 polls get_trades (time.sleep, up to 30s) inside post_order/post_orders
+        # to fill `transactionsHashes` on matched orders. That blocks the order hot path and adds a key
+        # to the place_order response, so it is disabled: responses are returned exactly as the server sent them.
+        self.clob._resolve_transactions_hashes = lambda response: response
+
         # noinspection all
         self.clob._ClobClient__resolve_version()  # Force a version check
         self._div = divisor

@@ -388,7 +388,8 @@ class TradeEvent:
             size=data['size'],
             fee_rate_bps=str(data.get('fee_rate_bps') if data.get('fee_rate_bps') is not None else '0'),
             price=data['price'],
-            status=data.get('status', ''),
+            # status is a strict enum in the downstream SDK; never default it to '' (skip the frame instead)
+            status=data['status'],
             match_time=data.get('match_time', ''),
             last_update=data.get('last_update', data.get('match_time', '')),
             outcome=data.get('outcome', ''),
@@ -689,11 +690,13 @@ class OrderEvent:
             price=data.get('price', '0'),
             associate_trades=data.get('associate_trades') or [],
             outcome=data.get('outcome', ''),
-            type=data.get('type', ''),
+            # type/order_type/status are strict enums in the downstream SDK; never default them to ''
+            # (a KeyError makes the WS dispatcher log and skip the frame instead)
+            type=data['type'],
             created_at=data.get('created_at', '0'),
             expiration=data.get('expiration', '0'),
-            order_type=data.get('order_type', ''),
-            status=data.get('status', ''),
+            order_type=data['order_type'],
+            status=data['status'],
             maker_address=data.get('maker_address', ''),
             timestamp=ts,
             event_type=data.get('event_type', 'order')
