@@ -378,21 +378,34 @@ Positions migration findings (live, 25 wallets via the proxy):
 | GTC BUY 105 @ 0.01 → `get_order_status` → `get_orders` → cancel | ✅ LIVE, cancelled | ✅ **LIVE on ExchangeV3 (domain "3")**, cancelled |
 | Leak check (`ss -tnp` on the dispatcher PID) | all 11 sockets → the SOCKS5 proxy | |
 
-Not done: a real **fill** on a v2 market. Every open v2 book was 0.01/0.99, so the 5-share minimum would cost ~$4.95.
+**Real v2 fill (owner-approved), via the SDK → Argus → ExchangeV3:**
+
+| Step | Result |
+|---|---|
+| BUY 5 @ 0.99 on `polyv2zec-updown-5m-1792400400` (Up) | `status: matched`, `makingAmount 4.95`, `takingAmount 5` |
+| `get_order_status` | `MATCHED`, `size_matched 5` (within 3 s) |
+| `get_token_balance` (`CONDITIONAL-V2`) | 0 → **5** |
+| `get_balance` | 10.55292 → 5.59946, spent **4.9535** = 4.95 + taker fee 0.0035 (matches `5 × 0.07 × 0.99 × 0.01`) |
+| `get_positions` (Data API v2) | size 5, avg 0.99, outcome Up, `outcome_index` 0 |
+| `account_update` (resting order, placed then cancelled) | PLACEMENT + CANCELLATION both parsed by SDK `OrderEvent` (2/2) |
+| `unsubscribe_from_event` | parses after the SDK fix |
+
+Not observed live: a v2 `trade` account event delivered to an SDK client. The fill produced no dispatcher warnings, but the
+test client did not capture pushes during it.
 
 Bugs found by the live run:
 
 * **Fixed (pre-existing, security-relevant):** the disk-cached CLOB API creds had no account in the cache key, so changing
   `POLYMARKET_PRIVATE_KEY` within the 1 h TTL reused the previous account's creds (`401 Invalid api key`, or requests
   authenticated as the wrong account). The key is now signer + funder + signature type.
-* **Pre-existing, not fixed (contract decision needed):** Argus `unsubscribe` / `unsubscribe_from_market_by_ticker` return
+* **Pre-existing, fixed in the SDK (serde alias, no API change):** Argus `unsubscribe` / `unsubscribe_from_market_by_ticker` return
   `{"unsubscribed", "failed"}`, but the SDK's `UnsubscriptionResponse` expects `{"subscribed", "failed"}`, so every SDK
   unsubscribe call fails to parse. This is identical on `main`.
 * **Pre-existing, by design:** subscribing to a very large event (e.g. the 2028 Democratic nominee, 100+ tokens)
   exhausts the WS shard pool (10 shards × 4 assets) and overflows the 9,999-byte P1 response limit.
 * **Config:** `POLYMARKET_SIGNATURE_TYPE` must match the account. Deposit wallets use 3 (the default); legacy Proxy wallets need 1.
 
-Remaining before rollout: owner decisions (v2 fill, unsubscribe contract fix), then push and open PRs.
+Remaining before rollout: push the three branches and open PRs (owner holding).
 
 ## 8. Open questions
 
