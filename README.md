@@ -235,9 +235,8 @@ Argus consists of several specialized modules, each providing access to differen
 ### Installation
 
 ```bash
-git clone https://github.com/The-Sal/Argus.git
-cd Argus
-pip install -e .
+git clone https://github.com/The-Sal/Argus.git && cd Argus
+uv sync 
 ```
 
 ### Environment Setup

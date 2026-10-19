@@ -11,6 +11,7 @@ import copy
 import logging
 from dotenv import load_dotenv
 from websocket import WebSocketApp
+from argus.wireproxy import WireProxyManagement
 from argus.wireproxy.__main__ import send_server_command, ensure_daemon_running
 
 if not load_dotenv():
@@ -51,6 +52,8 @@ def _setup_proxy_for_dispatcher(idx, verbose=True):
                                 f'daemon state checks and blindly binding to {BIND_ADDRESS} for dispatcher {idx}')
             return True
 
+        # bug fix: on init auto configures the instance of wireproxy downloads and all that jaz
+        _ = WireProxyManagement()
         ensure_daemon_running()
         config_name = mappings[str(idx)].split('.conf')[0]
         if verbose:

@@ -13,6 +13,8 @@ class SlimmedPolymarketEvent(SimpleNamespace):
         """Convert the SimpleNamespace back to a dictionary."""
         result = {}
         for key, value in self.__dict__.items():
+            if key in _INTERNAL_ONLY_KEYS:
+                continue
             if isinstance(value, list):
                 result[key] = [
                     item.to_dict() if isinstance(item, SlimmedPolymarketEvent) else item
@@ -46,7 +48,12 @@ ATTRS = [
     'negRisk',
     'orderPriceMinTickSize',
     'conditionId',
+    'version',
+    'positionIds',
 ]
+
+# Allowlisted only so outcome_token_ids() works on slimmed markets; never emitted by to_dict.
+_INTERNAL_ONLY_KEYS = frozenset({'version', 'positionIds'})
 
 ALL_READ_ATTRIBUTES =  ATTRS
 READ_ATTRIBUTES_SET = set(ALL_READ_ATTRIBUTES)

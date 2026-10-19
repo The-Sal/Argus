@@ -73,7 +73,7 @@ def get_wireproxy_filename():
         'x86_64': 'amd64',
         'AMD64': 'amd64',
         'arm64': 'arm64',
-        'aarch64': 'arm'
+        'aarch64': 'arm64'
     }
 
     # Get mapped values
@@ -95,13 +95,13 @@ def get_wireproxy_filename():
         'wireproxy_darwin_amd64.tar.gz',
         'wireproxy_darwin_arm64.tar.gz',
         'wireproxy_linux_amd64.tar.gz',
-        'wireproxy_linux_arm.tar.gz'
+        'wireproxy_linux_arm.tar.gz',
+        "wireproxy_linux_arm64.tar.gz"
     }
 
     if filename not in valid_filenames:
         raise RuntimeError(
-            f"Unsupported platform: {current_platform} {arch}. "
-            f"Supported platforms are: Linux (amd64, arm64), macOS (amd64, arm64)"
+            f"Generated unsupported filename: {filename}. Only the following are available {valid_filenames}"
         )
 
     return filename
@@ -119,14 +119,9 @@ class WireProxyManagement:
         self.wg_confs_dir = os.path.join(ARGUS_CACHE_DIR, "wireproxy_confs")
         self.logs_dir = os.path.join(ARGUS_CACHE_DIR, "wp-server-logs")
 
-        if not os.path.exists(self._wp_instance_dir):
-            os.mkdir(self._wp_instance_dir)
-
-        if not os.path.exists(self.wg_confs_dir):
-            os.mkdir(self.wg_confs_dir)
-
-        if not os.path.exists(self.logs_dir):
-            os.mkdir(self.logs_dir)
+        os.makedirs(self._wp_instance_dir, exist_ok=True)
+        os.makedirs(self.wg_confs_dir, exist_ok=True)
+        os.makedirs(self.logs_dir, exist_ok=True)
 
         if not self.wp_exists:
             self.update_wireproxy()

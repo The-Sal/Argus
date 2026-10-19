@@ -11,6 +11,8 @@ from termcolor import colored
 from argus.cache_sys import DomainCache
 from argus.polymarket_direct.safe import IPSafety
 from py_clob_client_v2.clob_types import AssetType
+from py_clob_client_v2.order_builder.builder import ROUNDING_CONFIG
+from argus.polymarket_direct.position_ids import is_v2_position_id
 from argus.wireproxy import wrapper as wp_wrappers
 from py_clob_client_v2 import BalanceAllowanceParams
 from argus.polymarket_direct import _types as pm_types
@@ -72,11 +74,69 @@ def _install_httpx_ok_ping_filter():
 REST_CACHE = DomainCache("polymarket_direct.rest")
 endpoints = {
     "events": "https://gamma-api.polymarket.com/events",
-    "positions": "https://data-api.polymarket.com/positions",
+    # Data API v2 (v1 is retired 2026-10-24). v1 URL kept only so a rollback is a one-line change.
+    "positions": "https://data-api.polymarket.com/v2/positions",
+    "positions_v1": "https://data-api.polymarket.com/positions",
     "geo_block_test": "https://polymarket.com/api/geoblock",
     "page_data": "https://polymarket.com/_next/data/sSKD4bdfi6zzQnEgftBzb/en/event/btc-updown-15m-1770750000.json",
 }
 qw = "[{}]".format(__name__)
+
+# v1 sortBy value -> v2 sort_by value (unknown values are passed through; v2 answers 400 for them).
+_V1_POSITION_SORT_MAP = {
+    "CURRENT": "CURRENT_VALUE",
+    "CASHPNL": "UNREALIZED_PNL",
+    "TOKENS": "TOKENS",
+    "PRICE": "PRICE",
+}
+_POSITIONS_MAX_PAGES = 1000
+
+
+def _translate_positions_params(user: str, params: dict) -> tuple[dict, dict]:
+    """Translate v1 /positions query params to Data API v2 /v2/positions params.
+
+    Returns (query, local) where `local` holds filters v2 cannot express and which are
+    applied client-side: redeemable/mergeable == False, offset (v2 has no offset) and limit
+    (treated as a cap on the TOTAL rows returned, like the old single-page semantics; the
+    page size sent to v2 is min(limit, 1000)).
+    v2-native (snake_case or camelCase) params are passed through untouched.
+    """
+    query: dict = {"user": user}
+    local: dict = {}
+    params = dict(params)
+
+    if "market" in params:
+        query["condition"] = params.pop("market")
+    if "eventId" in params:
+        query["event_id"] = params.pop("eventId")
+    if "sizeThreshold" in params:
+        query["filter_type"] = "TOKENS"
+        query["filter_amount"] = params.pop("sizeThreshold")
+    if "sortDirection" in params:
+        query["sort_direction"] = params.pop("sortDirection")
+    if "sortBy" in params:
+        v1_sort = str(params.pop("sortBy"))
+        query["sort_by"] = _V1_POSITION_SORT_MAP.get(v1_sort.upper(), v1_sort)
+
+    # v1 'redeemable'/'mergeable' were boolean row filters; v2 uses a status lifecycle filter.
+    explicit_status = "status" in params
+    for flag, status in (("redeemable", "REDEEMABLE"), ("mergeable", "MERGEABLE")):
+        if flag not in params:
+            continue
+        raw = params.pop(flag)
+        want = raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw)
+        if want and not explicit_status and "status" not in query:
+            query["status"] = status
+        else:
+            local[flag] = want  # False (or a second flag): filter on the row flag locally
+    if "limit" in params:
+        local["limit"] = int(params.pop("limit"))
+        query["limit"] = min(max(local["limit"], 1), 1000)
+    if "offset" in params:
+        local["offset"] = int(params.pop("offset"))
+    query.update(params)
+    return query, local
+
 
 
 def retry(max_attempts=3, delay=0.35):
@@ -210,7 +270,15 @@ class PolyRestAPI:
             signature_type=sig_type,
             funder=proxy_funder,
         )
-        self.clob.set_api_creds(self._create_or_derive_api_key())
+        # Derived API creds are disk-cached; the cache key must identify the account, otherwise switching
+        # POLYMARKET_PRIVATE_KEY / funder / signature type within the TTL reuses another account's creds.
+        self._api_creds_identity = f"{self.clob.get_address()}:{proxy_funder}:{sig_type}"
+        self.clob.set_api_creds(self._create_or_derive_api_key(self._api_creds_identity))
+
+        # py-clob-client-v2 >= 1.1.0 polls get_trades (time.sleep, up to 30s) inside post_order/post_orders
+        # to fill `transactionsHashes` on matched orders. That blocks the order hot path and adds a key
+        # to the place_order response, so it is disabled: responses are returned exactly as the server sent them.
+        self.clob._resolve_transactions_hashes = lambda response: response
 
         # noinspection all
         self.clob._ClobClient__resolve_version()  # Force a version check
@@ -394,7 +462,8 @@ class PolyRestAPI:
         expiration=60 * 60 * 1,
         should_cache_function=lambda x: x is not None
     )
-    def _create_or_derive_api_key(self):
+    def _create_or_derive_api_key(self, account_identity: str):
+        """:param account_identity: signer address, funder and signature type; only used as the cache key."""
         response = self.clob.create_or_derive_api_key()
         return response
 
@@ -565,6 +634,26 @@ class PolyRestAPI:
         tick_size = self.clob.get_tick_size(token_id)
         return tick_size
 
+    @staticmethod
+    def _normalize_tick_size(tick_size) -> str:
+        """
+        Return the tick size as the exact string key py-clob uses in ROUNDING_CONFIG
+        ("0.1", "0.01", "0.005", "0.0025", "0.001", "0.0001"). Accepts str or float.
+        """
+        key = tick_size if isinstance(tick_size, str) else format(float(tick_size), "g")
+        key = key.strip()
+        if key not in ROUNDING_CONFIG:
+            # tolerate formatting differences such as "0.0100" or "1e-3"
+            normalized = format(float(key), "g")
+            if normalized not in ROUNDING_CONFIG:
+                raise ValueError(
+                    "unsupported tick size {!r}; expected one of {}".format(
+                        tick_size, list(ROUNDING_CONFIG)
+                    )
+                )
+            key = normalized
+        return key
+
     def warm_clob_caches_for_token(
             self,
             token_id: str,
@@ -585,16 +674,19 @@ class PolyRestAPI:
         subscribe, the hot path becomes pure CPU.
 
         :param token_id: The asset_id / CLOB id to warm.
-        :param tick_size: One of the ROUNDING_CONFIG keys ("0.1", "0.01", "0.001", "0.0001").
-        :param neg_risk: Whether the parent market is a neg-risk market.
+        :param tick_size: One of the ROUNDING_CONFIG keys ("0.1", "0.01", "0.005", "0.0025",
+            "0.001", "0.0001").
+        :param neg_risk: Whether the parent market is a neg-risk market. Ignored for v2 position
+            ids (ExchangeV3 has no neg-risk variant; the SDK forces neg_risk=False).
         :param condition_id: Optional condition id; populates __token_condition_map so
             __ensure_market_info_cached can skip its GET /markets-by-token call too.
         """
         # Name-mangled attribute access — these are the private dicts inside ClobClient.
         # noinspection all
-        self.clob._ClobClient__tick_sizes[token_id] = str(tick_size)
-        # noinspection all
-        self.clob._ClobClient__neg_risk[token_id] = bool(neg_risk)
+        self.clob._ClobClient__tick_sizes[token_id] = self._normalize_tick_size(tick_size)
+        if not is_v2_position_id(token_id):
+            # noinspection all
+            self.clob._ClobClient__neg_risk[token_id] = bool(neg_risk)
         if condition_id:
             # noinspection all
             self.clob._ClobClient__token_condition_map[token_id] = str(condition_id)
@@ -608,7 +700,7 @@ class PolyRestAPI:
             size: float,
             side: str,
             order_type: OrderType = OrderType.GTC,
-            tick_size: float = None,
+            tick_size: str | None = None,
     ) -> dict:
         """
         Place an order on the Polymarket CLOB.
@@ -780,7 +872,7 @@ class PolyRestAPI:
             price: float,
             size: float,
             side: str,
-            tick_size: float = None,
+            tick_size: str | None = None,
     ) -> SignedOrder:
         _tick("build_order", "start")
         if tick_size is None:
@@ -798,17 +890,31 @@ class PolyRestAPI:
         _tick("build_order", "after_type_side_validation")
 
         _tick("build_order", "before_create_order")
-        order = self.clob.create_order(
-            order_args=OrderArgsV2(
-                token_id=token_id,
-                price=price,
-                size=size,
-                side=type_side,
-            ),
-            options=PartialCreateOrderOptions(
-                tick_size=tick_size, neg_risk=market.negRisk
-            ),
-        )
+        tick_size = self._normalize_tick_size(tick_size)
+        if is_v2_position_id(token_id):
+            # Protocol V2: position_id forces ExchangeV3 (domain version "3") and
+            # neg_risk=False inside the SDK; market.negRisk is irrelevant here.
+            order = self.clob.create_order(
+                order_args=OrderArgsV2(
+                    position_id=str(token_id),
+                    price=price,
+                    size=size,
+                    side=type_side,
+                ),
+                options=PartialCreateOrderOptions(tick_size=tick_size),
+            )
+        else:
+            order = self.clob.create_order(
+                order_args=OrderArgsV2(
+                    token_id=token_id,
+                    price=price,
+                    size=size,
+                    side=type_side,
+                ),
+                options=PartialCreateOrderOptions(
+                    tick_size=tick_size, neg_risk=market.negRisk
+                ),
+            )
         _tick("build_order", "after_create_order")
 
         return cast(SignedOrder, order)
@@ -914,21 +1020,60 @@ class PolyRestAPI:
     @fatal_decorator("get_positions")
     def get_positions(self, user: str | None = None, **params) -> PositionData:
         """
-        Get the current aggregated positions for a wallet from Polymarket's data-api.
+        Get the current positions for a wallet from Polymarket's Data API v2
+        (GET /v2/positions), following the cursor until the full list is fetched.
+
+        With no ``filter_amount``/``sizeThreshold`` a 1-share floor is applied (the v1 default).
+        With no ``status`` the v2 default OPEN is used, which is a superset that includes
+        settled-but-unredeemed (redeemable) positions, matching what v1 /positions returned.
 
         :param user: The wallet address to fetch positions for. Defaults to this client's
             proxy_funder address if not provided.
-        :param params: Additional optional query parameters supported by the data-api,
-            e.g., market, eventId, sizeThreshold, redeemable, mergeable, limit, offset,
-            sortBy, sortDirection.
+        :param params: Optional query parameters. v2 names (status, condition, event_id,
+            filter_type, filter_amount, sort_by, sort_direction, title, ...) pass straight
+            through. Legacy v1 names are translated: market -> condition, eventId -> event_id,
+            sizeThreshold -> filter_type=TOKENS&filter_amount, sortBy/sortDirection,
+            redeemable=true -> status=REDEEMABLE, mergeable=true -> status=MERGEABLE.
+            limit caps the total rows returned and offset skips rows client-side.
         :return: A PositionData object containing the list of PolymarketPosition objects.
         """
-        query = {"user": user or self.proxy_funder}
-        query.update(params)
+        query, local = _translate_positions_params(user or self.proxy_funder, params)
+        query.setdefault("limit", 1000)  # v2 max page size: fewest round trips
+        # v1 defaulted sizeThreshold=1 (hide holdings under 1 share); v2's default dust floor is 0.1.
+        # Verified live: v2 filter_amount=1 reproduces the v1 default row set exactly.
+        if "filter_amount" not in query and "filterAmount" not in query:
+            query["filter_amount"] = 1
+        limit = local.get("limit")
+        offset = local.get("offset", 0)
 
-        response = self.raw_session.get(endpoints["positions"], params=query)
-        response.raise_for_status()
-        return PositionData.from_list(response.json())
+        rows: list = []
+        cursor = None
+        seen_cursors = set()
+        for _ in range(_POSITIONS_MAX_PAGES):
+            page_query = dict(query)
+            if cursor:
+                # Filters are re-sent on every page: the cursor binds user/status/sort only.
+                page_query["cursor"] = cursor
+            response = self.raw_session.get(endpoints["positions"], params=page_query)
+            response.raise_for_status()
+            body = response.json() or {}
+            rows.extend(body.get("data") or [])
+            cursor = (body.get("pagination") or {}).get("next_cursor")
+            if not cursor or cursor in seen_cursors:
+                break
+            seen_cursors.add(cursor)
+            if limit is not None and not {"redeemable", "mergeable"} & local.keys() and offset + limit <= len(rows):
+                break
+
+        positions = PositionData.from_v2_list(rows).positions
+        for flag in ("redeemable", "mergeable"):
+            if flag in local:
+                positions = [p for p in positions if getattr(p, flag) == local[flag]]
+        if offset:
+            positions = positions[offset:]
+        if limit is not None:
+            positions = positions[:limit]
+        return PositionData(positions=positions)
 
     @fatal_decorator("get_order_status")
     @retry(max_attempts=3, delay=0.35)
@@ -997,9 +1142,12 @@ class PolyRestAPI:
             Number of shares as a float (e.g. 150.0)
         """
 
-        params = BalanceAllowanceParams(
-            asset_type=AssetType.CONDITIONAL, token_id=token_id
+        # v2 positions live in the ERC-1155 position-id space: the SDK's AssetType enum
+        # has no CONDITIONAL-V2 member, but get_balance_allowance just str()s the value.
+        asset_type = (
+            "CONDITIONAL-V2" if is_v2_position_id(token_id) else AssetType.CONDITIONAL
         )
+        params = BalanceAllowanceParams(asset_type=asset_type, token_id=token_id)
 
         # Force refresh the cached balance on Polymarket's side first
         self.clob.update_balance_allowance(params)
@@ -1023,7 +1171,7 @@ class PolyRestAPI:
         Get the API credentials.
         :return: The API credentials dictionary.
         """
-        creds = self._create_or_derive_api_key()
+        creds = self._create_or_derive_api_key(self._api_creds_identity)
         return {
             "apiKey": creds.api_key,
             "secret": creds.api_secret,
