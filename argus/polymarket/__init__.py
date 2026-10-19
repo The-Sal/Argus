@@ -1287,13 +1287,18 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         event = self._resolve_market_from_token_id(clob_id)
         # Find the market and outcome associated with this clob_id
         for market in event.markets:
-            if market.clobTokenIds and clob_id in market.clobTokenIds:
-                outcome_index = market.clobTokenIds.index(clob_id)
+            token_ids = (market.outcome_token_ids()
+                         if hasattr(market, "outcome_token_ids")
+                         else market.clobTokenIds)
+            if not token_ids and getattr(market, "positionIds", None):
+                token_ids = market.positionIds
+            if token_ids and clob_id in token_ids:
+                outcome_index = token_ids.index(clob_id)
                 # noinspection all
+                outcome = ""
                 if market.outcomes and isinstance(market.outcomes, list):
-                    outcome = market.outcomes[outcome_index]
-                else:
-                    outcome = None
+                    if outcome_index < len(market.outcomes) and market.outcomes[outcome_index] is not None:
+                        outcome = market.outcomes[outcome_index]
 
                 aot_symbol_from_p2 = P2ConvertClass(
                     ticker=event.ticker,
@@ -1304,11 +1309,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 )
 
                 return {
-                    "event_name": event.title,
-                    "market_name": market.question,
+                    "event_name": event.title or "",
+                    "market_name": market.question or "",
                     "outcome": outcome,
-                    "ticker": event.ticker,
-                    "market_slug": market.slug,
+                    "ticker": event.ticker or "",
+                    "market_slug": market.slug or "",
                     "aot_p2_symbol": aot_symbol_from_p2.symbol,
                 }
 

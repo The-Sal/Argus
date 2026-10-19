@@ -1,4 +1,5 @@
 import json
+import time
 from typing import List
 from dataclasses import dataclass, field
 
@@ -110,16 +111,18 @@ class MakerOrder:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'MakerOrder':
+        # Unknown extra keys are ignored.  Fees are taker-only at match time in CLOB V2,
+        # so fee_rate_bps is never required (and has always been reported as 0 here).
         return cls(
             order_id=data['order_id'],
-            owner=data['owner'],
-            maker_address=data['maker_address'],
+            owner=data.get('owner', ''),
+            maker_address=data.get('maker_address', ''),
             matched_amount=float(data['matched_amount']),
             price=float(data['price']),
             fee_rate_bps=0,
             asset_id=data['asset_id'],
-            outcome=data['outcome'],
-            side=data['side']
+            outcome=data.get('outcome', ''),
+            side=data.get('side', '')
         )
 
 
@@ -192,7 +195,7 @@ class Trade:
     def from_dict(cls, data: dict) -> 'Trade':
         maker_orders = [
             MakerOrder.from_dict(order)
-            for order in data.get('maker_orders', [])
+            for order in (data.get('maker_orders') or [])
         ]
 
         return cls(
@@ -202,16 +205,16 @@ class Trade:
             asset_id=data['asset_id'],
             side=data['side'],
             size=float(data['size']),
-            fee_rate_bps=int(data['fee_rate_bps']),
+            fee_rate_bps=int(float(data.get('fee_rate_bps') or 0)),
             price=float(data['price']),
-            status=data['status'],
-            match_time=int(data['match_time']),
-            last_update=int(data['last_update']),
-            outcome=data['outcome'],
-            bucket_index=int(data['bucket_index']),
-            owner=data['owner'],
-            maker_address=data['maker_address'],
-            transaction_hash=data['transaction_hash'],
+            status=data.get('status', ''),
+            match_time=int(data.get('match_time') or 0),
+            last_update=int(data.get('last_update') or data.get('match_time') or 0),
+            outcome=data.get('outcome', ''),
+            bucket_index=int(data.get('bucket_index') or 0),
+            owner=data.get('owner', ''),
+            maker_address=data.get('maker_address', ''),
+            transaction_hash=data.get('transaction_hash', ''),
             maker_orders=maker_orders,
             trader_side=data.get('trader_side', '')
         )
@@ -365,28 +368,38 @@ class TradeEvent:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'TradeEvent':
-        """Create a TradeEvent from a dictionary (e.g., parsed JSON from WebSocket)."""
+        """Create a TradeEvent from a dictionary (e.g., parsed JSON from WebSocket).
+
+        Tolerant of CLOB V2 frames: fee_rate_bps may be absent (fees are taker-only at
+        match time), unknown keys are ignored, and output types are unchanged.
+        """
+        maker_orders = []
+        for mo in (data.get('maker_orders') or []):
+            if isinstance(mo, dict) and mo.get('fee_rate_bps') is None:
+                mo = {**mo, 'fee_rate_bps': '0'}
+            maker_orders.append(mo)
+        owner = data.get('owner', '')
         return cls(
             id=data['id'],
-            taker_order_id=data['taker_order_id'],
+            taker_order_id=data.get('taker_order_id', ''),
             market=data['market'],
             asset_id=data['asset_id'],
             side=data['side'],
             size=data['size'],
-            fee_rate_bps=data['fee_rate_bps'],
+            fee_rate_bps=str(data.get('fee_rate_bps') if data.get('fee_rate_bps') is not None else '0'),
             price=data['price'],
-            status=data['status'],
-            match_time=data['match_time'],
-            last_update=data['last_update'],
-            outcome=data['outcome'],
-            owner=data['owner'],
-            trade_owner=data.get('trade_owner', data['owner']),
-            maker_address=data['maker_address'],
-            transaction_hash=data['transaction_hash'],
-            bucket_index=int(data['bucket_index']),
-            maker_orders=data.get('maker_orders', []),
+            status=data.get('status', ''),
+            match_time=data.get('match_time', ''),
+            last_update=data.get('last_update', data.get('match_time', '')),
+            outcome=data.get('outcome', ''),
+            owner=owner,
+            trade_owner=data.get('trade_owner', owner),
+            maker_address=data.get('maker_address', ''),
+            transaction_hash=data.get('transaction_hash', ''),
+            bucket_index=int(data.get('bucket_index') or 0),
+            maker_orders=maker_orders,
             trader_side=data.get('trader_side', ''),
-            timestamp=data.get('timestamp', ''),
+            timestamp=data.get('timestamp') or str(int(time.time() * 1000)),
             event_type=data.get('event_type', 'trade')
         )
 
@@ -658,27 +671,32 @@ class OrderEvent:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'OrderEvent':
-        """Create an OrderEvent from a dictionary (e.g., parsed JSON from WebSocket)."""
+        """Create an OrderEvent from a dictionary (e.g., parsed JSON from WebSocket).
+
+        Tolerant: only id/market/asset_id/side are required; unknown keys are ignored and
+        a missing/empty timestamp falls back to receive time (ms).
+        """
+        ts = data.get('timestamp') or str(int(time.time() * 1000))
         return cls(
             id=data['id'],
-            owner=data['owner'],
+            owner=data.get('owner', ''),
             market=data['market'],
             asset_id=data['asset_id'],
             side=data['side'],
             order_owner=data.get('order_owner', ''),
-            original_size=data['original_size'],
-            size_matched=data['size_matched'],
-            price=data['price'],
-            associate_trades=data.get('associate_trades', []),
-            outcome=data['outcome'],
-            type=data['type'],
-            created_at=data['created_at'],
-            expiration=data['expiration'],
-            order_type=data['order_type'],
-            status=data['status'],
-            maker_address=data['maker_address'],
-            timestamp=data['timestamp'],
-            event_type=data['event_type']
+            original_size=data.get('original_size', '0'),
+            size_matched=data.get('size_matched', '0'),
+            price=data.get('price', '0'),
+            associate_trades=data.get('associate_trades') or [],
+            outcome=data.get('outcome', ''),
+            type=data.get('type', ''),
+            created_at=data.get('created_at', '0'),
+            expiration=data.get('expiration', '0'),
+            order_type=data.get('order_type', ''),
+            status=data.get('status', ''),
+            maker_address=data.get('maker_address', ''),
+            timestamp=ts,
+            event_type=data.get('event_type', 'order')
         )
 
     def to_dict(self) -> dict:
