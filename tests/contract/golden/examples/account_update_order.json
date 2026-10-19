@@ -1,0 +1,26 @@
+{
+  "action": "account_update",
+  "data": {
+    "id": "0x2a8bc3f1d9a7e0b64f2c1d3e5a7b9c0d1e2f30415263748596a7b8c9d0e1f203",
+    "owner": "6c8d8f2e-0000-4000-8000-000000000001",
+    "market": "0x9f1c0b2d3e4f5061728394a5b6c7d8e9f00112233445566778899aabbccddeeff",
+    "asset_id": "495099235152725588201991226912420825532590817323357329480139627250245959680",
+    "side": "BUY",
+    "order_owner": "6c8d8f2e-0000-4000-8000-000000000001",
+    "original_size": "100",
+    "size_matched": "0",
+    "price": "0.45",
+    "associate_trades": null,
+    "outcome": "Up",
+    "type": "PLACEMENT",
+    "created_at": "1770413401",
+    "expiration": "0",
+    "order_type": "GTC",
+    "status": "LIVE",
+    "maker_address": "0x1111111111111111111111111111111111111111",
+    "timestamp": "1770413401123",
+    "event_type": "order"
+  },
+  "error": null,
+  "compressed": false
+}

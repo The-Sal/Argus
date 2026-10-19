@@ -1,0 +1,100 @@
+{
+  "keys": {
+    "action": {
+      "nullable": false,
+      "type": "string"
+    },
+    "compressed": {
+      "nullable": false,
+      "type": "bool"
+    },
+    "data": {
+      "keys": {
+        "asset_id": {
+          "nullable": false,
+          "type": "string"
+        },
+        "associate_trades": {
+          "nullable": true,
+          "type": "null"
+        },
+        "created_at": {
+          "nullable": false,
+          "type": "string"
+        },
+        "event_type": {
+          "nullable": false,
+          "type": "string"
+        },
+        "expiration": {
+          "nullable": false,
+          "type": "string"
+        },
+        "id": {
+          "nullable": false,
+          "type": "string"
+        },
+        "maker_address": {
+          "nullable": false,
+          "type": "string"
+        },
+        "market": {
+          "nullable": false,
+          "type": "string"
+        },
+        "order_owner": {
+          "nullable": false,
+          "type": "string"
+        },
+        "order_type": {
+          "nullable": false,
+          "type": "string"
+        },
+        "original_size": {
+          "nullable": false,
+          "type": "string"
+        },
+        "outcome": {
+          "nullable": false,
+          "type": "string"
+        },
+        "owner": {
+          "nullable": false,
+          "type": "string"
+        },
+        "price": {
+          "nullable": false,
+          "type": "string"
+        },
+        "side": {
+          "nullable": false,
+          "type": "string"
+        },
+        "size_matched": {
+          "nullable": false,
+          "type": "string"
+        },
+        "status": {
+          "nullable": false,
+          "type": "string"
+        },
+        "timestamp": {
+          "nullable": false,
+          "type": "string"
+        },
+        "type": {
+          "nullable": false,
+          "type": "string"
+        }
+      },
+      "nullable": false,
+      "type": "object"
+    },
+    "error": {
+      "nullable": true,
+      "type": "null"
+    }
+  },
+  "nullable": false,
+  "type": "object"
+}
