@@ -270,7 +270,10 @@ class PolyRestAPI:
             signature_type=sig_type,
             funder=proxy_funder,
         )
-        self.clob.set_api_creds(self._create_or_derive_api_key())
+        # Derived API creds are disk-cached; the cache key must identify the account, otherwise switching
+        # POLYMARKET_PRIVATE_KEY / funder / signature type within the TTL reuses another account's creds.
+        self._api_creds_identity = f"{self.clob.get_address()}:{proxy_funder}:{sig_type}"
+        self.clob.set_api_creds(self._create_or_derive_api_key(self._api_creds_identity))
 
         # py-clob-client-v2 >= 1.1.0 polls get_trades (time.sleep, up to 30s) inside post_order/post_orders
         # to fill `transactionsHashes` on matched orders. That blocks the order hot path and adds a key
@@ -459,7 +462,8 @@ class PolyRestAPI:
         expiration=60 * 60 * 1,
         should_cache_function=lambda x: x is not None
     )
-    def _create_or_derive_api_key(self):
+    def _create_or_derive_api_key(self, account_identity: str):
+        """:param account_identity: signer address, funder and signature type; only used as the cache key."""
         response = self.clob.create_or_derive_api_key()
         return response
 
@@ -1167,7 +1171,7 @@ class PolyRestAPI:
         Get the API credentials.
         :return: The API credentials dictionary.
         """
-        creds = self._create_or_derive_api_key()
+        creds = self._create_or_derive_api_key(self._api_creds_identity)
         return {
             "apiKey": creds.api_key,
             "secret": creds.api_secret,
