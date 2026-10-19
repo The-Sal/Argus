@@ -237,7 +237,7 @@ What **would** break it: a required field going **missing, null, or changing JSO
 |---|---|---|---|
 | `get_positions` | all 26 fields required and non-null; `outcome_index` int; `event_id` str | Data API v2 renames fields (snake_case, `market`→`condition`), may send null/numeric values | map into the *same* dataclass with type coercion; documented fallbacks |
 | `account_update` TradeEvent | `fee_rate_bps` (str), `bucket_index` (int), `maker_orders[].outcome_index` | fee fields may disappear (fees are no longer signed) | tolerant `from_dict` with type-preserving defaults |
-| `place_order` | exact keys `errorMsg, orderID, takingAmount, makingAmount, status, success` | SDK 1.2.1 adds tx-hash polling and fields | pin `py-clob-client-v2==1.2.0` |
+| `place_order` | exact keys `errorMsg, orderID, takingAmount, makingAmount, status, success` | SDK ≥1.1.0 polls for tx hashes and adds `transactionsHashes` | poll disabled on the client instance (§5.1) |
 | `get_orders` | sizes and prices are **strings**, `created_at` int | — | passthrough unchanged |
 | `fetch_clob_id_information` | 6 non-null strings | pre-existing bug: `outcome` may be `None` | return `''` |
 | P2 | numeric CSV | pre-existing bug: empty timestamp panics the decoder | fall back to receive time |
@@ -279,11 +279,16 @@ Any shape change fails the tests.
 | D | Argus | Tolerant `OrderEvent`/`TradeEvent`/`Trade`/`MakerOrder`; route user WS on `event_type`; handle `last_trade_price`; numeric zero-size check; `asset.id` bug (`wss.py:~1169`); P2 empty timestamp; CLOBInfo `outcome` never None; `Market.version/positionIds/resolutionStatus` (internal only) | `wss.py`, `order_types.py`, `_types.py`, `_classes.py` |
 | E | SDK | serde fixtures (v1, v2, negative cases), P2 decoder tests, golden-dir test (`ARGUS_GOLDEN_DIR`), doctest fix | `tests/` |
 
-### 5.1 Why the SDK is pinned to 1.2.0, not 1.2.1
+### 5.1 SDK version and the transaction-hash polling
 
-* 1.2.0 adds everything Protocol V2 needs: `position_id`, ExchangeV3 routing and the new tick sizes.
-* 1.2.1 adds synchronous polling for transaction hashes inside `post_order`/`post_orders`
-  (every 0.25 s, up to 30 s, using `time.sleep`). On Argus's hot order path that is unacceptable latency.
+* 1.2.0 is the first version with what Protocol V2 needs: `position_id`, ExchangeV3 routing and the new tick sizes.
+  1.2.1 is byte-identical to it (a "deprecation notice" release). The pin is `==1.2.0` so that upgrades are deliberate.
+* **Every version from 1.1.0 on** polls `get_trades` inside `post_order`/`post_orders`, synchronously
+  (every 0.25 s, up to 30 s, using `time.sleep`), to fill `transactionsHashes` on matched orders. The poll cannot be
+  avoided by choosing a version, so Argus disables it on its client instance
+  (`self.clob._resolve_transactions_hashes = lambda r: r` in `PolyRestAPI.__init__`). The order hot path never
+  blocks, and the `place_order` response is exactly what the server returned.
+  (An earlier draft of this plan said only 1.2.1 polled. That was wrong.)
 * `py-clob-client-v2` is itself deprecated in favour of the async `polymarket-client` (`Polymarket/py-sdk`).
   Moving to it would be a rewrite and is **out of scope**.
 
@@ -332,6 +337,37 @@ Rollback:
 * Argus orders: v1 IDs never touch the v2 path.
 
 ---
+
+## 7a. Status log
+
+**2026-10-19, development complete (offline-verified), not yet deployed or pushed**
+
+| Repo / branch | State | Tests |
+|---|---|---|
+| Argus `feat/protocol-v2` | packages 0, B, C, D merged + integration fixes | 135 offline pass (contract 70, v2 orders/IDs 29, WS 24, positions 12) + existing P2/cache suites |
+| APDB `feat/protocol-v2` | package A, version 2.2.0, rustc → 1.99.1 | 32 pass with proxy env; live v2 paging verified (81 open v2 events) |
+| SDK `feat/protocol-v2-contract-tests` | package E, tests only, no API change | 38 pass, incl. all 21 Argus golden examples via `ARGUS_GOLDEN_DIR` |
+
+Fixed during integration:
+
+* The SDK's tx-hash polling is disabled on the Argus client (§5.1).
+* Package D's tolerant parsing had defaulted SDK-strict enums (`status`, `type`, `order_type`) to `''`.
+  They are required again, so malformed frames are skipped rather than forwarded.
+* Two **pre-existing** contract violations found by the goldens were fixed and the goldens deliberately regenerated:
+  `fetch_clob_id_information.outcome` `null` → `""`, and `account_update` `associate_trades` `null` → `[]`.
+  The Rust SDK rejected both.
+
+Positions migration findings (live, 25 wallets via the proxy):
+
+* The mapped dataclass fields are identical between v1 and v2 apart from live price movement. `filter_amount=1` reproduces v1's
+  default `sizeThreshold=1`.
+* v1 silently capped at 10,000 rows (offset limit); v2 returns everything (one wallet had 15,833 rows).
+* v2 strips apostrophes from `outcome`/`opposite_outcome` ("Lone'er" → "Loneer"). Downstream code that matches
+  outcome text should be aware.
+* An unlabeled outcome maps to `outcome_index = 999` (v2's own sentinel), rather than a misleading `0`.
+
+Remaining before rollout: live end-to-end read-only run (APDB → Argus → SDK) through the proxy, owner approval for
+on-chain approvals and a test order, then push and open PRs.
 
 ## 8. Open questions
 
