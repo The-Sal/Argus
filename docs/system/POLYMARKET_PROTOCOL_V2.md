@@ -366,8 +366,33 @@ Positions migration findings (live, 25 wallets via the proxy):
   outcome text should be aware.
 * An unlabeled outcome maps to `outcome_index = 999` (v2's own sentinel), rather than a misleading `0`.
 
-Remaining before rollout: live end-to-end read-only run (APDB → Argus → SDK) through the proxy, owner approval for
-on-chain approvals and a test order, then push and open PRs.
+**2026-10-19, live end-to-end run (APDB → Argus → Rust SDK, real account, everything via the SOCKS5 proxy)**
+
+| Step | v1 (`btc-updown-15m-…9500`) | v2 (`polyv2zec-updown-5m-…0400`) |
+|---|---|---|
+| APDB crawl | 23,091 v1 events | **80 v2 events** (the old crawl returned 0) |
+| SDK `subscribe_to_event` → P2 book | ✅ 10×10 levels | ✅ 10×10 levels (75-digit ID) |
+| `fetch_clob_id_information` | ✅ | ✅ |
+| `get_token_balance` | ✅ `CONDITIONAL` | ✅ `CONDITIONAL-V2` |
+| `get_balance` / `get_positions` | ✅ $10.55 / 3 positions (via Data API v2) | — |
+| GTC BUY 105 @ 0.01 → `get_order_status` → `get_orders` → cancel | ✅ LIVE, cancelled | ✅ **LIVE on ExchangeV3 (domain "3")**, cancelled |
+| Leak check (`ss -tnp` on the dispatcher PID) | all 11 sockets → the SOCKS5 proxy | |
+
+Not done: a real **fill** on a v2 market. Every open v2 book was 0.01/0.99, so the 5-share minimum would cost ~$4.95.
+
+Bugs found by the live run:
+
+* **Fixed (pre-existing, security-relevant):** the disk-cached CLOB API creds had no account in the cache key, so changing
+  `POLYMARKET_PRIVATE_KEY` within the 1 h TTL reused the previous account's creds (`401 Invalid api key`, or requests
+  authenticated as the wrong account). The key is now signer + funder + signature type.
+* **Pre-existing, not fixed (contract decision needed):** Argus `unsubscribe` / `unsubscribe_from_market_by_ticker` return
+  `{"unsubscribed", "failed"}`, but the SDK's `UnsubscriptionResponse` expects `{"subscribed", "failed"}`, so every SDK
+  unsubscribe call fails to parse. This is identical on `main`.
+* **Pre-existing, by design:** subscribing to a very large event (e.g. the 2028 Democratic nominee, 100+ tokens)
+  exhausts the WS shard pool (10 shards × 4 assets) and overflows the 9,999-byte P1 response limit.
+* **Config:** `POLYMARKET_SIGNATURE_TYPE` must match the account. Deposit wallets use 3 (the default); legacy Proxy wallets need 1.
+
+Remaining before rollout: owner decisions (v2 fill, unsubscribe contract fix), then push and open PRs.
 
 ## 8. Open questions
 
