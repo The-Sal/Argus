@@ -16,7 +16,7 @@ EXAMPLES = GOLDEN / "examples"
 EXPECTED = {
     "positions", "orders", "order_status", "account_update_order", "account_update_trade",
     "place_order", "place_multiple_orders", "cancel_order", "cancel_multiple_orders",
-    "subscribe", "clob_info", "balance", "token_balance", "price_to_beat", "search_markets",
+    "subscribe", "unsubscribe", "clob_info", "balance", "token_balance", "price_to_beat", "search_markets",
     "envelope_ok", "envelope_error", "envelope_compressed",
 }
 
@@ -68,6 +68,7 @@ def test_explicit_sdk_key_sets():
     assert _top_keys("cancel_order") == {"canceled", "not_canceled"}
     assert _top_keys("cancel_multiple_orders") == {"canceled", "not_canceled"}
     assert _top_keys("subscribe") == {"subscribed", "failed"}
+    assert _top_keys("unsubscribe") == {"unsubscribed", "failed"}
     assert _top_keys("clob_info") == {"event_name", "market_name", "outcome", "ticker",
                                       "market_slug", "aot_p2_symbol"}
     assert set(load("order_status")["keys"]) == set(load("orders")["items"]["keys"]) == {

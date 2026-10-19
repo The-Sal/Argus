@@ -325,6 +325,10 @@ def build_instances() -> dict[str, list]:
     d._warm_clob_caches_for_subscribed_asset = lambda cid: None
     out["subscribe"] = [rt(call(d, "subscribe", [V2_ASSET_ID, V1_ASSET_ID, "bad"]))]
 
+    # ---- unsubscribe {unsubscribed, failed} (the SDK reads it via a serde alias)
+    d.remove_socket_from_subscription = lambda sock, cid: (_ for _ in ()).throw(KeyError(cid)) if cid == "bad" else None
+    out["unsubscribe"] = [rt(call(d, "unsubscribe", [V2_ASSET_ID, V1_ASSET_ID, "bad"]))]
+
     # ---- fetch_clob_id_information
     clob_variants = []
     for outcomes in (["Up", "Down"], None):
