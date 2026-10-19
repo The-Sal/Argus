@@ -44,6 +44,7 @@ from argus.satellite_sys import ArgusPolymarketDB
 from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
+from argus.polymarket_direct.position_ids import is_v2_position_id
 from argus.polymarket.apdb_client import APDBClient, APDBError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
@@ -1690,6 +1691,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param token_id: The asset_id / clob_id identifying a specific market outcome.
         :return: A PolymarketEvent with at least `.negRisk` populated correctly.
         """
+        if is_v2_position_id(token_id):
+            # Protocol V2 (ExchangeV3) has no neg-risk variant and build_order ignores
+            # market.negRisk for position ids, so skip the cache/APDB lookup entirely.
+            return PolymarketEvent(negRisk=False)
         with self._market_cache_lock:
             neg_risk = self._asset_id_to_neg_risk.get(token_id, _NEG_RISK_UNSET)
         if neg_risk is not _NEG_RISK_UNSET:
