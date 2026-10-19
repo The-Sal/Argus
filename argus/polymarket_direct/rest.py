@@ -11,6 +11,8 @@ from termcolor import colored
 from argus.cache_sys import DomainCache
 from argus.polymarket_direct.safe import IPSafety
 from py_clob_client_v2.clob_types import AssetType
+from py_clob_client_v2.order_builder.builder import ROUNDING_CONFIG
+from argus.polymarket_direct.position_ids import is_v2_position_id
 from argus.wireproxy import wrapper as wp_wrappers
 from py_clob_client_v2 import BalanceAllowanceParams
 from argus.polymarket_direct import _types as pm_types
@@ -565,6 +567,26 @@ class PolyRestAPI:
         tick_size = self.clob.get_tick_size(token_id)
         return tick_size
 
+    @staticmethod
+    def _normalize_tick_size(tick_size) -> str:
+        """
+        Return the tick size as the exact string key py-clob uses in ROUNDING_CONFIG
+        ("0.1", "0.01", "0.005", "0.0025", "0.001", "0.0001"). Accepts str or float.
+        """
+        key = tick_size if isinstance(tick_size, str) else format(float(tick_size), "g")
+        key = key.strip()
+        if key not in ROUNDING_CONFIG:
+            # tolerate formatting differences such as "0.0100" or "1e-3"
+            normalized = format(float(key), "g")
+            if normalized not in ROUNDING_CONFIG:
+                raise ValueError(
+                    "unsupported tick size {!r}; expected one of {}".format(
+                        tick_size, list(ROUNDING_CONFIG)
+                    )
+                )
+            key = normalized
+        return key
+
     def warm_clob_caches_for_token(
             self,
             token_id: str,
@@ -585,16 +607,19 @@ class PolyRestAPI:
         subscribe, the hot path becomes pure CPU.
 
         :param token_id: The asset_id / CLOB id to warm.
-        :param tick_size: One of the ROUNDING_CONFIG keys ("0.1", "0.01", "0.001", "0.0001").
-        :param neg_risk: Whether the parent market is a neg-risk market.
+        :param tick_size: One of the ROUNDING_CONFIG keys ("0.1", "0.01", "0.005", "0.0025",
+            "0.001", "0.0001").
+        :param neg_risk: Whether the parent market is a neg-risk market. Ignored for v2 position
+            ids (ExchangeV3 has no neg-risk variant; the SDK forces neg_risk=False).
         :param condition_id: Optional condition id; populates __token_condition_map so
             __ensure_market_info_cached can skip its GET /markets-by-token call too.
         """
         # Name-mangled attribute access — these are the private dicts inside ClobClient.
         # noinspection all
-        self.clob._ClobClient__tick_sizes[token_id] = str(tick_size)
-        # noinspection all
-        self.clob._ClobClient__neg_risk[token_id] = bool(neg_risk)
+        self.clob._ClobClient__tick_sizes[token_id] = self._normalize_tick_size(tick_size)
+        if not is_v2_position_id(token_id):
+            # noinspection all
+            self.clob._ClobClient__neg_risk[token_id] = bool(neg_risk)
         if condition_id:
             # noinspection all
             self.clob._ClobClient__token_condition_map[token_id] = str(condition_id)
@@ -608,7 +633,7 @@ class PolyRestAPI:
             size: float,
             side: str,
             order_type: OrderType = OrderType.GTC,
-            tick_size: float = None,
+            tick_size: str | None = None,
     ) -> dict:
         """
         Place an order on the Polymarket CLOB.
@@ -780,7 +805,7 @@ class PolyRestAPI:
             price: float,
             size: float,
             side: str,
-            tick_size: float = None,
+            tick_size: str | None = None,
     ) -> SignedOrder:
         _tick("build_order", "start")
         if tick_size is None:
@@ -798,17 +823,31 @@ class PolyRestAPI:
         _tick("build_order", "after_type_side_validation")
 
         _tick("build_order", "before_create_order")
-        order = self.clob.create_order(
-            order_args=OrderArgsV2(
-                token_id=token_id,
-                price=price,
-                size=size,
-                side=type_side,
-            ),
-            options=PartialCreateOrderOptions(
-                tick_size=tick_size, neg_risk=market.negRisk
-            ),
-        )
+        tick_size = self._normalize_tick_size(tick_size)
+        if is_v2_position_id(token_id):
+            # Protocol V2: position_id forces ExchangeV3 (domain version "3") and
+            # neg_risk=False inside the SDK; market.negRisk is irrelevant here.
+            order = self.clob.create_order(
+                order_args=OrderArgsV2(
+                    position_id=str(token_id),
+                    price=price,
+                    size=size,
+                    side=type_side,
+                ),
+                options=PartialCreateOrderOptions(tick_size=tick_size),
+            )
+        else:
+            order = self.clob.create_order(
+                order_args=OrderArgsV2(
+                    token_id=token_id,
+                    price=price,
+                    size=size,
+                    side=type_side,
+                ),
+                options=PartialCreateOrderOptions(
+                    tick_size=tick_size, neg_risk=market.negRisk
+                ),
+            )
         _tick("build_order", "after_create_order")
 
         return cast(SignedOrder, order)
@@ -997,9 +1036,12 @@ class PolyRestAPI:
             Number of shares as a float (e.g. 150.0)
         """
 
-        params = BalanceAllowanceParams(
-            asset_type=AssetType.CONDITIONAL, token_id=token_id
+        # v2 positions live in the ERC-1155 position-id space: the SDK's AssetType enum
+        # has no CONDITIONAL-V2 member, but get_balance_allowance just str()s the value.
+        asset_type = (
+            "CONDITIONAL-V2" if is_v2_position_id(token_id) else AssetType.CONDITIONAL
         )
+        params = BalanceAllowanceParams(asset_type=asset_type, token_id=token_id)
 
         # Force refresh the cached balance on Polymarket's side first
         self.clob.update_balance_allowance(params)
