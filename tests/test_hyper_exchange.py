@@ -719,10 +719,12 @@ class TestPlaceOrders:
         assert posts == []
 
     def test_order_request_validation(self):
+        # `OrderRequest` now lives in shared/_classes.py (it is venue-agnostic), so its validation
+        # raises the shared DispatcherError rather than the Hyperliquid-specific error.
         for bad in ({"coin": "BTC"}, {"coin": "BTC", "side": "x", "price": 1, "size": 1},
                     {"coin": "BTC", "side": "buy", "price": 1, "size": 1, "order_type": "FOK"},
                     {"coin": "BTC", "side": "buy", "price": 1, "size": 1, "typo": 1}, "nope"):
-            with pytest.raises(_ers.HyperLiquidError):
+            with pytest.raises(shared_ers.DispatcherError):
                 _cls.OrderRequest.from_dict(bad)
 
 

@@ -5,25 +5,27 @@ description = ""
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "eth-account>=0.13.7",
-    "eth-utils>=5.3.1",
+    "eth-account==0.14.0",
+    "eth-utils==6.0.0",
     "httpx[socks]>=0.28.1",
     "msgpack>=1.1",
-    "numpy==2.5.3",
+    "numpy==2.5.4",
     "pandas==3.0.5",
-    "pandas-stubs~=3.0.3",
+    "pandas-stubs==3.0.5.260914",
     "py-clob-client-v2==1.1.0",
-    "python-dotenv==1.2.3",
+    "python-dotenv==1.2.4",
     "python-socks==3.1.1",
     "requests==2.34.2",
-    "selenium==4.49.0",
-    "setuptools==84.0.0",
+    "selenium==4.51.0",
+    "setuptools==82.0.1",
     "termcolor>=3.3.0",
-    "tqdm==4.70.0",
+    "tqdm==4.70.1",
     "utils3",
     "websocket-client==1.9.2",
-    "websockets==17.1",
+    "websockets==17.3",
 ]
 
 [tool.uv.sources]
 utils3 = { git = "https://github.com/the-sal/utils3" }
+[tool.uv]
+build-constraint-dependencies = ["setuptools==82.0.1"]

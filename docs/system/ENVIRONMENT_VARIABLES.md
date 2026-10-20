@@ -281,17 +281,48 @@ This document lists all environment variables used throughout the Argus project 
 
 ## Lighter Perpetuals
 
-### `LIGHTER_ACCOUNT_INDEX`
-- **Purpose**: The integer Lighter account (master or sub-account) the account actions report on
+### `LIGHTER_ACC_INDEX`
+- **Purpose**: The integer Lighter account (master or sub-account) the account actions and trading report on
 - **Required**: No (without it, and without `LIGHTER_AUTH_TOKEN`, the account actions answer with `AccountNotConfiguredError`; market data is unaffected)
 - **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/rest.py`
-- **Behavior**: `get_balance` / `get_positions` are public reads keyed by this index alone (`GET /api/v1/account`). Find the index for an L1 address with `LighterRest.get_accounts_by_l1_address(...)` or in the Lighter web UI. If omitted but `LIGHTER_AUTH_TOKEN` is set, the index embedded in the token is used.
+- **Behavior**: `get_balance` / `get_positions` are public reads keyed by this index alone (`GET /api/v1/account`). Find the index for an L1 address with `LighterRest.get_accounts_by_l1_address(...)` or in the Lighter web UI. If omitted but `LIGHTER_AUTH_TOKEN` is set, the index embedded in the token is used. `LIGHTER_ACCOUNT_INDEX` is accepted as a legacy fallback name.
+
+### `LIGHTER_API_INDEX`
+- **Purpose**: The API-key slot bound to `LIGHTER_PRIVATE_KEY` (leverage and orders are signed with it)
+- **Required**: No (trading actions answer with `AccountNotConfiguredError` without it; everything else works)
+- **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/exchange.py`
+- **Behavior**: Passed to the native signer's `CreateClient` alongside the account index. Lighter signs leverage updates and orders with the same API key and nonce stream (no L1 wallet key is needed for the exposed surface).
+
+### `LIGHTER_PRIVATE_KEY`
+- **Purpose**: The API key private key used to sign leverage updates, orders and cancels
+- **Required**: No (trading actions answer with `AccountNotConfiguredError` without it; everything else works)
+- **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/exchange.py`, `perpetuals/lighter/_signer.py`
+- **Behavior**: Handed to the vendored native signer via `ctypes` (`CreateClient`); signing is entirely local. This is not the L1 wallet key. A `0x` prefix is accepted and stripped. Never logged.
+
+### `LIGHTER_PUBLIC_KEY`
+- **Purpose**: The public half of the API key pair (informational; the signer derives it internally)
+- **Required**: No
+- **Used in**: not read by the dispatcher
+
+### `LIGHTER_BLOCK_ORDER_EXECUTION`
+- **Purpose**: Kill switch: refuse order placement and leverage changes
+- **Default**: unset (execution allowed)
+- **Required**: No
+- **Used in**: `perpetuals/lighter/__init__.py`
+- **Behavior**: Any of `1`, `true`, `yes` (case-insensitive) makes `place_order`, `place_multiple_orders` and `set_leverage` raise `OrderExecutionDisabledError`. Cancels are never blocked. Also toggleable at runtime from the dispatcher's interactive menu, and reported by `products_version.order_execution_blocked`. The exact same switch exists as `HYPERLIQUID_BLOCK_ORDER_EXECUTION`.
+
+### `LIGHTER_LEVERAGE_CACHE_TTL_S`
+- **Purpose**: Opt-in cache for the per-order leverage read (the roll-back target), to save rate limit
+- **Default**: unset / `0` (every order reads the account fresh)
+- **Required**: No
+- **Used in**: `perpetuals/lighter/__init__.py` -> `LighterExchange(leverage_cache_ttl_s=...)`
+- **Behavior**: Each `place_order` / `place_multiple_orders` / `set_leverage` reads `GET /api/v1/account` (weight 300 of the 24,000/min budget on premium accounts, 60 requests/min on standard). A positive value (seconds) reuses a read for that long; the dispatcher's own successful leverage updates refresh it and failed ones evict it, and `get_leverage` always reads fresh. Leverage changed outside the dispatcher (the web UI) can go unseen for up to the TTL, and the stale value would become the roll-back target, so keep it short (5-10). Invalid values are ignored with a log line.
 
 ### `LIGHTER_AUTH_TOKEN`
 - **Purpose**: A Lighter **read-only API token** (`ro:<account_index>:<single|all>:<expiry_unix>:<hex>`) for the auth-gated account reads
 - **Required**: No (when *unset*, `get_orders` / `get_order_status` / `get_trades` / `get_funding_payments` answer with `AccountNotConfiguredError`; `get_balance` / `get_positions` still work). When *set* it must be valid: see the startup failure below
 - **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/rest.py`
-- **Behavior**: Sent verbatim in the `authorization` header of auth-gated requests. Mint one in the Lighter web UI (API keys page) or via `POST /api/v1/tokens_create`; read-only tokens live between 1 day and 10 years, so no signing library or API-key private key is needed for reads. **Startup failure:** the Lighter dispatcher refuses to start (`ValueError` from `LighterRest.__init__`, market data included) with a token that is malformed, expired, or scoped (`single`) to a different account than `LIGHTER_ACCOUNT_INDEX`. An unset token is fine; a set-but-bad one is fatal by design, so an expired credential cannot masquerade as "not configured". This is **not** the short-lived signed token the Lighter SDK mints for order execution; that comes with the trading work.
+- **Behavior**: Sent verbatim in the `authorization` header of auth-gated requests. Mint one in the Lighter web UI (API keys page) or via `POST /api/v1/tokens_create`; read-only tokens live between 1 day and 10 years, so no signing library or API-key private key is needed for reads. **Startup failure:** the Lighter dispatcher refuses to start (`ValueError` from `LighterRest.__init__`, market data included) with a token that is malformed, expired, or scoped (`single`) to a different account than `LIGHTER_ACCOUNT_INDEX`. An unset token is fine; a set-but-bad one is fatal by design, so an expired credential cannot masquerade as "not configured". This is **not** the short-lived signed token the native signer mints (that one is created from `LIGHTER_PRIVATE_KEY` on demand). When this variable is unset but the trading credentials are present, the dispatcher mints a native signed token instead (refreshed on demand; Lighter rejects a REST token whose deadline is more than ~6h), so the auth-gated reads keep working from the API key alone.
 
 ### `LIGHTER_ORDERBOOK_DEPTH`
 - **Purpose**: Controls the depth of orderbook data (number of bid/ask levels streamed in P2 packets)
@@ -329,6 +360,14 @@ This document lists all environment variables used throughout the Argus project 
 - **Default**: `120`
 - **Required**: No
 - **Used in**: `perpetuals/lighter/wss.py`
+
+> **Account stream:** `LighterDispatcher` opens a second Lighter websocket for `account_update` pushes
+> (`LighterAccountWss`). It is keyed by `LIGHTER_ACC_INDEX`, and with `LIGHTER_API_INDEX` + `LIGHTER_PRIVATE_KEY`
+> it mints the short-lived `account_all_orders` auth token and refreshes it itself (no new variable). The socket
+> knobs `LIGHTER_MAX_SOCKET_RETRIES`, `LIGHTER_MAX_PING_PONG_FAILURES`, `LIGHTER_PING_INTERVAL_S` and
+> `LIGHTER_DISABLE_PING_PONG_LOGS` apply to both Lighter websockets; `LIGHTER_WS_RESTORE_TIMEOUT` applies only to
+> the order-book stream (the account stream's subscription set is fixed and re-sent on every open). Without the
+> trading credentials the account stream still pushes `fill` events but not `order` events.
 
 
 ## Interactive Brokers Integration
