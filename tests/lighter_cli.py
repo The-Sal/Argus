@@ -1234,6 +1234,44 @@ def format_order_status(data: dict) -> str:
     return format_orders([data['order']])
 
 
+def format_place_result(data: dict) -> str:
+    if data.get('error'):
+        rolled = "  (leverage rolled back)" if data.get('leverage_reverted') else ""
+        return f"\n  ✗ Order rejected by venue: {data['error']}{rolled}"
+    adjusted = f" (adjusted from {data['requestedPrice']})" if data.get('priceAdjusted') else ""
+    lev = ""
+    if data.get('leverage'):
+        prev = data.get('previous_leverage') or {}
+        lev = (f"\n    leverage: {data['leverage']['value']}x {data['leverage']['type']}"
+               f" (was {prev.get('value')}x {prev.get('type')}{', changed' if data.get('leverage_changed') else ''}) "
+               f"est. initial margin: {data.get('estimated_initial_margin')}")
+    if data.get('leverage_reverted'):
+        lev += "\n    ↩ leverage rolled back to the previous value"
+    return (f"\n  ✓ {data.get('status', '').upper()}: {data.get('coin')} "
+            f"clientOrderIndex={data.get('clientOrderIndex')} price={data.get('price')}{adjusted} "
+            f"txHash={data.get('txHash')}{lev}")
+
+
+def format_batch(data: dict) -> str:
+    """place_multiple_orders / cancel_multiple_orders replies."""
+    lines = []
+    for i, r in enumerate(data.get('results') or []):
+        lines.append(f"  [{i}] " + format_place_result(r).strip())
+    for o in data.get('outcomes') or []:
+        lines.append(f"  {'✓' if o['ok'] else '✗'} {o['order_id']} ({o.get('coin')}) {o.get('error') or ''}")
+    counts = [f"{k}={data[k]}" for k in ('ok_count', 'error_count') if k in data]
+    return "\n" + "\n".join(lines + ([" ".join(counts)] if counts else []))
+
+
+def format_cancel_result(data: dict) -> str:
+    lines = []
+    if data.get('canceledOrderIndexes'):
+        lines.append(f"\n  ✓ Cancel submitted: order_index {data['canceledOrderIndexes']} ({data.get('coin')})")
+    for err in data.get('errors') or []:
+        lines.append(f"\n  ✗ {err}")
+    return "\n".join(lines) or "\n  (nothing canceled)"
+
+
 def format_trades(trades: List[dict]) -> str:
     output = [f"\n{'TIME':<20} {'NAME':<12} {'SIDE':<5} {'SIZE':<14} {'PRICE':<14} {'FEE':<12} {'MAKER':<6} {'PNL':<12} {'ORDER ID':<20}", "=" * 120]
     if not trades:
@@ -1441,8 +1479,10 @@ def print_help():
     print("  fundingpay [days] [limit]  - Funding settlements over the last N days (default: 7)")
     print("  leverage <symbol>          - Leverage in force + max/allowed margin modes (read-only)")
     print("  setlev <symbol> <n> [mode] - Set leverage (REAL account change); mode is cross|isolated")
-    print("  place <sym> <side> <px> <sz> <lev> [type] - Place a limit order (REAL; type GTC|IOC|ALO)")
+    print("  place <sym> <side> <px> <sz> <lev> [cross|isolated] [GTC|IOC|ALO] [reduce_only] [cloid=<int>] - Place a limit order (REAL)")
+    print("  placemany <sym> <side> <px> <sz> <lev> <n> - Place n identical limit orders in ONE signed batch (REAL)")
     print("  cancel <order_id> [symbol] - Cancel one order (REAL); order_id = order_index | order_id | c:<client>")
+    print("  cancelmany <id> [<id> ...] - Cancel several orders in one batch (REAL); ids as for `cancel`")
     print("  cancelall [symbol]         - Cancel EVERY resting order via native immediate cancel-all (REAL)")
     print("  watch                      - Live-print account updates (order transitions, fills, gaps), Ctrl+C to stop")
     print("  test | gauntlet            - Call every known action and validate the responses")
@@ -1635,19 +1675,51 @@ def interactive_loop(client: LighterArgusClient):
                     except Exception as e:
                         print(f"✗ setlev failed: {e}")
             elif query.lower().startswith('place '):
-                parts = query.split()[1:]
-                if len(parts) < 5:
-                    print("Usage: place <symbol> <side> <price> <size> <leverage> [GTC|IOC|ALO]")
+                args = query.split()[1:]
+                flags = [a for a in args if a.lower() == 'reduce_only' or a.startswith('cloid=')]
+                pos = [a for a in args if a not in flags]
+                modes = [a.lower() for a in pos[5:] if a.lower() in ('cross', 'isolated')]
+                types = [a.upper() for a in pos[5:] if a.upper() in ('GTC', 'IOC', 'ALO')]
+                if len(pos) < 5 or not pos[4].isdigit():
+                    print("Usage: place <symbol> <buy|sell> <price> <size> <leverage> [cross|isolated] [GTC|IOC|ALO] [reduce_only] [cloid=<int>]")
                 else:
                     try:
-                        symbol, side, px, sz, lev = parts[0], parts[1], parts[2], parts[3], int(parts[4])
-                        otype = parts[5] if len(parts) > 5 else 'GTC'
-                        data, dt = client.place_order(symbol, side, px, sz, lev, order_type=otype)
-                        print(f"✓ Placed in {dt*1000:.1f}ms: status={data.get('status')} "
-                              f"clientOrderIndex={data.get('clientOrderIndex')} txHash={data.get('txHash')} error={data.get('error')}")
+                        cloid = next((int(a.split('=', 1)[1]) for a in flags if a.startswith('cloid=')), None)
+                        data, dt = client.place_order(pos[0], pos[1], pos[2], pos[3], int(pos[4]),
+                                                      margin_mode=modes[0] if modes else None,
+                                                      order_type=types[0] if types else 'GTC',
+                                                      reduce_only=any(a.lower() == 'reduce_only' for a in flags),
+                                                      cloid=cloid)
+                        print(f"✓ Submitted in {dt*1000:.1f}ms")
+                        print(format_place_result(data))
                         print("  (confirm with `orders`)")
                     except Exception as e:
                         print(f"✗ place failed: {e}")
+            elif query.lower().startswith('placemany '):
+                args = query.split()[1:]
+                if len(args) < 6 or not args[4].isdigit() or not args[5].isdigit():
+                    print("Usage: placemany <symbol> <buy|sell> <price> <size> <leverage> <count>")
+                else:
+                    try:
+                        specs = [client.order_spec(args[0], args[1], args[2], args[3], int(args[4]))
+                                 for _ in range(int(args[5]))]
+                        data, dt = client.place_multiple_orders(specs)
+                        print(f"✓ Submitted in {dt*1000:.1f}ms")
+                        print(format_batch(data))
+                        print("  (confirm with `orders`)")
+                    except Exception as e:
+                        print(f"✗ placemany failed: {e}")
+            elif query.lower().split()[0] == 'cancelmany':
+                args = query.split()[1:]
+                if not args:
+                    print("Usage: cancelmany <order_id|c:<client>> [<order_id|c:<client>> ...]  (symbol is resolved from open orders)")
+                else:
+                    try:
+                        data, dt = client.cancel_multiple_orders([{'order_id': a} for a in args])
+                        print(f"✓ Submitted in {dt*1000:.1f}ms")
+                        print(format_batch(data))
+                    except Exception as e:
+                        print(f"✗ cancelmany failed: {e}")
             elif query.lower().startswith('cancelall'):
                 parts = query.split()[1:]
                 try:
@@ -1662,7 +1734,8 @@ def interactive_loop(client: LighterArgusClient):
                 else:
                     try:
                         data, dt = client.cancel_order(parts[0], coin=parts[1] if len(parts) > 1 else None)
-                        print(f"✓ Cancelled in {dt*1000:.1f}ms: {data}")
+                        print(f"✓ Submitted in {dt*1000:.1f}ms")
+                        print(format_cancel_result(data))
                     except Exception as e:
                         print(f"✗ cancel failed: {e}")
             elif query.lower() == 'watch':
