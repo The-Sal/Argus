@@ -35,14 +35,14 @@ class LighterRest(BaseDispatcherCompatibleRest, BaseDispatcherCompatibleAccountR
         mints from an API-key private key are for order execution and are out of
         scope here.
 
-    Both `account_index` and `auth_token` are optional so a market-data-only
+    Both `account_index` and `auth_token` are optional, so a market-data-only
     dispatcher keeps working; account methods raise `AccountNotConfiguredError`
     naming the missing piece instead of returning an empty account.
     """
 
-    #: Upper bound on settlements walked by `get_funding_payments`, so an open-ended
-    #: window cannot turn into an unbounded number of upstream requests. At hourly
-    #: funding this is about three weeks of history.
+    # Upper bound on settlements walked by `get_funding_payments`, so an open-ended
+    # window cannot turn into an unbounded number of upstream requests. At hourly
+    # funding this is about three weeks of history.
     MAX_FUNDING_PAYMENTS = 500
 
     def __init__(self, base_url: str = _ep['base'], account_index: Optional[int] = None,

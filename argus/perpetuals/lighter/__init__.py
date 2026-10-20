@@ -38,9 +38,9 @@ from argus.perpetuals.shared import BaseDispatcher, ers as _shared_ers, PrintInt
 __version__ = [1, 0, 0, 0]
 pi = PrintInterface('Lighter')
 
-#: Deadline (seconds from now) for the native auth token minted from the API key when
-#: LIGHTER_AUTH_TOKEN is unset. Lighter rejects a signed token whose deadline is much past ~6h for REST
-#: reads ("invalid deadline"), so it is refreshed on demand by `LighterRest.set_auth_token_provider`.
+# Deadline (seconds from now) for the native auth token minted from the API key when
+# LIGHTER_AUTH_TOKEN is unset. Lighter rejects a signed token whose deadline is much past ~6h for REST
+# reads ("invalid deadline"), so it is refreshed on demand by `LighterRest.set_auth_token_provider`.
 _NATIVE_AUTH_TOKEN_DEADLINE_S = 6 * 60 * 60
 
 
@@ -64,7 +64,7 @@ class LighterDispatcher(TradingHandlersMixin, BaseDispatcher):
     payments. Both are optional: leaving them *unset* is fine -- market data is unaffected and the
     account actions answer with AccountNotConfiguredError. A LIGHTER_AUTH_TOKEN that is *set* but
     malformed, expired, or scoped (`single`) to a different account than LIGHTER_ACCOUNT_INDEX is
-    a configuration error and the dispatcher refuses to start (LighterRest raises ValueError from
+    a configuration error, and the dispatcher refuses to start (LighterRest raises ValueError from
     its constructor), market data included. This is deliberate: silently running with a dead token
     would make get_orders / get_trades look like "not configured" long after the real cause
     (an expired credential) has been forgotten. Every list action is paginated
