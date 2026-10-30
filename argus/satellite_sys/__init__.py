@@ -309,7 +309,8 @@ class ArgusPolymarketDB(GenericSatelliteSys):
                     break
                 except (OSError, ConnectionRefusedError):
                     time.sleep(0.1)
-                    print(f'Waiting for APDB to start... {time_waited:.1f}s', end='\r')
+                    if time_waited % 5 == 0:
+                        print(f'Waiting for APDB to start... {time_waited:.1f}s', end='\r')
                     print("[APDB LOG]", read_fd.read(), end='')
                     sys.stdout.flush()
                     time_waited += 0.1
