@@ -1,4 +1,5 @@
 import json
+import time
 from typing import List
 from dataclasses import dataclass, field
 
@@ -110,16 +111,18 @@ class MakerOrder:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'MakerOrder':
+        # Unknown extra keys are ignored.  Fees are taker-only at match time in CLOB V2,
+        # so fee_rate_bps is never required (and has always been reported as 0 here).
         return cls(
             order_id=data['order_id'],
-            owner=data['owner'],
-            maker_address=data['maker_address'],
+            owner=data.get('owner', ''),
+            maker_address=data.get('maker_address', ''),
             matched_amount=float(data['matched_amount']),
             price=float(data['price']),
             fee_rate_bps=0,
             asset_id=data['asset_id'],
-            outcome=data['outcome'],
-            side=data['side']
+            outcome=data.get('outcome', ''),
+            side=data.get('side', '')
         )
 
 
@@ -192,7 +195,7 @@ class Trade:
     def from_dict(cls, data: dict) -> 'Trade':
         maker_orders = [
             MakerOrder.from_dict(order)
-            for order in data.get('maker_orders', [])
+            for order in (data.get('maker_orders') or [])
         ]
 
         return cls(
@@ -202,16 +205,16 @@ class Trade:
             asset_id=data['asset_id'],
             side=data['side'],
             size=float(data['size']),
-            fee_rate_bps=int(data['fee_rate_bps']),
+            fee_rate_bps=int(float(data.get('fee_rate_bps') or 0)),
             price=float(data['price']),
-            status=data['status'],
-            match_time=int(data['match_time']),
-            last_update=int(data['last_update']),
-            outcome=data['outcome'],
-            bucket_index=int(data['bucket_index']),
-            owner=data['owner'],
-            maker_address=data['maker_address'],
-            transaction_hash=data['transaction_hash'],
+            status=data.get('status', ''),
+            match_time=int(data.get('match_time') or 0),
+            last_update=int(data.get('last_update') or data.get('match_time') or 0),
+            outcome=data.get('outcome', ''),
+            bucket_index=int(data.get('bucket_index') or 0),
+            owner=data.get('owner', ''),
+            maker_address=data.get('maker_address', ''),
+            transaction_hash=data.get('transaction_hash', ''),
             maker_orders=maker_orders,
             trader_side=data.get('trader_side', '')
         )
@@ -365,28 +368,39 @@ class TradeEvent:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'TradeEvent':
-        """Create a TradeEvent from a dictionary (e.g., parsed JSON from WebSocket)."""
+        """Create a TradeEvent from a dictionary (e.g., parsed JSON from WebSocket).
+
+        Tolerant of CLOB V2 frames: fee_rate_bps may be absent (fees are taker-only at
+        match time), unknown keys are ignored, and output types are unchanged.
+        """
+        maker_orders = []
+        for mo in (data.get('maker_orders') or []):
+            if isinstance(mo, dict) and mo.get('fee_rate_bps') is None:
+                mo = {**mo, 'fee_rate_bps': '0'}
+            maker_orders.append(mo)
+        owner = data.get('owner', '')
         return cls(
             id=data['id'],
-            taker_order_id=data['taker_order_id'],
+            taker_order_id=data.get('taker_order_id', ''),
             market=data['market'],
             asset_id=data['asset_id'],
             side=data['side'],
             size=data['size'],
-            fee_rate_bps=data['fee_rate_bps'],
+            fee_rate_bps=str(data.get('fee_rate_bps') if data.get('fee_rate_bps') is not None else '0'),
             price=data['price'],
+            # status is a strict enum in the downstream SDK; never default it to '' (skip the frame instead)
             status=data['status'],
-            match_time=data['match_time'],
-            last_update=data['last_update'],
-            outcome=data['outcome'],
-            owner=data['owner'],
-            trade_owner=data.get('trade_owner', data['owner']),
-            maker_address=data['maker_address'],
-            transaction_hash=data['transaction_hash'],
-            bucket_index=int(data['bucket_index']),
-            maker_orders=data.get('maker_orders', []),
+            match_time=data.get('match_time', ''),
+            last_update=data.get('last_update', data.get('match_time', '')),
+            outcome=data.get('outcome', ''),
+            owner=owner,
+            trade_owner=data.get('trade_owner', owner),
+            maker_address=data.get('maker_address', ''),
+            transaction_hash=data.get('transaction_hash', ''),
+            bucket_index=int(data.get('bucket_index') or 0),
+            maker_orders=maker_orders,
             trader_side=data.get('trader_side', ''),
-            timestamp=data.get('timestamp', ''),
+            timestamp=data.get('timestamp') or str(int(time.time() * 1000)),
             event_type=data.get('event_type', 'trade')
         )
 
@@ -415,6 +429,43 @@ class TradeEvent:
             'timestamp': self.timestamp,
             'event_type': self.event_type
         }
+
+
+def _v2_str(value, default: str = '') -> str:
+    """Coerce a Data API v2 value to str; None/missing -> default. Numeric ids (e.g. an int
+    event_id) become their decimal string."""
+    if value is None:
+        return default
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _v2_float(value, default: float = 0.0) -> float:
+    """Coerce a Data API v2 value to float; None/''/unparseable -> default.
+    v2 documents that a null numeric means 'unavailable, never zero', but the downstream
+    Rust SDK needs a non-null f64, so the documented fallback is 0.0."""
+    if value is None or value == '':
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _v2_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ('true', '1', 'yes')
+    return bool(value) if value is not None else False
+
+
+def _v2_int(value, default: int) -> int:
+    if value is None or value == '':
+        return default
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass
@@ -521,6 +572,57 @@ class PolymarketPosition:
             negative_risk=bool(data['negativeRisk']),
         )
 
+    @classmethod
+    def from_v2_dict(cls, data: dict) -> 'PolymarketPosition':
+        """Build from one row of Data API v2 (GET /v2/positions -> data[]), snake_case.
+
+        All 26 fields are always populated with the contract types (never None).
+        Field mapping (v2 -> dataclass):
+            proxy_wallet -> proxy_wallet          token_id -> asset
+            condition_id -> condition_id          current_size -> size
+            avg_price -> avg_price                entry_cost_usdc -> initial_value (fee-exclusive, == v1 initialValue)
+            current_value -> current_value        unrealized_pnl -> cash_pnl (== v1 cashPnl)
+            percent_pnl -> percent_pnl            total_size -> total_bought
+            realized_pnl -> realized_pnl          percent_realized_pnl -> percent_realized_pnl
+            current_price -> cur_price            redeemable/mergeable/negative_risk -> same
+            title, slug, icon, event_id, event_slug, outcome, outcome_index, opposite_outcome,
+            end_date -> same                      opposite_token_id -> opposite_asset
+        Fallbacks (only when v2 omits or nulls the field): strings -> '', floats -> 0.0,
+        bools -> False, outcome_index -> 999 (v2's own 'could not be labeled' sentinel; 0 would
+        silently claim the first outcome). Numeric ids are coerced to str.
+        Ignored v2-only fields: status, archived, entry_fees_usdc, total_cost_usdc, total_pnl,
+        last_event_at, first_entry_at, name, profile_image, verified.
+        """
+        g = data.get
+        return cls(
+            proxy_wallet=_v2_str(g('proxy_wallet')),
+            asset=_v2_str(g('token_id')),
+            condition_id=_v2_str(g('condition_id')),
+            size=_v2_float(g('current_size')),
+            avg_price=_v2_float(g('avg_price')),
+            initial_value=_v2_float(g('entry_cost_usdc')),
+            current_value=_v2_float(g('current_value')),
+            cash_pnl=_v2_float(g('unrealized_pnl')),
+            percent_pnl=_v2_float(g('percent_pnl')),
+            total_bought=_v2_float(g('total_size')),
+            realized_pnl=_v2_float(g('realized_pnl')),
+            percent_realized_pnl=_v2_float(g('percent_realized_pnl')),
+            cur_price=_v2_float(g('current_price')),
+            redeemable=_v2_bool(g('redeemable')),
+            mergeable=_v2_bool(g('mergeable')),
+            title=_v2_str(g('title')),
+            slug=_v2_str(g('slug')),
+            icon=_v2_str(g('icon')),
+            event_id=_v2_str(g('event_id')),
+            event_slug=_v2_str(g('event_slug')),
+            outcome=_v2_str(g('outcome')),
+            outcome_index=_v2_int(g('outcome_index'), 999),
+            opposite_outcome=_v2_str(g('opposite_outcome')),
+            opposite_asset=_v2_str(g('opposite_token_id')),
+            end_date=_v2_str(g('end_date')),
+            negative_risk=_v2_bool(g('negative_risk')),
+        )
+
     def to_dict(self) -> dict:
         return {
             'proxyWallet': self.proxy_wallet,
@@ -572,6 +674,11 @@ class PositionData:
     def from_list(cls, data: list) -> 'PositionData':
         positions = [PolymarketPosition.from_dict(position_dict) for position_dict in data]
         return cls(positions=positions)
+
+    @classmethod
+    def from_v2_list(cls, data: list) -> 'PositionData':
+        """Build from a list of Data API v2 position rows (the `data` array)."""
+        return cls(positions=[PolymarketPosition.from_v2_dict(d) for d in (data or [])])
 
     @classmethod
     def from_json(cls, json_str: str) -> 'PositionData':
@@ -658,27 +765,34 @@ class OrderEvent:
 
     @classmethod
     def from_dict(cls, data: dict) -> 'OrderEvent':
-        """Create an OrderEvent from a dictionary (e.g., parsed JSON from WebSocket)."""
+        """Create an OrderEvent from a dictionary (e.g., parsed JSON from WebSocket).
+
+        Tolerant: only id/market/asset_id/side are required; unknown keys are ignored and
+        a missing/empty timestamp falls back to receive time (ms).
+        """
+        ts = data.get('timestamp') or str(int(time.time() * 1000))
         return cls(
             id=data['id'],
-            owner=data['owner'],
+            owner=data.get('owner', ''),
             market=data['market'],
             asset_id=data['asset_id'],
             side=data['side'],
             order_owner=data.get('order_owner', ''),
-            original_size=data['original_size'],
-            size_matched=data['size_matched'],
-            price=data['price'],
-            associate_trades=data.get('associate_trades', []),
-            outcome=data['outcome'],
+            original_size=data.get('original_size', '0'),
+            size_matched=data.get('size_matched', '0'),
+            price=data.get('price', '0'),
+            associate_trades=data.get('associate_trades') or [],
+            outcome=data.get('outcome', ''),
+            # type/order_type/status are strict enums in the downstream SDK; never default them to ''
+            # (a KeyError makes the WS dispatcher log and skip the frame instead)
             type=data['type'],
-            created_at=data['created_at'],
-            expiration=data['expiration'],
+            created_at=data.get('created_at', '0'),
+            expiration=data.get('expiration', '0'),
             order_type=data['order_type'],
             status=data['status'],
-            maker_address=data['maker_address'],
-            timestamp=data['timestamp'],
-            event_type=data['event_type']
+            maker_address=data.get('maker_address', ''),
+            timestamp=ts,
+            event_type=data.get('event_type', 'order')
         )
 
     def to_dict(self) -> dict:

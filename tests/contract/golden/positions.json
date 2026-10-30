@@ -1,0 +1,114 @@
+{
+  "items": {
+    "keys": {
+      "asset": {
+        "nullable": false,
+        "type": "string"
+      },
+      "avg_price": {
+        "nullable": false,
+        "type": "float"
+      },
+      "cash_pnl": {
+        "nullable": false,
+        "type": "float"
+      },
+      "condition_id": {
+        "nullable": false,
+        "type": "string"
+      },
+      "cur_price": {
+        "nullable": false,
+        "type": "float"
+      },
+      "current_value": {
+        "nullable": false,
+        "type": "float"
+      },
+      "end_date": {
+        "nullable": false,
+        "type": "string"
+      },
+      "event_id": {
+        "nullable": false,
+        "type": "string"
+      },
+      "event_slug": {
+        "nullable": false,
+        "type": "string"
+      },
+      "icon": {
+        "nullable": false,
+        "type": "string"
+      },
+      "initial_value": {
+        "nullable": false,
+        "type": "float"
+      },
+      "mergeable": {
+        "nullable": false,
+        "type": "bool"
+      },
+      "negative_risk": {
+        "nullable": false,
+        "type": "bool"
+      },
+      "opposite_asset": {
+        "nullable": false,
+        "type": "string"
+      },
+      "opposite_outcome": {
+        "nullable": false,
+        "type": "string"
+      },
+      "outcome": {
+        "nullable": false,
+        "type": "string"
+      },
+      "outcome_index": {
+        "nullable": false,
+        "type": "int"
+      },
+      "percent_pnl": {
+        "nullable": false,
+        "type": "float"
+      },
+      "percent_realized_pnl": {
+        "nullable": false,
+        "type": "float"
+      },
+      "proxy_wallet": {
+        "nullable": false,
+        "type": "string"
+      },
+      "realized_pnl": {
+        "nullable": false,
+        "type": "float"
+      },
+      "redeemable": {
+        "nullable": false,
+        "type": "bool"
+      },
+      "size": {
+        "nullable": false,
+        "type": "float"
+      },
+      "slug": {
+        "nullable": false,
+        "type": "string"
+      },
+      "title": {
+        "nullable": false,
+        "type": "string"
+      },
+      "total_bought": {
+        "nullable": false,
+        "type": "float"
+      }
+    },
+    "nullable": false,
+    "type": "object"
+  },
+  "nullable": false,
+  "type": "array"
+}

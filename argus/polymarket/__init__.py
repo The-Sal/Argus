@@ -43,6 +43,7 @@ from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus.satellite_sys import ArgusPolymarketDB
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
+from argus.polymarket_direct.position_ids import is_v2_position_id
 from argus.polymarket.apdb_client import APDBClient, APDBError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
@@ -1325,13 +1326,18 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         event = self._resolve_market_from_token_id(clob_id)
         # Find the market and outcome associated with this clob_id
         for market in event.markets:
-            if market.clobTokenIds and clob_id in market.clobTokenIds:
-                outcome_index = market.clobTokenIds.index(clob_id)
+            token_ids = (market.outcome_token_ids()
+                         if hasattr(market, "outcome_token_ids")
+                         else market.clobTokenIds)
+            if not token_ids and getattr(market, "positionIds", None):
+                token_ids = market.positionIds
+            if token_ids and clob_id in token_ids:
+                outcome_index = token_ids.index(clob_id)
                 # noinspection all
+                outcome = ""
                 if market.outcomes and isinstance(market.outcomes, list):
-                    outcome = market.outcomes[outcome_index]
-                else:
-                    outcome = None
+                    if outcome_index < len(market.outcomes) and market.outcomes[outcome_index] is not None:
+                        outcome = market.outcomes[outcome_index]
 
                 aot_symbol_from_p2 = P2ConvertClass(
                     ticker=event.ticker,
@@ -1342,11 +1348,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 )
 
                 return {
-                    "event_name": event.title,
-                    "market_name": market.question,
+                    "event_name": event.title or "",
+                    "market_name": market.question or "",
                     "outcome": outcome,
-                    "ticker": event.ticker,
-                    "market_slug": market.slug,
+                    "ticker": event.ticker or "",
+                    "market_slug": market.slug or "",
                     "aot_p2_symbol": aot_symbol_from_p2.symbol,
                 }
 
@@ -1728,6 +1734,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param token_id: The asset_id / clob_id identifying a specific market outcome.
         :return: A PolymarketEvent with at least `.negRisk` populated correctly.
         """
+        if is_v2_position_id(token_id):
+            # Protocol V2 (ExchangeV3) has no neg-risk variant and build_order ignores
+            # market.negRisk for position ids, so skip the cache/APDB lookup entirely.
+            return PolymarketEvent(negRisk=False)
         with self._market_cache_lock:
             neg_risk = self._asset_id_to_neg_risk.get(token_id, _NEG_RISK_UNSET)
         if neg_risk is not _NEG_RISK_UNSET:

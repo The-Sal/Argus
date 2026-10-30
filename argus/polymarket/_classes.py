@@ -103,6 +103,11 @@ class P2ConvertClass:
                 market_packet += "0,0,"
 
         # add the timestamp at the end and the server timestamp
-        market_packet += f"{self.market_data.get('timestamp', '')},{time.time()}"
+        # Never emit an empty/zero timestamp: the downstream Rust decoder panics on it.
+        # Fall back to receive time in ms (same unit Polymarket uses).
+        ts = self.market_data.get('timestamp')
+        if ts is None or str(ts).strip() == '':
+            ts = int(time.time() * 1000)
+        market_packet += f"{ts},{time.time()}"
         return market_packet.encode('ascii')
 
