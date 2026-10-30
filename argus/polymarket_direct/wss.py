@@ -264,26 +264,43 @@ class PolyMarketAccountEventWss(PolymarketWSSBase):
 
     def _on_message_impl(self, message: str):
         """Implementation-specific message handling."""
-        content = json.loads(message)
+        try:
+            content = json.loads(message)
+        except json.JSONDecodeError:
+            logging.debug('Polymarket user WS: non-JSON frame ignored: %r', message)
+            return
 
-        # Handle different message types
-        msg_type = content.get('type', '').upper()
+        if isinstance(content, list):
+            for item in content:
+                self._dispatch_user_frame(item)
+            return
+        self._dispatch_user_frame(content)
 
-        if msg_type == 'TRADE':
-            # Parse TRADE messages into TradeEvent
-            try:
+    def _dispatch_user_frame(self, content):
+        """Route one user-channel frame on event_type (fallback: type); skip anything unknown."""
+        if not isinstance(content, dict):
+            logging.debug('Polymarket user WS: non-object frame ignored: %r', content)
+            return
+
+        # CLOB V2 / V1 both carry event_type ('trade' | 'order'); older frames only had `type`.
+        kind = content.get('event_type') or content.get('type') or ''
+        kind = str(kind).lower()
+        if not kind and ('error' in content or 'message' in content):
+            logging.warning('Polymarket user WS error/ack frame: %s', content)
+            return
+
+        try:
+            if kind == 'trade':
                 update = TradeEvent.from_dict(content)
-            except KeyError as e:
-                print('WARNING: Received unexpected TRADE message format on Polymarket '
-                      'Account Event WebSocket: {}'.format(content))
-                raise
-        else:
-            try:
+            elif kind == 'order' or str(content.get('type', '')).upper() in (
+                    'PLACEMENT', 'UPDATE', 'CANCELLATION'):
                 update = OrderEvent.from_dict(content)
-            except KeyError as e:
-                print('WARNING: Received unexpected message format on '
-                      'Polymarket Account Event WebSocket: {}'.format(content))
-                raise
+            else:
+                logging.info('Polymarket user WS: unknown frame type %r ignored: %s', kind, content)
+                return
+        except (KeyError, TypeError, ValueError) as e:
+            logging.warning('Polymarket user WS: could not parse %r frame (%r): %s', kind, e, content)
+            return
 
         if self._throw_fuss_on_user_events:
             throw_fuss(update.__repr__(), notify=False)
@@ -431,9 +448,9 @@ class OrderBookStore:
             # Multi-asset price_change: each change in the list is processed individually.
             if event_type == 'price_change' and 'price_changes' in message:
                 for change in message['price_changes']:
-                    asset_id = change['asset_id']
+                    asset_id = change.get('asset_id')
                     if asset_id is None:
-                        return
+                        continue
 
                     # Only pay the dedup-check cost if this change touches the top of book —
                     # deep-book changes can never be redundant with a best_bid_ask event.
@@ -449,13 +466,14 @@ class OrderBookStore:
                     if self._order_book_update_callback and order_book is not None:
                         self._order_book_update_callback({
                             asset_id: order_book,
-                            'timestamp': message['timestamp']
+                            'timestamp': self._frame_ts(message)
                         })
 
         elif event_type == 'book':
             # Snapshot: bids descending, asks ascending
-            bid_sorted = sorted(message['bids'], key=lambda x: float(x['price']), reverse=True)
-            ask_sorted = sorted(message['asks'], key=lambda x: float(x['price']))
+            # v2 books add a `version` key; ignored.  Missing sides are treated as empty.
+            bid_sorted = sorted(message.get('bids') or [], key=lambda x: float(x['price']), reverse=True)
+            ask_sorted = sorted(message.get('asks') or [], key=lambda x: float(x['price']))
 
             with self._dict_lock:
                 self._asset_id_to_order_book[asset_id] = {
@@ -488,8 +506,8 @@ class OrderBookStore:
             #           "timestamp": "1766789469958"}
             with self._dict_lock:
                 self._asset_id_to_best_bid_ask[asset_id] = {
-                    'best_bid': message['best_bid'],
-                    'best_ask': message['best_ask'],
+                    'best_bid': message.get('best_bid'),
+                    'best_ask': message.get('best_ask'),
                 }
 
             # Fire callback immediately with the current full L2 book.  The book may be
@@ -500,7 +518,7 @@ class OrderBookStore:
                 if book is not None:
                     self._order_book_update_callback({
                         asset_id: book,
-                        'timestamp': message['timestamp']
+                        'timestamp': self._frame_ts(message)
                     })
             return  # callback already fired; skip bottom
 
@@ -524,16 +542,33 @@ class OrderBookStore:
                     'future_running': None
                 }
 
+        elif event_type == 'last_trade_price':
+            # Trade print; does not mutate the book.  Falls through to the bottom callback
+            # exactly as it did before (consumers use it as a tick), but never needs a
+            # `timestamp` key to be present.
+            pass
+
+        elif event_type not in ('book', 'price_change', 'best_bid_ask', 'tick_size_change'):
+            logging.debug('Polymarket market WS: unknown event_type %r: %s', event_type, message)
+
         # Bottom callback: fires for book snapshots, non-deduped price_changes, and
         # tick_size_change events.  Skipped when best_bid_ask returned early or when
         # a top-of-book price_change was already covered by a best_bid_ask callback.
-        if not _skip_bottom_callback and self._order_book_update_callback:
+        if not _skip_bottom_callback and self._order_book_update_callback and asset_id:
             book = self.order_book_for_asset_id(asset_id)
             if book is not None:
                 self._order_book_update_callback({
                     asset_id: book,
-                    'timestamp': message['timestamp']
+                    'timestamp': self._frame_ts(message)
                 })
+
+    @staticmethod
+    def _frame_ts(message: dict) -> str:
+        """Frame timestamp, falling back to receive time (ms) when absent/empty."""
+        ts = message.get('timestamp')
+        if ts is None or ts == '':
+            return str(int(time.time() * 1000))
+        return ts
 
     # Warning: This method is already thread-locked. Do not call inside another lock or you will cause a deadlock.
     def _update_order_book(self, asset_id: str, change: dict) -> None:
@@ -543,7 +578,8 @@ class OrderBookStore:
 
             book = self._asset_id_to_order_book[asset_id]
             price = change['price']
-            size = float(change['size']) if change['size'] != '0' else 0
+            size_f = float(change['size'])
+            size = size_f if size_f != 0 else 0  # numeric zero check ('0', '0.0', '0.00')
             side = 'bids' if change['side'] == 'BUY' else 'asks'
             levels = book[side]
 
@@ -1167,7 +1203,7 @@ class PolyMarketOrderBookPool:
         first_market = market.markets[0]
         if first_market.clobTokenIds:
             for asset in first_market.clobTokenIds:
-                self.subscribe_to_asset_id(asset.id)
+                self.subscribe_to_asset_id(asset if isinstance(asset, str) else asset.id)
 
     @property
     def order_books(self):

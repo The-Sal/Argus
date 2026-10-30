@@ -1,0 +1,22 @@
+{
+  "keys": {
+    "failed": {
+      "items": {
+        "nullable": false,
+        "type": "string"
+      },
+      "nullable": false,
+      "type": "array"
+    },
+    "subscribed": {
+      "items": {
+        "nullable": false,
+        "type": "string"
+      },
+      "nullable": false,
+      "type": "array"
+    }
+  },
+  "nullable": false,
+  "type": "object"
+}

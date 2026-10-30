@@ -1,0 +1,8 @@
+{
+  "items": {
+    "nullable": false,
+    "type": "string"
+  },
+  "nullable": false,
+  "type": "array"
+}

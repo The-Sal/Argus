@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 from dataclasses import dataclass, fields
 
 
@@ -157,6 +157,16 @@ class Market:
     customLiveness: Optional[int] = None
     sportsMarketType: Optional[str] = None
     deployingTimestamp: Optional[str] = None
+    # CLOB V2 additions (internal only; never serialized by PolymarketEvent.to_dict)
+    version: Optional[Any] = None
+    positionIds: Optional[list] = None
+    resolutionStatus: Optional[str] = None
+
+    def outcome_token_ids(self) -> Optional[list]:
+        """Outcome token ids: clobTokenIds, or positionIds when clobTokenIds is missing."""
+        if self.clobTokenIds:
+            return self.clobTokenIds
+        return self.positionIds or None
 
     @classmethod
     def from_dict(cls, data: dict) -> 'Market':
@@ -172,6 +182,14 @@ class Market:
             except json.JSONDecodeError:
                 logging.warning(f"Could not decode clobTokenIds: {filtered_data['clobTokenIds']}")
                 pass  # Keep as string if parsing fails
+
+        # positionIds (V2) may arrive as a list or a JSON string
+        if isinstance(filtered_data.get('positionIds'), str):
+            try:
+                filtered_data['positionIds'] = json.loads(filtered_data['positionIds'])
+            except json.JSONDecodeError:
+                logging.warning(f"Could not decode positionIds: {filtered_data['positionIds']}")
+                filtered_data['positionIds'] = None
 
         # same with outcomes
         if 'outcomes' in filtered_data and isinstance(filtered_data['outcomes'], str):
@@ -199,6 +217,10 @@ class Market:
                     setattr(self, field, dt_obj)
                 except ValueError:
                     pass  # Keep original string if parsing fails
+
+
+# Market fields added for CLOB V2; excluded from client-facing to_dict output.
+_V2_ONLY_MARKET_FIELDS = frozenset({'version', 'positionIds', 'resolutionStatus'})
 
 
 @dataclass
@@ -345,7 +367,8 @@ class PolymarketEvent:
             'enableOrderBook': self.enableOrderBook,
             'negRisk': self.negRisk,
             'commentCount': self.commentCount,
-            'markets': [mkt.__dict__ for mkt in self.markets],
+            'markets': [{k: v for k, v in mkt.__dict__.items() if k not in _V2_ONLY_MARKET_FIELDS}
+                        for mkt in self.markets],
             'series': [s.__dict__ for s in self.series],
             'tags': [tag.__dict__ for tag in self.tags],
             'cyom': self.cyom,
