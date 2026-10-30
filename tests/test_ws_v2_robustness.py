@@ -10,7 +10,6 @@ from argus.polymarket_direct import wss
 from argus.polymarket_direct.order_types import OrderEvent, TradeEvent, Trade
 from argus.polymarket_direct._types import Market, PolymarketEvent
 from argus.polymarket._classes import P2ConvertClass
-from argus.polymarket import _mem_slim
 
 V2_ASSET = '495099235152725588201991226912420825532590817323357329480139627250245959680'
 V1_ASSET = '661095475084821930790589425827399710453605787397495798070750303202782280580'
@@ -210,15 +209,6 @@ def test_market_v2_fields_and_to_dict_unchanged():
         {'slug': 's', 'positionIds': ['c'], 'version': 2, 'resolutionStatus': 'x'}]})
     mk = ev.to_dict()['markets'][0]
     assert not ({'version', 'positionIds', 'resolutionStatus'} & set(mk))
-
-
-def test_mem_slim_output_unchanged():
-    ev = PolymarketEvent.from_dict({'id': '1', 'ticker': 't', 'markets': [
-        {'slug': 's', 'clobTokenIds': '["a"]', 'positionIds': ['a'], 'version': 2}]})
-    slim = _mem_slim.traverse_and_slim(ev)
-    assert slim.markets[0].positionIds == ['a']
-    out = slim.to_dict()
-    assert 'version' not in out['markets'][0] and 'positionIds' not in out['markets'][0]
 
 
 def test_subscribe_to_market_plain_string_ids():

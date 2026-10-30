@@ -7,7 +7,7 @@ import datetime
 import websocket
 import traceback
 import pandas as pd
-from dotenv import load_dotenv
+from argus._argus_utils import load_dotenv
 
 
 load_dotenv()
