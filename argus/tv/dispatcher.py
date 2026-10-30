@@ -40,7 +40,7 @@ from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus._argus_utils import ArgsObject
 from argus.tv import QuoteSession, QUOTE_FIELDS
 from argus.perpetuals.shared import BaseDispatcher, PrintInterface
-from argus.perpetuals.shared import _errors as ers
+from argus.perpetuals.shared import errors as ers
 
 __version__ = [1, 0, 0, 0]
 pi = PrintInterface('TradingView')

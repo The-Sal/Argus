@@ -203,7 +203,7 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
     SDK cleaner.
 
     That retry/terminal-state handling is only for transient runtime failures (e.g. a REST call failing). It is
-    deliberately NOT applied to argus.perpetuals.shared._errors.FatalDispatcherError (and its subclasses, e.g.
+    deliberately NOT applied to argus.perpetuals.shared.errors.FatalDispatcherError (and its subclasses, e.g.
     AbstractMethodNotImplementedError) -- those mean the running code itself is misconfigured or incomplete, such
     as a subclass enabling a utility (e.g. distribute_refreshed_perps) without overriding the abstract method it
     depends on (_distribute_refreshed_perpetuals). Utilities specifically exempt FatalDispatcherError from their
