@@ -12,37 +12,42 @@ The TradingView module provides real-time quote data and historical chart data f
 
 ## Overview
 
-The TradingView module **does NOT follow the dispatcher paradigm**. Instead, it uses a **callback-based architecture** similar to the Polymarket module.
+The TradingView module provides **two layers**:
+
+1. **Low-level sessions** (`QuoteSession`, `ChartSession`) — callback-based, for direct Python integration and historical data.
+2. **`TradingViewDispatcher`** (`dispatcher.py`) — a full Argus dispatcher (Protocol 1 request/response + Protocol 2 streaming) built on top of a single shared multi-symbol quote session. See **[TV_DISPATCHER.md](TV_DISPATCHER.md)** for its API spec.
 
 **Location:** `/argus/tv/`
 
 **Primary Files:**
-- `__init__.py` (448 lines) - QuoteSession, ChartSession, TradingViewConnection
-- `multisymbol.py` - Multi-symbol quote streaming
+- `__init__.py` - QuoteSession, ChartSession, TradingViewConnection (low-level, callback-based)
+- `dispatcher.py` - TradingViewDispatcher, DispatcherQuoteSession, TVP2ConvertClass (dispatcher layer)
+- `multisymbol.py` - Multi-symbol quote streaming (low-level)
 
 **Key Features:**
 - Real-time quote data (bid, ask, last, volume, changes)
 - Historical chart data (OHLCV candles)
-- Callback-based subscriptions
-- No dispatcher / No Protocol 2
+- Callback-based subscriptions (low-level) **and** full dispatcher with Protocol 2 (multi-client, non-Python clients)
 - Optional authentication (works without credentials)
 
 ## Architecture
 
-### Why Not a Dispatcher?
+### Layering: Callback Sessions + Dispatcher
 
-The TradingView module uses **direct WebSocket connections with callbacks**:
+The low-level sessions use **direct WebSocket connections with callbacks**, and the dispatcher wraps a single multi-symbol session for network clients:
 
 ```
-[Client Code]
-     ↓
-[QuoteSession / ChartSession]
-     ↓
-[TradingView WebSocket]
+[Python code]            [TCP clients]
+     ↓                        ↓
+[QuoteSession / ChartSession]   [TradingViewDispatcher]
+     \                        /
+      \                      /
+          [DispatcherQuoteSession]  (ONE shared TradingView WS, multi-symbol)
+                       ↓
+              [TradingView WebSocket]
 ```
 
-**Reasons:**
-1. **Different use case** - Focus on charting and historical data, not real-time trading
+**History:** the module originally shipped without a dispatcher (1. **Different use case** - focus on charting and historical data, not real-time trading),
 2. **TradingView protocol** - Custom message encoding (`~m~<size>~m~<JSON>`)
 3. **Callback-driven** - Natural fit for per-symbol callbacks
 4. **No normalization needed** - Returns pandas DataFrames and MarketData objects
@@ -432,31 +437,20 @@ TradingView symbols follow the format: `EXCHANGE:SYMBOL`
 
 ## Limitations
 
-### 1. Not a Dispatcher
+### 1. ~~Not a Dispatcher~~ — RESOLVED
 
-**Constraint:** Does not follow Argus dispatcher pattern.
+`TradingViewDispatcher` (`argus/tv/dispatcher.py`, spec in [TV_DISPATCHER.md](TV_DISPATCHER.md)) provides the TCP server, Protocol 1 request/response and Protocol 2 streaming with multi-client multiplexing over ONE shared upstream session. The low-level `QuoteSession`/`ChartSession` classes remain callback-based for direct Python use.
 
-**Impact:**
-- No TCP/UDS server
-- No Protocol 2 streaming
-- No multi-client multiplexing
-- Direct Python integration only
+### 2. Low-Level Sessions Are Callback-Based (Not Stream-Based)
 
-**Workaround:**
-- Use directly in Python code
-- Build custom dispatcher wrapper if needed
-
-### 2. Callback-Based (Not Stream-Based)
-
-**Constraint:** Data delivered via callbacks, not continuous stream.
+**Constraint:** The raw `QuoteSession`/`ChartSession` deliver data via callbacks, not continuous streams.
 
 **Impact:**
-- Cannot connect from non-Python clients
-- Different API than IB/Capital/Binance modules
+- Direct-session use cannot connect from non-Python clients
+- Different API than the dispatcher layer
 
 **Workaround:**
-- Accept callback paradigm
-- Bridge to Protocol 2 if needed (custom implementation)
+- Use `TradingViewDispatcher` for network clients (it bridges callbacks → Protocol 2)
 
 ### 3. Single Symbol Per Session
 
@@ -543,26 +537,24 @@ thread.start()
 
 ### Not Suitable For:
 - ❌ High-frequency trading (use exchange APIs)
-- ❌ Multi-client data distribution (no dispatcher)
-- ❌ Non-Python integrations
 - ❌ Order execution (TradingView is data-only)
 
 ## File Reference
 
 ```
 argus/tv/
-├── __init__.py        # QuoteSession, ChartSession, TradingViewConnection
-└── multisymbol.py     # Multi-symbol utilities
+├── __init__.py        # QuoteSession, ChartSession, TradingViewConnection (low-level)
+├── dispatcher.py      # TradingViewDispatcher, DispatcherQuoteSession, TVP2ConvertClass
+└── multisymbol.py     # Multi-symbol utilities (low-level)
 ```
 
 ## Summary
 
-The TradingView module provides convenient access to TradingView's charting and quote data, **diverging from Argus's standard dispatcher architecture**:
+The TradingView module provides convenient access to TradingView's charting and quote data, with a full dispatcher layer on top of the callback sessions:
 
 **Key Characteristics:**
-- ❌ No dispatcher pattern
-- ❌ No Protocol 2
-- ✅ Callback-based subscriptions
+- ✅ Dispatcher pattern (`TradingViewDispatcher`, Protocol 1 + Protocol 2 — see [TV_DISPATCHER.md](TV_DISPATCHER.md))
+- ✅ Callback-based subscriptions (low-level sessions)
 - ✅ Pandas DataFrame output
 - ✅ Optional authentication
 - ✅ Rich historical data
@@ -575,10 +567,7 @@ The module is designed for **data analysis and research**, not real-time trading
 - Supporting backtesting workflows
 - Providing multi-exchange coverage
 
-For integration into trading systems requiring Protocol 2 or multi-client support, consider:
-1. Building a custom dispatcher wrapper around `QuoteSession`
-2. Using TradingView for research, other modules for live trading
-3. Exporting data to files and processing separately
+For integration into trading systems requiring Protocol 2 or multi-client support, use `TradingViewDispatcher` (`python runtime.py tradingview`) — it multiplexes all client subscriptions over a single shared TradingView quote session.
 
 **Complementary to Other Modules:**
 
