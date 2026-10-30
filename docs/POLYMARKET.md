@@ -781,7 +781,6 @@ The dispatcher supports optional `correlation_id` fields for request/response tr
 | `POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL` | 300 | Market cache refresh (seconds) |
 | `POLYMARKET_BUILD_POOL_WORKERS` | 10 | Thread pool size for concurrent order building in `place_multiple_orders` |
 | `POLYMARKET_MAX_ASSETS_PER_WS` | 4 | Max subscribed assets per WebSocket shard |
-| `POLYMARKET_MEMORY_PRUNING` | false | If `true`, prune slim market data from in-memory cache on refresh |
 | `MAX_SEEN_CORRELATION_IDS` | 100000 | Max correlation IDs to track |
 | `MAX_CORRELATION_ID_LENGTH` | 40 | Max correlation ID length |
 
@@ -853,4 +852,5 @@ sock.sendall(encode_packet(json.dumps(order_req).encode()))
 
 - `argus/polymarket/__init__.py`: Main dispatcher implementation
 - `argus/protocol.py`: P1 and P2 protocol implementations
-- `argus/polymarket/_classes.py`: Supporting classes (RoutingHelper, ArgsObject, etc.)
+- `argus/polymarket/_classes.py`: Polymarket-specific supporting classes (P2ConvertClass, error types, etc.)
+- `argus/_argus_utils.py`: Dispatcher plumbing shared across all Argus trading dispatchers (RoutingHelper, ArgsObject, CorrelationIDChecker)

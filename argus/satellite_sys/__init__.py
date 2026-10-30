@@ -11,15 +11,15 @@ import json
 import time
 import socket
 import platform
-import subprocess
 import traceback
-
+import subprocess
 from argus.wireproxy import wrapper
 from utils3 import Container, networking
 
+
 _addrs_and_hashes = {
     'WpDaemon': 'https://github.com/The-Sal/WpDaemon/releases/download/v1.0.2/builds.zip', 
-    'APDB': 'https://github.com/The-Sal/argus-polymarket-db/releases/download/v2.0.1'
+    'APDB': 'https://github.com/The-Sal/argus-polymarket-db/releases/download/v2.1.1'
 }
 
 
@@ -254,7 +254,7 @@ class ArgusPolymarketDB(GenericSatelliteSys):
         written to the .env file, APDB will attempt a direct connection to Polymarket.
         :return:
         """
-        from dotenv import load_dotenv
+        from argus._argus_utils import load_dotenv
         load_dotenv()
         BIND_ADDRESS = wrapper.start_proxy_and_return_bind('POLYMARKET')
         if BIND_ADDRESS is None:
@@ -309,7 +309,8 @@ class ArgusPolymarketDB(GenericSatelliteSys):
                     break
                 except (OSError, ConnectionRefusedError):
                     time.sleep(0.1)
-                    print(f'Waiting for APDB to start... {time_waited:.1f}s', end='\r')
+                    if time_waited % 5 == 0:
+                        print(f'Waiting for APDB to start... {time_waited:.1f}s', end='\r')
                     print("[APDB LOG]", read_fd.read(), end='')
                     sys.stdout.flush()
                     time_waited += 0.1
