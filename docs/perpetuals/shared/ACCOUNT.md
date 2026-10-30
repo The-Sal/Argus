@@ -4,8 +4,10 @@ Read-only account data for the Argus v2 perpetual dispatchers: balance, position
 orders, fills and funding payments. Both `HyperLiquidDispatcher` (port `9972`) and
 `LighterDispatcher` (port `9974`) expose the **same six actions with the same request
 and response shapes**, served by one shared implementation
-(`argus/perpetuals/shared/account.py`). Order execution is a separate, Hyperliquid-only
-surface described in `docs/perpetuals/hyperliquid/DISPATCHER.md`; Lighter remains read-only for now.
+(`argus/perpetuals/shared/account.py`). Order execution is a separate surface with the same
+action names on both venues, driven by the shared trading control flow in
+`argus/perpetuals/shared/trading.py`; the venue-specific halves are described in
+`docs/perpetuals/hyperliquid/DISPATCHER.md` and `docs/perpetuals/lighter/DISPATCHER.md`.
 
 The actions are named after `PolymarketDispatcher`'s (`docs/POLYMARKET.md`) so a client
 that already speaks to Polymarket needs no new vocabulary:
@@ -80,6 +82,11 @@ upstream calls on Lighter (100 per request) but never more than the page needs.
 | Hyperliquid | `HYPERLIQUID_WALLET_ADDRESS` (must be the **master** address, not an API wallet) | everything; all reads are unsigned `info` requests |
 | Lighter | `LIGHTER_ACCOUNT_INDEX` | `get_balance`, `get_positions` (public reads) |
 | Lighter | `LIGHTER_AUTH_TOKEN` (read-only token, `ro:...`) | `get_orders`, `get_order_status`, `get_trades`, `get_funding_payments` |
+
+Trading credentials are separate from the account-read credentials above: see
+`docs/perpetuals/lighter/DISPATCHER.md` (Lighter) and `docs/perpetuals/hyperliquid/DISPATCHER.md`
+(Hyperliquid). Lighter trading uses `LIGHTER_ACC_INDEX` + `LIGHTER_API_INDEX` +
+`LIGHTER_PRIVATE_KEY`; the read-only token only unlocks the REST reads.
 
 Details, including how to mint a Lighter read-only token, are in
 `docs/system/ENVIRONMENT_VARIABLES.md`. An action whose configuration is **missing** answers
@@ -281,11 +288,12 @@ days before `end_time`.
 Lighter is capped at 500 settlements per request (about three weeks of hourly funding) so a
 wide window cannot turn into an unbounded number of upstream calls.
 
-### Push (Hyperliquid)
+### Push (Hyperliquid and Lighter)
 
 Order lifecycle changes and fills are also pushed as `account_update` (no polling needed to learn about a
-fill or cancel); see `docs/perpetuals/hyperliquid/DISPATCHER.md#account_update`. The records reuse the shapes
-above (`fill` is a `get_trades` record). Lighter does not push yet.
+fill or cancel); see `docs/perpetuals/hyperliquid/DISPATCHER.md#account_update` and
+`docs/perpetuals/lighter/DISPATCHER.md#account_update`. The records reuse the shapes above (`fill` is a
+`get_trades` record), and on both venues no `subscribe` is required to receive the push.
 
 ### Hyperliquid-only
 

@@ -2,8 +2,7 @@
 Offline unit tests for the Hyperliquid `account_update` push: the pure stream parser, the typed records,
 the wire budget, the websocket's (re)subscribe + gap behaviour, and dispatcher fan-out.
 
-Payloads in section 3 of docs/perpetuals/hyperliquid/ACCOUNT_UPDATE_PLAN.md are quoted verbatim from the
-live websocket. No network is touched.
+Payloads are quoted verbatim from the live websocket. No network is touched.
 
 Run with: env PYTHONPATH=. uv run python -m unittest tests.test_hyper_account_stream
 """

@@ -66,3 +66,16 @@ class OrderExecutionDisabledError(DispatcherError):
     execution in an emergency still needs to pull resting orders.
     """
     pass
+
+
+class LeverageRevertError(FatalDispatcherError):
+    """
+    An order failed AND rolling the coin's leverage back to its previous value failed too, so the coin
+    may be left on a leverage the caller did not ask for (which silently moves the liquidation price of
+    any position on it). A `FatalDispatcherError` so the dispatcher's contingency action runs; the caller
+    must inspect `get_leverage` and repair with `set_leverage`.
+
+    Venue-agnostic: the leverage read/apply/roll-back machinery lives in `shared/trading.py`, so every
+    venue's dispatcher reports this same error type.
+    """
+    pass
