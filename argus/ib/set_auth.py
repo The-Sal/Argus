@@ -109,12 +109,18 @@ def update_cookies(write_env=True):
             print(".env file not found. Creating a new one.")
             lines = []
 
+        found = False
         with open('.env', 'w') as f:
             for line in lines:
                 if line.startswith('IB_COOKIE'):
                     f.write(f'IB_COOKIE=\'{cookie_env}\' \n')
+                    found = True
                 else:
                     f.write(line)
+            if not found:
+                if lines and not lines[-1].endswith('\n'):
+                    f.write('\n')
+                f.write(f'IB_COOKIE=\'{cookie_env}\' \n')
     else:
         print("Not writing to .env file.")
 
