@@ -221,7 +221,7 @@ def main(argv=None):
         dispatcher.interactive_mode()
         print("Exiting Lighter dispatcher")
     elif args.target == "tradingview":
-        from argus.tv import TradingViewDispatcher
+        from argus.tv.dispatcher import TradingViewDispatcher
         tv_kwargs = {}
         if args.host:
             tv_kwargs['host'] = args.host
