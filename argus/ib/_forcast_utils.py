@@ -53,14 +53,14 @@ Notes:
 
 """
 import re
-from datetime import datetime, date
-
 import numpy as np
 import pandas as pd
 from utils3 import assertTypes
-
-from argus.ib._ib_utils import MarketData, IBError
+from datetime import datetime, date
 from argus.ib.fields import IBKRFields
+from argus.ib._ib_utils import MarketData, IBError
+
+
 
 
 def enforce_type(value, expected_type):
