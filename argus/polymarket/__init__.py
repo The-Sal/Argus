@@ -43,10 +43,10 @@ from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus.satellite_sys import ArgusPolymarketDB
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
-from argus.polymarket_direct.position_ids import is_v2_position_id
 from argus.polymarket.apdb_client import APDBClient, APDBError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
+from argus.polymarket_direct.position_ids import is_v2_position_id
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
 from argus._argus_utils import (

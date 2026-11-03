@@ -11,12 +11,12 @@ from termcolor import colored
 from argus.cache_sys import DomainCache
 from argus.polymarket_direct.safe import IPSafety
 from py_clob_client_v2.clob_types import AssetType
-from py_clob_client_v2.order_builder.builder import ROUNDING_CONFIG
-from argus.polymarket_direct.position_ids import is_v2_position_id
 from argus.wireproxy import wrapper as wp_wrappers
 from py_clob_client_v2 import BalanceAllowanceParams
 from argus.polymarket_direct import _types as pm_types
 from py_clob_client_v2.order_builder.constants import BUY, SELL
+from argus.polymarket_direct.position_ids import is_v2_position_id
+from py_clob_client_v2.order_builder.builder import ROUNDING_CONFIG
 from py_clob_client_v2.order_utils import SignedOrderV2 as SignedOrder
 from py_clob_client_v2.clob_types import PostOrdersV2Args, OrderPayload
 from argus._argus_utils import throw_fuss, macos_notification_with_custom_sound
