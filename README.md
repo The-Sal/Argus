@@ -226,7 +226,7 @@ All CLIs are run from the repository root with `uv run` (or `python3`).
 |------|---------|---------|
 | **runtime** | `runtime.py <dispatcher>` | Launch a dispatcher server (see [Running a Dispatcher](#running-a-dispatcher)) |
 | **cache** | `-m argus.cache_utils` | Interactive inspector for the shared caches: inspect, check state, restore from backup, delete a domain, generate a transparent cache, toggle capital/polymarket cache file |
-| **sat** | `-m argus.satellite_sys <system> <action>` | Manage sidecars. Systems: `WpDaemon`, `APDB`. Actions: `install`, `update`, `start`, `stop`, `status` |
+| **satellite** | `-m argus.satellite_sys <system> <action>` | Manage sidecars. Systems: `WpDaemon`, `APDB`. Actions: `install`, `update`, `start`, `stop`, `status` |
 | **wireproxy** | `-m argus.wireproxy [flags]` | Manage WireGuard configs and the WireProxy server (interactive with no flags) |
 
 ```bash
@@ -239,6 +239,7 @@ uv run python3 -m argus.wireproxy --start-server <conf> # also: --stop-server, -
 uv run python3 -m argus.wireproxy --brute-polymarket    # test every VPN against Polymarket's geoblock endpoint
 ```
 
+_You do not need to install APDB manually, it is automatically installed when you run the Polymarket dispatcher. This applies to all mandatory sidecars._
 
 ## Getting Started
 
