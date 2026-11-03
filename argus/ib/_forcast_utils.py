@@ -52,13 +52,15 @@ Notes:
 
 
 """
+import re
+from datetime import datetime, date
+
 import numpy as np
 import pandas as pd
-from datetime import datetime
 from utils3 import assertTypes
-from argus.ib.fields import IBKRFields
-from argus.ib._ib_utils import MarketData, IBError
 
+from argus.ib._ib_utils import MarketData, IBError
+from argus.ib.fields import IBKRFields
 
 
 def enforce_type(value, expected_type):
@@ -263,6 +265,7 @@ class FxContractMicro:
 
     def delta_update_market_data(self, mkt_data: MarketData):
         """Delta update the market data for this micro contract."""
+        # noinspection all
         if self.market_data is None:
             has_valid_value = False
             for field in self._required_fields:
@@ -577,6 +580,116 @@ class FxContractMini:
                 ))
 
 
+# Mapping from the IBKR EventTrader REST "side" to the legacy putOrCall convention.
+# Call == YES, Put == NO.
+_FXC_SIDE_TO_PUT_OR_CALL = {
+    'Y': 'C',
+    'C': 'C',
+    'N': 'P',
+    'P': 'P',
+}
+
+
+def select_default_expiration(contracts: list[dict], today: 'date | None' = None) -> str:
+    """Pick the expiration to activate from a ``/forecasttrader/contract/market`` payload.
+
+    Preference order:
+        1. the earliest expiration that has not yet passed (>= ``today``)
+        2. otherwise the earliest expiration overall
+    """
+    expirations = sorted({
+        str(contract['expiration'])
+        for contract in contracts
+        if contract.get('expiration') is not None
+    })
+    if not expirations:
+        raise AbstractionError("Market payload contains no contracts with an expiration")
+
+    today = today or date.today()
+    for expiration in expirations:
+        try:
+            parsed = datetime.strptime(expiration, "%Y%m%d").date()
+        except ValueError:
+            # Non-standard expiration format; do not filter it out.
+            return expiration
+        if parsed >= today:
+            return expiration
+    return expirations[0]
+
+
+def _parse_money(value):
+    """Parse a money-ish value (``"$0.01"``, ``"$1.00"``, a number) into a float."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    match = re.search(r'-?\d+(?:\.\d+)?', str(value))
+    return float(match.group(0)) if match else None
+
+
+def _resolve_timezone(name):
+    """Resolve a timezone name (e.g. ``US/Central``) to a tzinfo, or ``None``."""
+    if not name:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(name)
+    except Exception:
+        return None
+
+
+def normalize_ibkr_market_contract(
+    raw: dict,
+    market_name: str,
+    exchange: str | None = None,
+    symbol: str | None = None,
+    payout=None,
+) -> dict:
+    """Translate a contract from ``/forecasttrader/contract/market`` into the legacy
+    camelCase micro-contract schema consumed by :class:`FxContractMicro`.
+
+    The EventTrader REST payload is a *slim* representation.  Fields that the legacy
+    (now decommissioned) ``trsrv/event/contracts`` endpoint provided but EventTrader
+    does not are left unset.  The resulting :class:`FxContractMicro` still exposes
+    every legacy key (as ``None``) so downstream ``to_json`` consumers keep the same
+    schema and never hit a ``KeyError``.
+
+    ``symbol``/``payout`` come from the *parent* market payload and are reused to
+    recover ``underlyingSymbol``/``commodityCode``/``eventFixedPayout`` for free.
+    """
+    side = raw.get('side')
+    try:
+        put_or_call = _FXC_SIDE_TO_PUT_OR_CALL[str(side).upper()]
+    except (KeyError, TypeError):
+        raise AbstractionError(f"Unknown contract side {side!r} in market contract")
+
+    strike_label = raw.get('strike_label')
+    if strike_label is None:
+        raise AbstractionError("Market contract is missing 'strike_label'")
+
+    conid = raw.get('conid')
+    if conid is None:
+        raise AbstractionError("Market contract is missing 'conid'")
+
+    return {
+        'market': market_name,
+        'name': raw.get('name') or f"{market_name} - {strike_label}",
+        'putOrCall': put_or_call,
+        'expiration': raw.get('expiration'),
+        'exchange': raw.get('exchange', exchange),
+        'conid': conid,
+        'underlyingConid': raw.get('underlying_conid'),
+        'underlyingName': market_name,
+        'underlyingSymbol': symbol,
+        'commodityCode': raw.get('commodityCode') or symbol,
+        'eventFixedPayout': raw.get('eventFixedPayout', payout),
+        'shortDescription': raw.get('shortDescription'),
+        'strike': raw.get('strike'),
+        'strikeLabel': strike_label,
+        'timespecifierParam': raw.get('time_specifier'),
+    }
+
+
 class FxContractBig:
     """A big contract is a collection of mini contracts for all outcomes of an event.
     For example if the event is "New York City Mayor Election" and there are three
@@ -597,6 +710,7 @@ class FxContractBig:
         self.mini_contracts = mini_contracts
         self.conid = self.mini_contracts[0].micro_yes.underlyingConid
         self.underlyingName = self.mini_contracts[0].micro_yes.underlyingName
+        self.expiration = self.mini_contracts[0].micro_yes.expiration
 
         # veryify there are no duplicate strikeLabels
         strike_labels = [mc.strikeLabel for mc in mini_contracts]
@@ -652,6 +766,105 @@ class FxContractBig:
                         used_indices.update({i, j})
                         break
         return cls(mini_contracts, mapping)
+
+    @classmethod
+    def from_ibkr_market(cls, payload: dict, expiration: str | None = None) -> 'FxContractBig':
+        """Build a big contract from a ``/forecasttrader/contract/market`` payload.
+
+        A single payload can span multiple expirations (e.g. successive FOMC
+        meetings) which reuse the same strike labels.  A big contract therefore
+        represents exactly one expiration; ``expiration`` selects it and defaults
+        to the nearest not-yet-expired one.
+        """
+        contracts = payload.get('contracts') or []
+        if not contracts:
+            raise AbstractionError(
+                f"Market {payload.get('market_name')!r} payload contains no contracts"
+            )
+
+        market_name = payload.get('market_name') or payload.get('symbol') or ''
+        exchange = payload.get('exchange')
+
+        if expiration is None:
+            expiration = select_default_expiration(contracts)
+        expiration = str(expiration)
+
+        selected = [c for c in contracts if str(c.get('expiration')) == expiration]
+        if not selected:
+            available = sorted({str(c.get('expiration')) for c in contracts})
+            raise AbstractionError(
+                f"No contracts for expiration {expiration!r} in market {market_name!r}. "
+                f"Available expirations: {available}"
+            )
+
+        symbol = payload.get('symbol')
+        payout = payload.get('payout')
+        normalized = [
+            normalize_ibkr_market_contract(c, market_name, exchange, symbol=symbol, payout=payout)
+            for c in selected
+        ]
+        return cls.from_json(normalized)
+
+    def apply_contract_rules(self, rules: dict) -> 'FxContractBig':
+        """Enrich every micro contract with market-level metadata from
+        ``/forecasttrader/contract/rules``.
+
+        Almost every rules field is market-level (identical for all outcomes in a
+        market), so one rules payload applies to the whole big contract.  This
+        restores the legacy fields the old ``trsrv/event/contracts`` endpoint
+        provided (``longDescription``, ``sourceAgency``, ``eventAuthorityURL``,
+        ``marketRulesLink``, ``priceIncrement``, ``timezone``, last-trade fields
+        and the expected resolution/payout times).  Returns ``self``.
+        """
+        if not rules:
+            return self
+
+        tz = _resolve_timezone(rules.get('exchange_timezone'))
+
+        def local_dt(epoch):
+            if epoch is None:
+                return None
+            dt = datetime.fromtimestamp(int(epoch), tz) if tz else datetime.fromtimestamp(int(epoch))
+            # Keep the legacy naive datetime semantics (to_json -> isoformat).
+            return dt.replace(tzinfo=None)
+
+        description = rules.get('description')
+        source_agency = rules.get('source_agency')
+        resolution_link = rules.get('data_and_resolution_link')
+        rules_link = rules.get('market_rules_link')
+        price_increment = _parse_money(rules.get('price_increment'))
+        payout = _parse_money(rules.get('payout'))
+        timezone = rules.get('exchange_timezone')
+
+        last_trade_dt = local_dt(rules.get('last_trade_time'))
+        resolution_dt = local_dt(rules.get('release_time'))
+        payout_dt = local_dt(rules.get('payout_time'))
+
+        for mini in self.mini_contracts:
+            for micro in (mini.micro_yes, mini.micro_no):
+                if description is not None:
+                    micro.longDescription = description
+                if source_agency is not None:
+                    micro.sourceAgency = source_agency
+                if resolution_link is not None:
+                    micro.eventAuthorityURL = resolution_link
+                if rules_link is not None:
+                    micro.marketRulesLink = rules_link
+                if price_increment is not None:
+                    micro.priceIncrement = price_increment
+                if payout is not None:
+                    micro.eventFixedPayout = payout
+                if timezone is not None:
+                    micro.timezone = timezone
+                if last_trade_dt is not None:
+                    micro.lastTradeMillis = int(rules['last_trade_time']) * 1000
+                    micro.lastTradeDate = last_trade_dt.strftime('%Y%m%d')
+                    micro.lastTradeTime = last_trade_dt.strftime('%H%M')
+                if resolution_dt is not None:
+                    micro.expectedResolutionTime = resolution_dt
+                if payout_dt is not None:
+                    micro.expectedPayoutTime = payout_dt
+        return self
 
     def conids_by_outcome(self):
         """Get a mapping of outcome strikeLabel to its (yes_conid, no_conid)"""

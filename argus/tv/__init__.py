@@ -8,6 +8,7 @@ import websocket
 import traceback
 import pandas as pd
 from argus._argus_utils import load_dotenv
+from argus.tv.dispatcher import TradingViewDispatcher, TVP2ConvertClass  # noqa: E402,F401
 
 
 load_dotenv()
@@ -432,4 +433,3 @@ class NewsSession(TradingViewConnection):
 
 # Dispatcher (P1 subscribe/unsubscribe + P2 streaming). Imported last so that
 # argus.tv.dispatcher can do `from argus.tv import QuoteSession` without a cycle.
-from argus.tv.dispatcher import TradingViewDispatcher, TVP2ConvertClass  # noqa: E402,F401

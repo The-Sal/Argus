@@ -7,6 +7,8 @@ examples/ADX_data
 *.pkl
 *.fk
 *.json
+# keep captured offline test fixtures
+!tests/fixtures/fxc/*.json
 *.pyc
 *.DS_Store
 *.pkl*

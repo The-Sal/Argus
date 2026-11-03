@@ -1,0 +1,839 @@
+{
+ "product_name": "US Fed Funds Target Rate",
+ "category_id": "g137993",
+ "complex_contracts": [
+  {
+   "strike_label": "Above 3.125%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 3.125,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.06,
+   "bid_yes": 0.94,
+   "bid_no": 0.01,
+   "open_interest": 6774,
+   "contracts": [
+    {
+     "conid_yes": 722489372,
+     "conid_no": 722489376,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 3.125%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1723525200,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 3.125% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 3.375%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 3.375,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.06,
+   "bid_yes": 0.94,
+   "bid_no": 0.01,
+   "open_interest": 482,
+   "contracts": [
+    {
+     "conid_yes": 722489381,
+     "conid_no": 722489386,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 3.375%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1723525200,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 3.375% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 3.125%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 3.125,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 527,
+   "contracts": [
+    {
+     "conid_yes": 722489606,
+     "conid_no": 722489609,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 3.125%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1723525200,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 3.125% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 3.375%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 3.375,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 9821,
+   "contracts": [
+    {
+     "conid_yes": 722489612,
+     "conid_no": 722489618,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 3.375%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1723525200,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 3.375% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 2.875%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 2.875,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 7501,
+   "contracts": [
+    {
+     "conid_yes": 747748416,
+     "conid_no": 747748421,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 2.875%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1733896800,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 2.875% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 3.625%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 3.625,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.06,
+   "bid_yes": 0.94,
+   "bid_no": 0.01,
+   "open_interest": 1420,
+   "contracts": [
+    {
+     "conid_yes": 747748426,
+     "conid_no": 747748431,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 3.625%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1733896800,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 3.625% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 2.875%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 2.875,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 12586,
+   "contracts": [
+    {
+     "conid_yes": 747748608,
+     "conid_no": 747748613,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 2.875%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1733896800,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 2.875% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 3.625%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 3.625,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.03,
+   "bid_yes": 0.97,
+   "bid_no": 0.01,
+   "open_interest": 8260,
+   "contracts": [
+    {
+     "conid_yes": 747748618,
+     "conid_no": 747748623,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 3.625%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1733896800,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 3.625% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 2.625%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 2.625,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.06,
+   "bid_yes": 0.94,
+   "bid_no": 0.01,
+   "open_interest": 750,
+   "contracts": [
+    {
+     "conid_yes": 748336815,
+     "conid_no": 748336817,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 2.625%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1734069600,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 2.625% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 3.875%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 3.875,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.89,
+   "ask_no": 0.16,
+   "bid_yes": 0.84,
+   "bid_no": 0.11,
+   "open_interest": 891,
+   "contracts": [
+    {
+     "conid_yes": 748336820,
+     "conid_no": 748336827,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 3.875%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1734069600,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 3.875% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 2.625%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 2.625,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 3993,
+   "contracts": [
+    {
+     "conid_yes": 748337005,
+     "conid_no": 748337011,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 2.625%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1734069600,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 2.625% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 3.875%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 3.875,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.75,
+   "ask_no": 0.3,
+   "bid_yes": 0.7,
+   "bid_no": 0.25,
+   "open_interest": 9089,
+   "contracts": [
+    {
+     "conid_yes": 748337014,
+     "conid_no": 748337017,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 3.875%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1734069600,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 3.875% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 2.375%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 2.375,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.06,
+   "bid_yes": 0.94,
+   "bid_no": 0.01,
+   "open_interest": 9147,
+   "contracts": [
+    {
+     "conid_yes": 748814320,
+     "conid_no": 748814325,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 2.375%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1734415200,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 2.375% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 4.125%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 4.125,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.3,
+   "ask_no": 0.75,
+   "bid_yes": 0.25,
+   "bid_no": 0.7,
+   "open_interest": 400,
+   "contracts": [
+    {
+     "conid_yes": 748814330,
+     "conid_no": 748814335,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 4.125%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1734415200,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 4.125% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 2.375%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 2.375,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.06,
+   "bid_yes": 0.94,
+   "bid_no": 0.01,
+   "open_interest": 380,
+   "contracts": [
+    {
+     "conid_yes": 748814514,
+     "conid_no": 748814519,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 2.375%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1734415200,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 2.375% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 4.125%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 4.125,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.07,
+   "ask_no": 0.98,
+   "bid_yes": 0.02,
+   "bid_no": 0.93,
+   "open_interest": 2155,
+   "contracts": [
+    {
+     "conid_yes": 748814520,
+     "conid_no": 748814525,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 4.125%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1734415200,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 4.125% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 2.125%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 2.125,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 20830,
+   "contracts": [
+    {
+     "conid_yes": 753279832,
+     "conid_no": 753279837,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 2.125%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1736316000,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 2.125% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 4.375%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 4.375,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.07,
+   "ask_no": 0.98,
+   "bid_yes": 0.02,
+   "bid_no": 0.93,
+   "open_interest": 148,
+   "contracts": [
+    {
+     "conid_yes": 754319889,
+     "conid_no": 754319892,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 4.375%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1736834400,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 4.375% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 2.125%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 2.125,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.06,
+   "bid_yes": 0.94,
+   "bid_no": 0.01,
+   "open_interest": 210,
+   "contracts": [
+    {
+     "conid_yes": 754319906,
+     "conid_no": 754319911,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 2.125%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1736834400,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 2.125% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 4.375%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 4.375,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.04,
+   "ask_no": 0.99,
+   "bid_yes": 0.01,
+   "bid_no": 0.96,
+   "open_interest": 2814,
+   "contracts": [
+    {
+     "conid_yes": 754319912,
+     "conid_no": 754319917,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 4.375%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1736834400,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 4.375% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 1.875%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 1.875,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.06,
+   "bid_yes": 0.94,
+   "bid_no": 0.01,
+   "open_interest": 8680,
+   "contracts": [
+    {
+     "conid_yes": 756195832,
+     "conid_no": 756195837,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 1.875%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1737352800,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 1.875% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 1.875%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 1.875,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 238,
+   "contracts": [
+    {
+     "conid_yes": 756362819,
+     "conid_no": 756362822,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 1.875%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1737439200,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 1.875% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 1.625%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 1.625,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.98,
+   "ask_no": 0.07,
+   "bid_yes": 0.93,
+   "bid_no": 0.02,
+   "open_interest": 7540,
+   "contracts": [
+    {
+     "conid_yes": 760570719,
+     "conid_no": 760570723,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 1.625%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1739167200,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 1.625% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 1.625%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 1.625,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 124,
+   "contracts": [
+    {
+     "conid_yes": 760766144,
+     "conid_no": 760766149,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 1.625%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1739253600,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 1.625% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 1.375%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 1.375,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 7350,
+   "contracts": [
+    {
+     "conid_yes": 766486926,
+     "conid_no": 766486928,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 1.375%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1741154400,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 1.375% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 1.375%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 1.375,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 20,
+   "contracts": [
+    {
+     "conid_yes": 766486981,
+     "conid_no": 766486986,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 1.375%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1741154400,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 1.375% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 1.125%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 1.125,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.98,
+   "ask_no": 0.07,
+   "bid_yes": 0.93,
+   "bid_no": 0.02,
+   "open_interest": 6270,
+   "contracts": [
+    {
+     "conid_yes": 789013763,
+     "conid_no": 789013766,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 1.125%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1748754000,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 1.125% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 1.125%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 1.125,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.05,
+   "bid_yes": 0.95,
+   "bid_no": 0.01,
+   "open_interest": 10,
+   "contracts": [
+    {
+     "conid_yes": 789013778,
+     "conid_no": 789013783,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 1.125%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1748754000,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 1.125% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 0.875%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 0.875,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.99,
+   "ask_no": 0.07,
+   "bid_yes": 0.93,
+   "bid_no": 0.01,
+   "open_interest": 5050,
+   "contracts": [
+    {
+     "conid_yes": 881980077,
+     "conid_no": 881980083,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 0.875%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1778562000,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 0.875% at the FOMC meeting ending January 27, 2027?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 4.625%",
+   "expiration": "20261209",
+   "measured_period": "Dec10'26 2:00 PM ET",
+   "strike": 4.625,
+   "restricted": false,
+   "ready": true,
+   "ask_yes": 0.03,
+   "ask_no": 0.99,
+   "bid_yes": 0.01,
+   "bid_no": 0.97,
+   "open_interest": 0,
+   "contracts": [
+    {
+     "conid_yes": 897526823,
+     "conid_no": 897526824,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 4.625%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1782882000,
+     "last_trade_time": 1796842800,
+     "question": "Will the US Fed Funds Target Rate be set above 4.625% at the FOMC meeting ending December 9, 2026?"
+    }
+   ]
+  },
+  {
+   "strike_label": "Above 4.625%",
+   "expiration": "20270127",
+   "measured_period": "Jan28'27 2:00 PM ET",
+   "strike": 4.625,
+   "restricted": false,
+   "ready": true,
+   "open_interest": 0,
+   "contracts": [
+    {
+     "conid_yes": 929285696,
+     "conid_no": 929285701,
+     "exchange": "FORECASTX",
+     "strike_label": "Above 4.625%",
+     "underlying_conid": 658663572,
+     "product_conid": 658663579,
+     "restricted": false,
+     "start_trade_time": 1790658000,
+     "last_trade_time": 1801076400,
+     "question": "Will the US Fed Funds Target Rate be set above 4.625% at the FOMC meeting ending January 27, 2027? (Interest rates) (Rate hike cut) (Monetary policy) (FOMC) (Central bank)?"
+    }
+   ]
+  }
+ ]
+}

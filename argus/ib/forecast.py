@@ -17,6 +17,7 @@ from utils3 import runAsThread
 from tempfile import gettempdir
 from argus.ib.fields import IBKRFields
 from argus.ib import IBWss, MKTDispatcher
+from argus.ib._fxc_api import FxCRestClient
 from argus.ib._forcast_utils import AbstractMarket, FxContractBig, FxCMarketNotFinishedResolution, NoValueMarketData, \
     AbstractionError
 from argus.ib._ib_utils import (
@@ -397,16 +398,15 @@ class FXCDispatcher(MKTDispatcher):
         # but because we dry-run it's not going to be called
         # so we need to call it manually here
         self._add_clients()
-        self._urls = {
-            'tree': 'https://api.ibkr.com/v1/api/trsrv/event/category-tree',
-            # requires params i.e. market=733131966&exchange=FORECASTX
-            'contract': 'https://api.ibkr.com/v1/api/trsrv/event/contracts?market={}&exchange=FORECASTX'
-            # ^ returns the 'big' contract, from which you can derive the mini and micro
-        }
+        # IBKR decommissioned the old `api.ibkr.com/v1/api/trsrv/event/*` endpoints.
+        # All ForecastEx metadata now comes from the EventTrader REST gateway.
+        self._fxc_rest = FxCRestClient(self.ws.networker.session)
         self._all_markets: list[AbstractMarket] | None = None
         self._active_market: FxContractBig | None = None
 
-        self._active_market_memory: dict[int, FxContractBig] = {}
+        # Keyed by (market conid, expiration) because a single market can expose
+        # several expirations that share the same underlying conid.
+        self._active_market_memory: dict[tuple[int, str | None], FxContractBig] = {}
 
         self._configs.update({
             'Auto-Print Pandas DataFrame on Update': True,
@@ -460,7 +460,7 @@ class FXCDispatcher(MKTDispatcher):
             for conid in self._active_market.all_conids:
                 self.ws.unsubscribe_market_data(conid)
 
-            self._active_market_memory[self._active_market.conid] = self._active_market
+            self._active_market_memory[self._market_memory_key(self._active_market)] = self._active_market
 
     ############################
     # API Methods
@@ -479,36 +479,30 @@ class FXCDispatcher(MKTDispatcher):
             return self._all_markets  # Return cached version if already generated
 
         print("Fetching all markets from IBKR...")
-        response = self.ws.networker.session.get(self._urls['tree'])
-        try:
-            response.raise_for_status()
-        except Exception as e:
-            print('Response content:', response.content)
-            raise e
-        data: dict[str, dict[str, str | list]] = response.json()
-        all_categories = data.keys()
-        print("Found {} categories.".format(len(all_categories)))
-        all_markets = []
-        for category in all_categories:
-            contents: dict = data[category]
-            markets = contents.get('markets', [])
-            if not markets:
-                continue
-            for market in markets:
-                all_markets.append(AbstractMarket.from_dict(market))
-
+        all_markets = self._fxc_rest.markets()
         print("Total unique markets found:", len(all_markets))
         self._all_markets = all_markets
         return self._all_markets
 
+    @staticmethod
+    def _market_memory_key(market: FxContractBig) -> tuple[int, str | None]:
+        """Memory key for a resolved market.  Includes the expiration because a
+        single underlying market can expose several expirations."""
+        expiration = getattr(market, 'expiration', None)
+        return (market.conid, str(expiration) if expiration is not None else None)
+
     @apply_some_lock('fxc_market_lock')
-    def activate_market(self, market_contract_id: int) -> FxContractBig:
+    def activate_market(self, market_contract_id: int, expiration: str | None = None) -> FxContractBig:
         """
         Activate a market by its contract ID. This fetches the contract details
         and starts to resolve all market data for it.
 
         Args:
             market_contract_id: The contract ID of the market to activate.
+            expiration: Optional expiration in ``YYYYMMDD`` format.  A market may
+                expose several expirations (successive events reusing the same
+                strike labels), so when omitted the nearest not-yet-expired
+                expiration is selected.
 
         Returns:
             An instance of FxContractBig representing the activated market.
@@ -518,25 +512,73 @@ class FXCDispatcher(MKTDispatcher):
                 "Current market is not fully resolved. Please wait until it is fully resolved before activating a new market."
             )
 
-        if market_contract_id in self._active_market_memory:
-            self._active_market = self._active_market_memory[market_contract_id]
+        requested_expiration = str(expiration) if expiration is not None else None
+        if requested_expiration is None:
+            # No expiration requested: reuse any already-resolved expiration for
+            # this market (preferring the earliest) without touching the network.
+            cached = sorted(
+                (key[1], value)
+                for key, value in self._active_market_memory.items()
+                if key[0] == int(market_contract_id) and key[1] is not None
+            )
+            if cached:
+                self._active_market = cached[0][1]
+                print(
+                    f"Market {self._active_market.underlyingName} with contract ID {market_contract_id} "
+                    f"(expiration {self._active_market.expiration}) re-activated from memory."
+                )
+                return self._active_market
+
+        memory_key = (int(market_contract_id), requested_expiration)
+        if memory_key in self._active_market_memory:
+            self._active_market = self._active_market_memory[memory_key]
             print(
-                f"Market {self._active_market.underlyingName} with contract ID {market_contract_id} re-activated from memory."
+                f"Market {self._active_market.underlyingName} with contract ID {market_contract_id} "
+                f"(expiration {self._active_market.expiration}) re-activated from memory."
             )
             return self._active_market
 
-        response = self.ws.networker.session.get(
-            self._urls['contract'].format(market_contract_id)
-        )
-        response.raise_for_status()
-        data = response.json()
         try:
-            big = FxContractBig.from_json(data['contracts'])
+            big = self._fxc_rest.big_contract(market_contract_id, expiration=requested_expiration)
         except AbstractionError as e:
-            self._failed_big_markets.append(data)
+            try:
+                self._failed_big_markets.append(
+                    self._fxc_rest.market_payload(market_contract_id)
+                )
+            except Exception:
+                pass
             raise e
         self._active_market = big
         return big
+
+    def get_market_expirations(self, market_contract_id: int) -> list[str]:
+        """Return the recorded expirations (``YYYYMMDD``) for a market."""
+        return self._fxc_rest.expirations(int(market_contract_id))
+
+    def get_big_contract(self, market_contract_id: int, expiration: str | None = None) -> FxContractBig:
+        """Fetch a single Big contract with full metadata, without any streaming.
+
+        This is a fully stateless, REST-only read: it does not touch the global
+        ``_active_market`` slot and never starts market-data subscriptions or the
+        resolution timeout. Every micro contract is returned with its descriptive
+        fields populated (from the cached ``contract/rules`` enrichment) but with
+        ``market_data`` left as ``None`` (no bid/ask).
+
+        Args:
+            market_contract_id: The underlying conid of the market.
+            expiration: The expiration in ``YYYYMMDD`` format. **Required** (kept
+                optional in the signature only so omitting it yields a clear
+                error): a single underlying conid can list several expirations
+                (successive events reusing the same strike labels), so the request
+                would not be idempotent without it. Use
+                :meth:`get_market_expirations` to list the available values.
+        """
+        if expiration is None or str(expiration).strip() == '':
+            raise ValueError(
+                "expiration is required because a market conid can list several "
+                f"expirations; call get_market_expirations:{market_contract_id} to list them"
+            )
+        return self._fxc_rest.big_contract(int(market_contract_id), expiration=str(expiration).strip())
 
     @apply_some_lock('fxc_market_lock')
     def start_market_resolution(self, force: bool = False):
@@ -605,10 +647,10 @@ class FXCDispatcher(MKTDispatcher):
         if self._active_market is None:
             print("No active market to delete.")
             return
-        conid = self._active_market.conid
-        if conid in self._active_market_memory:
-            del self._active_market_memory[conid]
-            print(f"Deleted market with contract ID {conid} from memory.")
+        key = self._market_memory_key(self._active_market)
+        if key in self._active_market_memory:
+            del self._active_market_memory[key]
+            print(f"Deleted market with contract ID {key[0]} (expiration {key[1]}) from memory.")
         else:
             print("Active market not found in memory.")
 
@@ -722,7 +764,10 @@ class FXCDispatcher(MKTDispatcher):
             traceback.print_exc()
 
     def test_func(self):
-        self.activate_and_resolve_market(796056051)
+        markets = self.generate_all_markets()
+        if not markets:
+            raise RuntimeError("No FXC markets available to activate")
+        self.activate_and_resolve_market(markets[0].conid)
 
     def save_failed_big_markets(self, filename=None):
         """Save the failed big markets to a JSON file for later inspection"""
@@ -765,7 +810,10 @@ class FXCDispatcher(MKTDispatcher):
 
         Available Commands:
             - get_active_market: Returns the current active market as JSON (FxContractBig)
-            - activate_market: Activates a market by its contract ID. Args: contract_id
+            - activate_market: Activates a market by its contract ID. Args: contract_id[,expiration]
+                (expiration is YYYYMMDD and is optional; defaults to the nearest
+                not-yet-expired expiration since a market can list several)
+            - get_market_expirations: Lists a market's available expirations (YYYYMMDD). Args: contract_id
             - start_market_resolution: Starts the market resolution process for the active market. No args.
             - force_start_market_resolution: Force starts the market resolution process even if already fully resolved. No args.
             - market_fully_resolved: Returns True/False if the market is fully resolved. No args.
@@ -774,6 +822,11 @@ class FXCDispatcher(MKTDispatcher):
                 connected, this will re-add you to the internal list of clients within MKTDispatcher.
                 (this should be impossible to need) alas. No args.
             - get_all_markets: Returns a list of all available markets as JSON. No args.
+            - get_big_contract: Returns a single Big contract (FxContractBig) with full metadata as JSON,
+                WITHOUT starting any market-data subscription/resolution. Args: contract_id,expiration
+                (expiration is REQUIRED, YYYYMMDD; use get_market_expirations to list the values).
+                Requiring the expiration keeps the request idempotent since one market conid can
+                list several expirations that reuse the same strike labels.
 
         All responses are in JSON format with the following guaranteed structure:
         {
@@ -830,6 +883,8 @@ class FXCDispatcher(MKTDispatcher):
                 'show_market_state': self._client_show_market_state,
                 'verify_socket_sanity': self._client_verify_socket_sanity,
                 'get_all_markets': self._client_get_all_markets,
+                'get_market_expirations': self._client_get_market_expirations,
+                'get_big_contract': self._client_get_big_contract,
             }
 
             if ':' not in data:
@@ -889,14 +944,42 @@ class FXCDispatcher(MKTDispatcher):
         active_market: FxContractBig = self._active_market
         return active_market.to_json()
 
-    def _client_activate_market(self, contract_id: str):
+    def _client_activate_market(self, contract_id: str, expiration: str = None):
         try:
             contract_id = int(contract_id)
         except ValueError:
             raise ValueError("contract_id must be an integer")
 
-        market = self.activate_market(contract_id)
+        if expiration is not None:
+            expiration = expiration.strip()
+            if expiration == '':
+                expiration = None
+
+        market = self.activate_market(contract_id, expiration=expiration)
+        # NOTE: keep the exact legacy response string for downstream compatibility.
+        # Use `get_market_expirations` / `get_active_market` to learn the expiration.
         return "Activated market: {}".format(market.underlyingName)
+
+    def _client_get_market_expirations(self, contract_id: str) -> str:
+        try:
+            contract_id = int(contract_id)
+        except ValueError:
+            raise ValueError("contract_id must be an integer")
+        return json.dumps(self.get_market_expirations(contract_id))
+
+    def _client_get_big_contract(self, contract_id: str, expiration: str = None) -> str:
+        try:
+            contract_id = int(contract_id)
+        except ValueError:
+            raise ValueError("contract_id must be an integer")
+
+        if expiration is not None:
+            expiration = expiration.strip()
+            if expiration == '':
+                expiration = None
+
+        market = self.get_big_contract(contract_id, expiration=expiration)
+        return market.to_json()
 
     def _client_start_market_resolution(self):
         self.start_market_resolution()

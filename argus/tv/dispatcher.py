@@ -33,14 +33,14 @@ import os
 import time
 import threading
 import traceback
-
 from utils3 import runAsThread
-from argus import __version__ as argus_version
-from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus._argus_utils import ArgsObject
+from argus import __version__ as argus_version
 from argus.tv import QuoteSession, QUOTE_FIELDS
-from argus.perpetuals.shared import BaseDispatcher, PrintInterface
 from argus.perpetuals.shared import errors as ers
+from argus.protocol import transmit_mkt_data_with_protocol_2
+from argus.perpetuals.shared import BaseDispatcher, PrintInterface
+
 
 __version__ = [1, 0, 0, 0]
 pi = PrintInterface('TradingView')

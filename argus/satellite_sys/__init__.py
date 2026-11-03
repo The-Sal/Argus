@@ -19,7 +19,7 @@ from utils3 import Container, networking
 
 _addrs_and_hashes = {
     'WpDaemon': 'https://github.com/The-Sal/WpDaemon/releases/download/v1.0.2/builds.zip', 
-    'APDB': 'https://github.com/The-Sal/argus-polymarket-db/releases/download/v2.1.1'
+    'APDB': 'https://github.com/The-Sal/argus-polymarket-db/releases/download/v2.2.0'
 }
 
 
@@ -132,6 +132,9 @@ class GenericSatelliteSys:
     def platform_normal(some_str) -> str:
         return some_str.replace("-", "").replace("_", "").replace(" ", "").lower().strip()
 
+    def satellite_sys_name(self) -> str:
+        return self.__class__.__name__
+
 def get_sidecar_path() -> str:
     pth = os.path.expanduser("~/.argus/sidecars")
     os.makedirs(pth, exist_ok=True)
@@ -142,6 +145,7 @@ class WpDaemon(GenericSatelliteSys):
         super().__init__()
         self.addr = _addrs_and_hashes['WpDaemon']
         self.install_path = os.path.join(get_sidecar_path(), "WpDaemon")  # binary location
+        self.log_path = "/tmp/WpDaemon.log"
 
     def install(self):
         with Container():
@@ -157,6 +161,7 @@ class WpDaemon(GenericSatelliteSys):
             if os.path.exists(daemon):
                 print("Found Daemon:", daemon)
                 subprocess.check_call(['cp', daemon, self.install_path])
+                subprocess.check_call(['file', self.install_path])
             else:
                 raise UnableToInstall("WpDaemon binary not found in the downloaded archive. Available daemons: {}".format(os.listdir("builds/")))
 
@@ -169,15 +174,16 @@ class WpDaemon(GenericSatelliteSys):
     def start_sidecar(self):
         if not self.check_installed():
             raise UnableToStartSidecar("WpDaemon is not installed.")
-        subprocess.Popen([
-            self.install_path,
-            "--daemon",
-        ], start_new_session=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True
-        )
+        with open(self.log_path, "a") as log:
+            subprocess.Popen([
+                self.install_path,
+                "--daemon",
+            ], start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                close_fds=True
+            )
 
     def stop_sidecar(self):
         subprocess.check_call(['killall', 'WpDaemon'])
@@ -367,12 +373,43 @@ class ArgusPolymarketDB(GenericSatelliteSys):
             self.install()
 
 
+def cli():
+    """
+    Command line interface for managing satellite systems.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Manage Argus Satellite Systems")
+    parser.add_argument("system", choices=["WpDaemon", "APDB"], help="Satellite system to manage")
+    parser.add_argument("action", choices=["install", "update", "start", "stop", "status"], help="Action to perform")
+
+    args = parser.parse_args()
+
+    if args.system == "WpDaemon":
+        system = WpDaemon()
+    elif args.system == "APDB":
+        system = ArgusPolymarketDB()
+    else:
+        raise ValueError("Unknown system: {}".format(args.system))
+
+    if args.action == "install":
+        system.install()
+    elif args.action == "update":
+        system.update()
+    elif args.action == "start":
+        system.start_sidecar()
+    elif args.action == "stop":
+        system.stop_sidecar()
+    elif args.action == "status":
+        print("Running:", system.is_running())
+    else:
+        raise ValueError("Unknown action: {}".format(args.action))
+
 if __name__ == '__main__':
-    apdb = ArgusPolymarketDB()
+    pass
     # apdb.install_from_source()
     # apdb.install()
     # apdb.stop_sidecar()
     # apdb.start_sidecar()
     # print(apdb.is_running())
     # print(apdb.get_version_number())
-    apdb.is_latest()

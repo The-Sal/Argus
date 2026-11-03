@@ -1,0 +1,23 @@
+{
+ "asset_class": "OPT",
+ "description": "The federal funds rate is the target interest rate range set by the FOMC. This is the rate at which commercial banks borrow and lend their excess reserves to each other overnight. The FOMC sets a target federal funds rate eight times a year, based on prevailing economic conditions.",
+ "market_name": "US Fed Funds Target Rate",
+ "measured_period": "Jan28'27 2:00 PM ET",
+ "threshold": "3.125",
+ "source_agency": "U.S. Federal Reserve",
+ "data_and_resolution_link": "https://www.federalreserve.gov/monetarypolicy/openmarket.htm",
+ "last_trade_time": 1801076400,
+ "product_code": "FF",
+ "market_rules_link": "https://data.forecastex.com/regulatory/FFTermsandConditions.pdf",
+ "release_time": 1801076400,
+ "payout_time": 1801162800,
+ "payout": "$1.00",
+ "price_increment": "$0.01",
+ "price_increments": [
+  {
+   "lower_edge": "0.0",
+   "increment": "$0.01"
+  }
+ ],
+ "exchange_timezone": "US/Central"
+}
