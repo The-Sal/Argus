@@ -1209,8 +1209,8 @@ class PolyBoltTwapWss:
         if code == 4002:
             return 1.0
         if code in (4001, 4008):
-            return min(60.0, 5.0 * 2 ** (attempt - 1))
-        return max(1.0, min(30.0, 2.0 ** (attempt - 1)) * self._rng.uniform(0.5, 1.0))
+            return min(60.0, 5.0 * 2.0 ** min(attempt - 1, 10))
+        return max(1.0, min(30.0, 2.0 ** min(attempt - 1, 10)) * self._rng.uniform(0.5, 1.0))
 
     def _reset_connection_state(self) -> None:
         self._authed = False
