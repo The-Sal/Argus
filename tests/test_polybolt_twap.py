@@ -622,3 +622,6 @@ def test_legacy_off_rtds_actions_return_clear_error(stub_twap):
 def test_legacy_off_does_not_disable_twap(stub_twap):
     d = make_dispatcher(legacy=False)
     assert call(d, 'twap_subscribe', FakeSock())['subscribed'] == ['POLYBOLT_MAGIC_ID']
+
+if __name__ == '__main__':
+    pass
