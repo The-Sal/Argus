@@ -84,6 +84,7 @@ A **Dispatcher** is a server that:
 | `hyperliquid` | Hyperliquid (perpetuals) | TCP | 9972 | [Hyperliquid DISPATCHER.md](docs/perpetuals/hyperliquid/DISPATCHER.md) |
 | `lighter` | Lighter (perpetuals) | TCP | 9974 | [Lighter DISPATCHER.md](docs/perpetuals/lighter/DISPATCHER.md) |
 | `tradingview` | TradingView quotes | TCP | 9974 | [TV_DISPATCHER.md](docs/TV_DISPATCHER.md) |
+| `alramz` | Al Ramz (GCC/US equities) | TCP | 9975 | [ALRAMZ_DISPATCHER.md](docs/ALRAMZ_DISPATCHER.md) |
 
 Several dispatchers share a default port, so pass `--port` when running more than one at a time.
 
@@ -181,6 +182,10 @@ Argus consists of several specialized modules, each providing access to differen
 - **[TradingView (TV)](docs/TV_DISPATCHER.md)** - Quotes and chart data
   - `TradingViewDispatcher` (`tradingview`) - one shared upstream WebSocket multiplexed to all clients, P1 control + P2 quote pushes ([dispatcher spec](docs/TV_DISPATCHER.md))
   - `QuoteSession` / `ChartSession` - direct callback-based client for real-time quotes and historical OHLCV DataFrames ([library docs](docs/TV.md))
+
+- **[Al Ramz](docs/ALRAMZ_DISPATCHER.md)** - GCC/US equities and indices
+  - `AlRamzDispatcher` (`alramz`) - one shared SignalR 2.1 connection multiplexed to all clients; top-of-book (`subscribe`), full depth (`subscribe_depth`) and indices (`subscribe_index`) all normalized to the shared P2 order-book shape ([dispatcher spec](docs/ALRAMZ_DISPATCHER.md))
+  - Auth via `python3 -m argus.alramz.set_auth` (IB-style Chromium login → `ALRAMZ_SOCKET_SESSION`)
 
 ### Auxiliary Modules
 
@@ -329,6 +334,9 @@ python3 runtime.py lighter --port 9974
 
 # TradingView
 python3 runtime.py tradingview --port 9974
+
+# Al Ramz
+python3 runtime.py alramz --port 9975
 ```
 
 Common flags: `--host`, `--port`, `--log-level`, `-v`, `--exit-on-init`. See `python3 runtime.py --help` for all of them.

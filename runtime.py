@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 """
 Argus runtime entrypoint.
-- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance | hyperliquid | lighter | tradingview
+- Supports selecting dispatcher: ib.forecast | ib.core | polymarket | capital.com | binance | hyperliquid | lighter | tradingview | alramz
 - Optional --host/--port are accepted and forwarded only to dispatchers that support them.
   Dispatchers have their own defaults; if not provided, nothing is passed.
 - Supports: macOS, Linux (tested on Debian) does NOT support Windows.
@@ -23,7 +23,7 @@ import subprocess
 from argus import secure_load_dotenv, check_env_compatibility
 
 
-choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid', 'lighter', 'tradingview']
+choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid', 'lighter', 'tradingview', 'alramz']
 
 def git_info():
     """
@@ -231,6 +231,20 @@ def main(argv=None):
         dispatcher.run()
         dispatcher.interactive_mode()
         print("Exiting TradingView dispatcher")
+    elif args.target == "alramz":
+        from argus.alramz import AlRamzDispatcher
+        alramz_kwargs = {}
+        if args.host:
+            alramz_kwargs['host'] = args.host
+        if args.port is not None:
+            alramz_kwargs['port'] = args.port
+        dispatcher = AlRamzDispatcher(**alramz_kwargs)
+        dispatcher.run()
+        if args.exit_on_init:
+            print("Exiting after init (--exit-on-init)")
+            return
+        dispatcher.interactive_mode()
+        print("Exiting Al Ramz dispatcher")
     else:
         parser.error('Unknown target')
 

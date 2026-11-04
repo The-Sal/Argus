@@ -15,3 +15,8 @@ examples/ADX_data
 *.toon
 *.enc.se
 polymarket_events*
+# HAR captures and bytecode
+*.har
+__pycache__/
+*.pyc
+/alramz
