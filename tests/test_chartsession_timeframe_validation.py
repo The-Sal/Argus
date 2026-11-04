@@ -1,10 +1,18 @@
 """
-ChartSession Timeframe Validation Test
+ChartSession Timeframe Validation Test (MANUAL / LIVE)
 
 This test validates that ChartSession correctly retrieves data for different
 timeframes (15-minute, 1-hour, and daily) and that the time deltas between
 data points match the expected intervals.
+
+It talks to the real TradingView socket, so it is NOT collected by pytest (the functions
+return booleans rather than asserting, which makes pytest report false greens). Run it
+directly instead:
+
+    python tests/test_chartsession_timeframe_validation.py
+
 """
+__test__ = False  # manual live script, not a pytest module
 
 import os
 import sys

@@ -82,7 +82,14 @@ QUOTE_FIELDS = [
     "variable_tick_size",
     "value_unit_id",
     "unit_id",
-    "measure"
+    "measure",
+    # Level-1 depth. Without these in quote_set_fields the upstream never sends
+    # bid/ask at all (verified against the live socket), which left the dispatcher's
+    # P2 bid/bid_size/ask/ask_size columns permanently zero.
+    "bid",
+    "bid_size",
+    "ask",
+    "ask_size",
 ]
 
 
@@ -99,20 +106,27 @@ class TradingViewConnection:
         """Handle incoming messages from the WebSocket"""
         raise NotImplementedError("on_message method not implemented")
 
-    def heartbeat_reply(self, heartbeat_msg):
-        """Echo TradingView's heartbeat(s) back.
+    def _echo_heartbeats(self, decoded_messages):
+        """Echo every already-decoded heartbeat component back to the server."""
+        for decoded in decoded_messages:
+            if isinstance(decoded, dict) and decoded.get("m") == "heartbeat":
+                body = decoded.get("raw", "")
+                if body:
+                    self.send_raw(f"~m~{len(body)}~m~{body}")
 
-        A single websocket frame can bundle several ~m~-framed messages (e.g. a heartbeat
-        followed by qsd quote data), and heartbeat_reply receives the RAW frame. Echo only
-        the heartbeat segments -- replaying the bundled quote JSON back to TradingView is
-        both pointless and noisy.
+    def heartbeat_reply(self, heartbeat_msg):
+        """Echo every ~h~N heartbeat found in a (possibly bundled) frame.
+
+        Heartbeats must be echoed to keep the socket alive; a missed one makes the
+        upstream stop streaming. Kept for callers that hold only the raw frame;
+        on_message decodes once and calls _echo_heartbeats directly so each frame is
+        parsed only once.
         """
-        if isinstance(heartbeat_msg, (bytes, bytearray)):
-            heartbeat_msg = bytes(heartbeat_msg).decode('utf-8', errors='replace')
-        delim = '~m~'
-        for part in heartbeat_msg.split(delim):
-            if part.startswith('~h~'):
-                self.ws.send(f"{delim}{len(part)}{delim}{part}")
+        self._echo_heartbeats(self.decode_message(heartbeat_msg, multiple=True))
+
+    def send_raw(self, raw_msg: str):
+        """Send an already-framed websocket payload (used for heartbeat echoes)."""
+        self.ws.send(raw_msg)
 
     def on_open(self, ws):
         """Handle WebSocket connection open event"""
@@ -155,43 +169,56 @@ class TradingViewConnection:
         return f"{encoding_data}{raw_msg}"
 
     @staticmethod
-    def decode_message(raw_msg: str, multiple=False) -> dict:
-        """Decode a message from the WebSocket"""
+    def decode_message(raw_msg, multiple=False):
+        """Decode one or more ``~m~<len>~m~<body>`` messages from a websocket frame.
+
+        TradingView routinely packs several messages into a single frame (a heartbeat
+        plus one or more ``qsd`` updates is common), so the framing is parsed
+        positionally rather than by splitting on the delimiter. The previous
+        split-and-recurse implementation dropped every message after the first when
+        ``multiple`` was False, and was ambiguous when a body itself contained ``~m~``.
+
+        Returns a list when ``multiple`` is True, otherwise the first decoded message
+        (or ``None`` if the frame held nothing decodable).
+        """
+        if isinstance(raw_msg, (bytes, bytearray)):
+            raw_msg = bytes(raw_msg).decode("utf-8", errors="replace")
+
         delim = "~m~"
-        parts = raw_msg.split(delim)
-        size = int(parts[1])
-        message = parts[2]
-
-        # check if there is extra messages
-        next_message = None
-        count_of_delim = raw_msg.count(delim)
-        if count_of_delim > 2:
-            next_message = TradingViewConnection.decode_message(raw_msg.split(message)[1], multiple=True)
-
-
-
-
-        if not multiple:
+        decoded = []
+        pos = 0
+        end = len(raw_msg)
+        while pos < end:
+            start = raw_msg.find(delim, pos)
+            if start == -1:
+                break
+            size_start = start + len(delim)
+            size_end = raw_msg.find(delim, size_start)
+            if size_end == -1:
+                break
+            size_text = raw_msg[size_start:size_end]
+            if not (size_text.isascii() and size_text.isdigit()):
+                # Not a valid frame header; resume scanning after this delimiter.
+                # (A negative/garbage size would otherwise loop forever.)
+                pos = size_start
+                continue
+            size = int(size_text)
+            body_start = size_end + len(delim)
+            body = raw_msg[body_start:body_start + size]
+            pos = body_start + size
+            if not body:
+                continue
+            if body.startswith('~h~'):
+                decoded.append({"m": "heartbeat", "raw": body})
+                continue
             try:
-                return json.loads(message)
+                decoded.append(json.loads(body))
             except json.JSONDecodeError:
-                if message.__contains__('~h~'):
-                    return {"m": "heartbeat"}
-                else:
-                    print("Error decoding message:", message)
-            return None
-        else:
-            try:
-                if next_message:
-                    return [json.loads(message)] + next_message
-                else:
-                    return [json.loads(message)]
-            except json.JSONDecodeError:
-                if message.__contains__('~h~'):
-                    return [{"m": "heartbeat"}]
-                else:
-                    print("Error decoding message:", message)
-                return None
+                print("Error decoding message:", body)
+
+        if multiple:
+            return decoded
+        return decoded[0] if decoded else None
 
 
     def post_setup(self):
@@ -239,7 +266,7 @@ class QuoteSession(TradingViewConnection):
             ]),
             self.craft_message("quote_create_session", [self.quote_snapshotter]),
             self.craft_message("quote_set_fields", [
-                self.quote_session_id, *QUOTE_FIELDS
+                self.quote_snapshotter, *QUOTE_FIELDS
             ]),
             self.craft_message("quote_add_symbols", [
                 self.quote_snapshotter, self.symbol
@@ -262,16 +289,24 @@ class QuoteSession(TradingViewConnection):
             self.setup()
             self.setup_qs()
 
-        decoded_message = self.decode_message(message)
-        method = decoded_message.get("m")
-        params = decoded_message.get("p", [])
-        if method == "heartbeat":
-            self.heartbeat_reply(message)
-        else:
-            # print(f"Received message: {decoded_message}")
-            if method == "qsd":
-                # Handle the quote data message
-                self.handle_quote_data(params)
+        # Decode once, then echo heartbeats FIRST: a malformed message in the bundle
+        # below must never cost us the heartbeat, because a missed heartbeat is what
+        # makes the upstream stop streaming on an otherwise healthy socket.
+        decoded_messages = self.decode_message(message, multiple=True)
+        self._echo_heartbeats(decoded_messages)
+
+        # TradingView packs several ~m~-framed messages into a single websocket frame
+        # (a heartbeat plus one or more qsd updates is common), so process ALL of them.
+        # Decoding only the first silently dropped most quote updates.
+        for decoded_message in decoded_messages:
+            if not isinstance(decoded_message, dict):
+                continue
+            if decoded_message.get("m") == "qsd":
+                try:
+                    self.handle_quote_data(decoded_message.get("p", []))
+                except Exception:
+                    # One bad quote must not abort the rest of a bundled frame.
+                    traceback.print_exc()
 
     def handle_quote_data(self, params):
         """Handle the quote data message"""
@@ -399,28 +434,36 @@ class ChartSession(TradingViewConnection):
 
 
         decoded_messages = self.decode_message(message, multiple=True)
+        # Echo heartbeats before processing: a malformed message below must not cost us
+        # the heartbeat (this class previously echoed only after the loop).
+        self._echo_heartbeats(decoded_messages)
 
         for decoded_message in decoded_messages:
-            method = decoded_message.get("m")
-            params = decoded_message.get("p", [])
-            if method == "timescale_update":
-                print("Timescale update received")
-                self.message_history.append(decoded_message)
-            elif method == "symbol_resolved":
-                print("Resolved Symbol:", params[2]['short_description'])
-
-            elif method == "heartbeat":
-                self.heartbeat_reply(message)
-            elif method == "du":
-                # market-data not going to be handled in ChartSession
-                # use QuoteSession for that
-                pass
-            else:
-                # Handle other messages
-                print(f"Received message: {decoded_message}")
-                # self.message_history.append(decoded_message)
-                # with open("chart_data.json", "w+") as f:
-                #     f.write(json.dumps(decoded_message, indent=4))
+            if not isinstance(decoded_message, dict):
+                continue
+            try:
+                method = decoded_message.get("m")
+                params = decoded_message.get("p", [])
+                if method == "timescale_update":
+                    print("Timescale update received")
+                    self.message_history.append(decoded_message)
+                elif method == "symbol_resolved":
+                    print("Resolved Symbol:", params[2]['short_description'])
+                elif method == "heartbeat":
+                    pass  # echoed once above, before the loop
+                elif method == "du":
+                    # market-data not going to be handled in ChartSession
+                    # use QuoteSession for that
+                    pass
+                else:
+                    # Handle other messages
+                    print(f"Received message: {decoded_message}")
+                    # self.message_history.append(decoded_message)
+                    # with open("chart_data.json", "w+") as f:
+                    #     f.write(json.dumps(decoded_message, indent=4))
+            except Exception:
+                # One malformed message must not abort the rest of a bundled frame.
+                traceback.print_exc()
 
 
 # TODO: Implement NewsSession

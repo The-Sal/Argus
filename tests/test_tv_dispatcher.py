@@ -146,6 +146,101 @@ class DispatcherQuoteSessionTest(unittest.TestCase):
         self.assertIn(("quote_remove_symbols", [session.quote_snapshotter, "NASDAQ:AAPL"]), pairs)
         self.assertEqual(session.symbols, ["BINANCE:BTCUSDT"])
 
+    def test_add_symbols_reasserts_full_fast_roster(self):
+        # quote_fast_symbols REPLACES the fast set (verified in tv_news.har), so every
+        # add must resend the whole roster or earlier symbols silently drop off it.
+        session = self._make()
+        session.on_open(None)
+        session.setup_qs()
+        session.ws.sent.clear()
+
+        session.add_symbols(["NASDAQ:AAPL"])
+        session.ws.sent.clear()
+        session.add_symbols(["BINANCE:BTCUSDT"])
+
+        pairs = session.ws.methods()
+        self.assertIn(("quote_fast_symbols", [session.quote_session_id, "BINANCE:BTCUSDT", "NASDAQ:AAPL"]), pairs)
+        self.assertIn(("quote_fast_symbols", [session.quote_snapshotter, "BINANCE:BTCUSDT", "NASDAQ:AAPL"]), pairs)
+
+    def test_concurrent_adds_do_not_drop_symbols_from_fast_roster(self):
+        # quote_fast_symbols replaces the fast set, so a stale concurrent resend would
+        # silently drop a symbol. Force the race deterministically: hold t1 inside its
+        # fast-symbols send while t2 completes its own add, then let t1's send land last.
+        # Without _roster_lock the last roster would be stale ([AAPL] only); with it, t2
+        # serialises after t1, so the last roster for each session contains both symbols.
+        import threading
+
+        t1_holder = {}
+        t1_in_send = threading.Event()
+        release_t1 = threading.Event()
+        blocked_once = {"done": False}
+
+        class BlockingWs(FakeWs):
+            def send(self, msg):
+                if ('quote_fast_symbols' in msg and threading.current_thread() is t1_holder.get("t1")
+                        and not blocked_once["done"]):
+                    blocked_once["done"] = True
+                    t1_in_send.set()
+                    release_t1.wait(timeout=1.0)
+                super().send(msg)
+
+        session = self._make()
+        session.ws = BlockingWs(connected=True)
+        session.on_open(None)
+        session.setup_qs()
+        session.ws.sent.clear()
+
+        errors = []
+
+        def add(symbol):
+            try:
+                session.add_symbols([symbol])
+            except BaseException as e:  # surface thread errors as themselves, not as roster failures
+                errors.append(e)
+
+        t1 = threading.Thread(target=add, args=("NASDAQ:AAPL",))
+        t1_holder["t1"] = t1
+        t1.start()
+        self.assertTrue(t1_in_send.wait(timeout=2.0), "t1 never reached the fast-symbols send")
+
+        t2 = threading.Thread(target=add, args=("BINANCE:BTCUSDT",))
+        t2.start()
+        t2.join(timeout=3.0)
+        release_t1.set()  # let t1's (possibly stale) send land after t2's
+        t1.join(timeout=3.0)
+
+        self.assertFalse(t1.is_alive(), "t1 hung")
+        self.assertFalse(t2.is_alive(), "t2 hung")
+        self.assertEqual(errors, [])
+
+        fast = [params for method, params in session.ws.methods() if method == "quote_fast_symbols"]
+        self.assertTrue(fast, "no fast roster was sent")
+        for session_id in (session.quote_session_id, session.quote_snapshotter):
+            rosters = [p for p in fast if p[0] == session_id]
+            self.assertTrue(rosters, f"no fast roster for {session_id}")
+            self.assertIn("NASDAQ:AAPL", rosters[-1])
+            self.assertIn("BINANCE:BTCUSDT", rosters[-1])
+
+    def test_remove_symbols_reasserts_full_fast_roster(self):
+        session = self._make()
+        session.on_open(None)
+        session.setup_qs()
+        session.add_symbols(["NASDAQ:AAPL", "BINANCE:BTCUSDT"])
+        session.ws.sent.clear()
+
+        session.remove_symbols(["NASDAQ:AAPL"])
+        pairs = session.ws.methods()
+        self.assertIn(("quote_fast_symbols", [session.quote_session_id, "BINANCE:BTCUSDT"]), pairs)
+        self.assertIn(("quote_fast_symbols", [session.quote_snapshotter, "BINANCE:BTCUSDT"]), pairs)
+
+    def test_bootstrap_sets_fields_on_snapshotter(self):
+        from argus.tv import QUOTE_FIELDS
+        session = self._make()
+        session.on_open(None)
+        session.setup_qs()
+        pairs = session.ws.methods()
+        self.assertIn(("quote_set_fields", [session.quote_snapshotter, *QUOTE_FIELDS]), pairs)
+
     def test_add_before_connect_is_replayed_on_handshake(self):
         session = self._make()
         session.ws = FakeWs(connected=False)

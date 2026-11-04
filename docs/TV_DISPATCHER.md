@@ -172,12 +172,12 @@ Unsolicited. Sent to every client subscribed to the symbol, as soon as an update
 upstream TradingView session (last-price ticks, bid/ask changes, volume, ...). Clients do not
 acknowledge these.
 
-**Merged state:** TradingView itself sends *partial* per-field updates (its main quote session
-updates `lp`/`ch`/`chp`/`volume`, the snapshotter session updates `bid`/`ask`). The dispatcher
-merges each update into the last-known quote for that symbol, so **every P2 packet is the full
-last-known state** of the quote — clients never have to merge partials. A field renders as `0`
-only if it has never been observed since the dispatcher started (e.g. `bid`/`ask` on exchanges
-that don't report them).
+**Merged state:** TradingView sends *partial* per-field updates, so the dispatcher merges each
+update into the last-known quote for that symbol and **every P2 packet is the full last-known
+state** — clients never have to merge partials. Both quote sessions request the Level-1 depth
+fields (`bid`/`ask`/`bid_size`/`ask_size`), so those populate for venues that report them; a
+field renders as `0` only if it has never been observed since the dispatcher started (e.g.
+`bid`/`ask` outside market hours, or for exchanges that don't publish depth).
 
 ### Frame
 
