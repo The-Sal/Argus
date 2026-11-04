@@ -69,6 +69,23 @@ def compress(data: dict) -> str:
     return base64.b64encode(zlib.compress(minified, level=9)).decode()
 
 
+def env_flag(name: str, default: bool) -> bool:
+    """Read a boolean env var. 0/false/off/no (any case) -> False, 1/true/on/yes -> True, unset/other -> default."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    v = raw.strip().lower()
+    if v in ("0", "false", "off", "no"):
+        return False
+    if v in ("1", "true", "on", "yes"):
+        return True
+    return default
+
+
+LEGACY_RTDS_DISABLED_MSG = (
+    "legacy RTDS stream disabled (POLYMARKET_RTDS_LEGACY is off); use twap_subscribe for the PolyBolt TWAP stream"
+)
+
 # Sentinel distinguishing "not in the negRisk cache yet" from a cached value
 # of None (negRisk is Optional[bool] on PolymarketEvent).
 _NEG_RISK_UNSET = object()
@@ -269,12 +286,32 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         )
 
         self.rtds_magic_asset_id = "RTDS_MAGIC_ID"
-        self.real_time_data = wss.PolymarketRTDSWss(
-            on_msg_callback=self._rtd_callback,
-            book_depth=self._orderbook_depth
-        )
+        self.polybolt_magic_asset_id = "POLYBOLT_MAGIC_ID"
 
-        self.real_time_data.start()
+        # POLYMARKET_RTDS_LEGACY (default on): run the legacy RTDS client behind rtds_subscribe.
+        # Off: the legacy client is never constructed/started and rtds_* actions return an error.
+        self._rtds_legacy_enabled = env_flag("POLYMARKET_RTDS_LEGACY", True)
+        self.real_time_data = None
+        if self._rtds_legacy_enabled:
+            self.real_time_data = wss.PolymarketRTDSWss(
+                on_msg_callback=self._rtd_callback,
+                book_depth=self._orderbook_depth
+            )
+            self.real_time_data.start()
+
+        # PolyBolt TWAP stream: started lazily on the first twap_subscribe.
+        self.polybolt: wss.PolyBoltTwapWss | None = None
+        self._polybolt_lock = threading.Lock()
+
+        logging.info(
+            "Polymarket live-data mode: legacy RTDS %s, PolyBolt TWAP %s (lazy, starts on first twap_subscribe)",
+            "ENABLED" if self._rtds_legacy_enabled else "DISABLED (POLYMARKET_RTDS_LEGACY=off)",
+            "available",
+        )
+        print_with_name(
+            "Live-data mode: legacy RTDS", "ON" if self._rtds_legacy_enabled else "OFF",
+            "| PolyBolt TWAP available (lazy start)",
+        )
 
         with open(self._log_file, "a") as f:
             f.write(
@@ -675,10 +712,31 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         The callback should get P2 classes from the RTDS already populated now its just about
         finding out who to cast to and blast
         """
+        self._broadcast_live_data(self.rtds_magic_asset_id, object)
+
+    def _polybolt_tick_callback(self, symbol: str, value: float, timestamp_ms: int, source: str,
+                                is_snapshot: bool):
+        """
+        Live (or, if configured, snapshot) TWAP tick from PolyBoltTwapWss -> P2 packet
+        `<source>-twap60-<symbol>` (e.g. chainlink-twap60-btcusd) with ask[0] = TWAP value, same layout
+        as RTDS packets.
+        """
+        _ = is_snapshot
+        market_data = {
+            symbol: {"bids": [], "asks": [{"price": value, "size": 0.0}]},
+            "timestamp": timestamp_ms,
+        }
+        p2 = P2ConvertClass(ticker="", market_slug="", asset_id=symbol, market_data=market_data,
+                            order_book_depth=self._orderbook_depth,
+                            forced_symbol=f"{source}-twap{self.polybolt.window_seconds}-{symbol}")
+        self._broadcast_live_data(self.polybolt_magic_asset_id, p2)
+
+    def _broadcast_live_data(self, channel_id: str, object: P2ConvertClass):
+        """Encode a P2 class once and send it to every socket subscribed to `channel_id`."""
         clients_to_send = []
         with self._lock:
-            if self.rtds_magic_asset_id in self._market_data_routing_table:
-                clients_to_send = list(self._market_data_routing_table[self.rtds_magic_asset_id])
+            if channel_id in self._market_data_routing_table:
+                clients_to_send = list(self._market_data_routing_table[channel_id])
 
         p2_packet = transmit_mkt_data_with_protocol_2(object)
 
@@ -868,6 +926,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 "orderbook_snapshot": self._handle_orderbook_snapshot,
                 "rtds_subscribe": self._handle_rtds_subscribe,
                 "rtds_unsubscribe": self._handle_rtds_unsubscribe,
+                "twap_subscribe": self._handle_twap_subscribe,
+                "twap_unsubscribe": self._handle_twap_unsubscribe,
                 # Market Data Requests
                 "fetch_all_markets": self._handle_fetch_all_markets,
                 "fetch_all_tickers": self._handle_fetch_all_markets_ticker,
@@ -939,7 +999,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param channel_id:
         :return:
         """
-        if channel_id == self.rtds_magic_asset_id:
+        # NB: called with RoutingHelper._lock held -- must not take it.
+        if channel_id in (self.rtds_magic_asset_id, self.polybolt_magic_asset_id):
             return
         self.market_data.unsubscribe_from_asset_id(channel_id)
 
@@ -1151,6 +1212,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param args_obj: ArgsObject containing the socket.
         :return:
         """
+        if not self._rtds_legacy_enabled:
+            return {"subscribed": [], "failed": [LEGACY_RTDS_DISABLED_MSG]}
         sock = args_obj.sock
         self.add_socket(sock)
         try:
@@ -1167,12 +1230,53 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param args_obj: ArgsObject containing the socket.
         :return:
         """
+        if not self._rtds_legacy_enabled:
+            return {"unsubscribed": [], "failed": [LEGACY_RTDS_DISABLED_MSG]}
         sock = args_obj.sock
         try:
             self.remove_socket_from_subscription(sock, self.rtds_magic_asset_id)
             return {"unsubscribed": [self.rtds_magic_asset_id], "failed": []}
         except Exception as e:
             print_with_name("Error in RTDS unsubscribe: {}".format(e))
+            traceback.print_exc()
+            return {"unsubscribed": [], "failed": [str(e)]}
+
+    def _ensure_polybolt_started(self) -> "wss.PolyBoltTwapWss":
+        """Lazily create + start the PolyBolt client (thread-safe, idempotent)."""
+        with self._polybolt_lock:
+            if self.polybolt is None:
+                self.polybolt = wss.PolyBoltTwapWss(
+                    on_tick=self._polybolt_tick_callback,
+                    creds_provider=lambda: self.rest_api.credentials,
+                )
+            self.polybolt.start()
+            return self.polybolt
+
+    def _handle_twap_subscribe(self, args_obj: ArgsObject):
+        """
+        Subscribe a client socket to the PolyBolt TWAP stream (price.crypto.twap, 60s window).
+        Starts the PolyBolt connection on first use. Symbols are `<source>-twap60-<sym>`,
+        e.g. chainlink-twap60-btcusd. No arguments; the symbol set comes from POLYMARKET_TWAP_SYMBOLS.
+        """
+        sock = args_obj.sock
+        try:
+            client = self._ensure_polybolt_started()
+            self.add_socket(sock)
+            self.add_socket_to_subscription(sock, self.polybolt_magic_asset_id)
+            return {"subscribed": [self.polybolt_magic_asset_id], "failed": [], "symbols": list(client.symbols)}
+        except Exception as e:
+            print_with_name("Error in TWAP subscribe: {}".format(e))
+            traceback.print_exc()
+            return {"subscribed": [], "failed": [str(e)]}
+
+    def _handle_twap_unsubscribe(self, args_obj: ArgsObject):
+        """Unsubscribe a client socket from the PolyBolt TWAP stream (the connection stays up)."""
+        sock = args_obj.sock
+        try:
+            self.remove_socket_from_subscription(sock, self.polybolt_magic_asset_id)
+            return {"unsubscribed": [self.polybolt_magic_asset_id], "failed": []}
+        except Exception as e:
+            print_with_name("Error in TWAP unsubscribe: {}".format(e))
             traceback.print_exc()
             return {"unsubscribed": [], "failed": [str(e)]}
 
