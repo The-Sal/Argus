@@ -2,6 +2,7 @@ import os
 import json
 import time
 import bisect
+import random
 import logging
 import requests
 import threading
@@ -1030,6 +1031,334 @@ class PolymarketRTDSWss(PolymarketWSSBase):
     def start(self):
         """Start the RTDS (non-blocking)"""
         self._start_ws()
+
+
+POLYBOLT_DEFAULT_URL = "wss://ws-live-v2.polymarket.com/ws"
+POLYBOLT_DEFAULT_SYMBOLS = ("btcusd", "ethusd", "solusd", "xrpusd", "dogeusd")
+POLYBOLT_TWAP_CHANNEL = "price.crypto.twap"
+
+
+def polybolt_symbols_from_env() -> tuple[str, ...]:
+    """Parse POLYMARKET_TWAP_SYMBOLS (comma separated, lowercase ...usd). Falls back to the default five."""
+    raw = os.environ.get("POLYMARKET_TWAP_SYMBOLS", "")
+    symbols = tuple(dict.fromkeys(s.strip().lower() for s in raw.split(",") if s.strip()))
+    return symbols or POLYBOLT_DEFAULT_SYMBOLS
+
+
+class PolyBoltTwapWss:
+    """
+    Client for the PolyBolt live-data stream (wss://ws-live-v2.polymarket.com/ws), the replacement for the
+    legacy RTDS. Subscribes to ``price.crypto.twap`` (window_seconds=60, the only window with data).
+
+    Deliberately NOT a PolymarketWSSBase subclass: PolyBolt authenticates with CLOB credentials, is pinged
+    by the *server* (every 25s), needs close-code specific backoff, and must not fire macOS notifications
+    when it is retrying.
+
+    Lifecycle per connection: open -> auth frame -> ``authed`` -> subscribe frames -> ``subscribed`` acks ->
+    one snapshot frame per symbol (~119 points) -> one live frame per symbol per second.
+
+    Reconnect policy (close code -> action):
+        4001 auth failed      -> backoff 5s..60s; give up after ``max_consecutive_failures`` in a row
+        4002 slow / no pong   -> reconnect after 1s
+        4003 draining         -> reconnect after random 0-10s
+        4008 policy           -> backoff 5s..60s; give up after ``max_consecutive_failures`` in a row
+        1006 / None / other   -> exponential backoff 1s..30s with jitter
+    A connection that reaches ``authed`` resets the failure streak.
+
+    Sequence tracking: ``seq`` is one counter across symbols per connection. Gaps are counted (frames
+    missing) and the ``dropped`` flag on a frame is counted. Both are only logged + counted; nothing is
+    resent by the server. ``last_seq`` is reset on every (re)connect.
+
+    :param on_tick: ``on_tick(symbol, value, timestamp_ms, source, is_snapshot)``. Called for live frames
+        and, only when ``forward_snapshots`` is True, once per point of each snapshot (oldest first).
+    :param creds_provider: zero-arg callable returning ``{"apiKey","secret","passphrase"}``. Called on every
+        (re)connect so a refreshed credential set is picked up.
+    :param runner: ``runner(ws_app)`` blocks while the socket is alive. Defaults to the WireProxy-aware
+        runner for the POLYMARKET dispatcher (direct connections to Polymarket are reset).
+    :param sleep: ``sleep(seconds) -> bool`` returning True if the client was stopped meanwhile.
+    :param rng: ``random.Random``-like with ``uniform``.
+    """
+
+    MAX_SUBSCRIPTIONS = 64            # per connection
+    MAX_SUBSCRIBE_FRAMES_PER_S = 20
+    MAX_AUTH_FRAMES = 8               # per connection
+    MAX_OUTBOUND_FRAME_BYTES = 64 * 1024
+    SUBSCRIPTIONS_PER_FRAME = 16
+
+    def __init__(self, on_tick, creds_provider, symbols=None, url: str | None = None, window_seconds: int = 60,
+                 forward_snapshots: bool = False, on_snapshot=None, runner=None, sleep=None, rng=None,
+                 max_consecutive_failures: int = 5):
+        self._name = "PolyBolt TWAP"
+        self._url = url or os.environ.get("POLYMARKET_POLYBOLT_URL", POLYBOLT_DEFAULT_URL)
+        self.symbols = tuple(symbols) if symbols is not None else polybolt_symbols_from_env()
+        if len(self.symbols) > self.MAX_SUBSCRIPTIONS:
+            logging.warning('%s: %d symbols requested, server allows %d per connection; truncating.',
+                            self._name, len(self.symbols), self.MAX_SUBSCRIPTIONS)
+            self.symbols = self.symbols[:self.MAX_SUBSCRIPTIONS]
+        self.window_seconds = window_seconds
+        self.forward_snapshots = forward_snapshots
+        self._on_tick = on_tick
+        self._on_snapshot = on_snapshot
+        self._creds_provider = creds_provider
+        self._runner = runner or (lambda ws: wp_wrappers.start_proxy_aware_ws(idx='POLYMARKET', websocket=ws))
+        self._stop_event = threading.Event()
+        self._sleep = sleep or (lambda s: self._stop_event.wait(s))
+        self._rng = rng or random.Random()
+        self._max_consecutive_failures = max_consecutive_failures
+
+        self._ws = None
+        self._creds: dict = {}
+        self._thread: threading.Thread | None = None
+        self._start_lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self.gave_up = False
+        self.connected = threading.Event()   # set while authed
+        self.subscribed_symbols: set[str] = set()
+        self.latest: dict[str, tuple[float, int]] = {}   # symbol -> (value, timestamp_ms)
+
+        # per-connection state
+        self._authed = False
+        self._auth_frames_sent = 0
+        self._last_seq: int | None = None
+        self._last_close_code: int | None = None
+        self._connection_count = 0
+        self._ever_authed_this_conn = False
+
+        # counters (monotonic across reconnects)
+        self.stats = {
+            "connections": 0, "authed": 0, "disconnects": 0, "frames": 0, "snapshots": 0, "live": 0,
+            "seq_gaps": 0, "seq_missing": 0, "seq_out_of_order": 0, "dropped_frames": 0,
+            "decode_errors": 0, "unknown_ops": 0, "server_pings": 0, "close_codes": {},
+        }
+
+    # ---------------------------------------------------------------- lifecycle
+    def start(self) -> None:
+        """Start the supervisor thread (idempotent, non-blocking)."""
+        with self._start_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop_event.clear()
+            self.gave_up = False
+            self._thread = threading.Thread(target=self._supervise, name="polybolt-twap", daemon=True)
+            self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        ws = self._ws
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception as e:  # noqa: BLE001
+                logging.debug('%s: error closing ws on stop: %s', self._name, e)
+
+    def wait_until_authed(self, timeout: float | None = None) -> bool:
+        return self.connected.wait(timeout)
+
+    def _supervise(self) -> None:
+        failures = 0
+        attempt = 0
+        while not self._stop_event.is_set():
+            self._reset_connection_state()
+            try:
+                creds = self._creds_provider()
+                ws = WebSocketApp(
+                    url=self._url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_close=self._on_close,
+                    on_error=self._on_error,
+                )
+                self._ws = ws
+                self.stats["connections"] += 1
+                self._creds = creds
+                logging.info('%s: connecting to %s', self._name, self._url)
+                self._runner(ws)
+            except Exception as e:  # noqa: BLE001
+                logging.error('%s: connection loop error: %s', self._name, e)
+                self._last_close_code = 1006
+            finally:
+                self._ws = None
+                self.connected.clear()
+                with self._state_lock:
+                    self.subscribed_symbols.clear()
+            if self._stop_event.is_set():
+                break
+
+            code = self._last_close_code if self._last_close_code is not None else 1006
+            self.stats["disconnects"] += 1
+            counts = self.stats["close_codes"]
+            counts[code] = counts.get(code, 0) + 1
+            if self._ever_authed_this_conn:
+                failures = 0
+                attempt = 0
+            failures += 1
+            attempt += 1
+            if code in (4001, 4008) and failures >= self._max_consecutive_failures:
+                logging.error('%s: giving up after %d consecutive close code %s', self._name, failures, code)
+                self.gave_up = True
+                break
+            delay = self._backoff_for(code, attempt)
+            logging.warning('%s: closed (code=%s); reconnecting in %.1fs', self._name, code, delay)
+            if self._sleep(delay):
+                break
+
+    def _backoff_for(self, code: int, attempt: int) -> float:
+        if code == 4003:
+            return self._rng.uniform(0.0, 10.0)
+        if code == 4002:
+            return 1.0
+        if code in (4001, 4008):
+            return min(60.0, 5.0 * 2.0 ** min(attempt - 1, 10))
+        return max(1.0, min(30.0, 2.0 ** min(attempt - 1, 10)) * self._rng.uniform(0.5, 1.0))
+
+    def _reset_connection_state(self) -> None:
+        self._authed = False
+        self._auth_frames_sent = 0
+        self._last_seq = None
+        self._last_close_code = None
+        self._ever_authed_this_conn = False
+
+    # ---------------------------------------------------------------- ws callbacks
+    def _send_json(self, ws, obj: dict) -> None:
+        text = json.dumps(obj, separators=(",", ":"))
+        if len(text.encode()) > self.MAX_OUTBOUND_FRAME_BYTES:
+            raise ValueError(f"{self._name}: outbound frame exceeds {self.MAX_OUTBOUND_FRAME_BYTES} bytes")
+        with self._send_lock:
+            ws.send(text)
+
+    def _on_open(self, ws) -> None:
+        logging.info('%s: socket open, authenticating', self._name)
+        if self._auth_frames_sent >= self.MAX_AUTH_FRAMES:
+            logging.error('%s: auth frame budget exhausted for this connection', self._name)
+            return
+        self._auth_frames_sent += 1
+        creds = self._creds
+        self._send_json(ws, {"op": "auth", "rid": "auth", "auth": {
+            "apiKey": creds["apiKey"], "secret": creds["secret"], "passphrase": creds["passphrase"]}})
+
+    def _on_close(self, ws, close_status_code, close_msg) -> None:
+        # websocket-client reports None when the TCP connection dropped without a close frame (== 1006).
+        self._last_close_code = close_status_code if close_status_code is not None else 1006
+        self._authed = False
+        self.connected.clear()
+        logging.warning('%s: WebSocket closed. Code: %s, Message: %s', self._name, self._last_close_code, close_msg)
+
+    def _on_error(self, ws, error) -> None:
+        # Quiet on purpose: the supervisor reconnects; no notification spam (unlike PolymarketWSSBase).
+        logging.warning('%s: WebSocket error: %s', self._name, error)
+
+    def _on_message(self, ws, message) -> None:
+        try:
+            self.handle_frame(ws, message)
+        except Exception as e:  # noqa: BLE001
+            logging.error('%s: error handling frame: %s', self._name, e, exc_info=True)
+
+    # ---------------------------------------------------------------- frame handling
+    def handle_frame(self, ws, message) -> None:
+        """Process one inbound text frame. Public so offline tests can feed fixtures with a fake ws."""
+        if isinstance(message, (bytes, bytearray)):
+            message = message.decode("utf-8", "replace")
+        try:
+            frame = json.loads(message)
+        except json.JSONDecodeError:
+            self.stats["decode_errors"] += 1
+            logging.warning('%s: undecodable frame (%d bytes)', self._name, len(message))
+            return
+        if not isinstance(frame, dict):
+            self.stats["decode_errors"] += 1
+            return
+
+        op = frame.get("op")
+        if op is not None:
+            self._handle_op(ws, op, frame)
+            return
+        if frame.get("channel") == POLYBOLT_TWAP_CHANNEL:
+            self._handle_data(frame)
+            return
+        self.stats["unknown_ops"] += 1
+        logging.debug('%s: ignoring unrecognised frame: %.200s', self._name, message)
+
+    def _handle_op(self, ws, op: str, frame: dict) -> None:
+        if op == "authed":
+            self._authed = True
+            self._ever_authed_this_conn = True
+            self.stats["authed"] += 1
+            self.connected.set()
+            logging.info('%s: authenticated; subscribing to %s', self._name, ",".join(self.symbols))
+            self._send_subscriptions(ws)
+        elif op == "subscribed":
+            logging.info('%s: subscribed channel=%s provider=%s rid=%s', self._name, frame.get("channel"),
+                         frame.get("provider"), frame.get("rid"))
+        elif op == "ping":
+            self.stats["server_pings"] += 1
+            self._send_json(ws, {"op": "pong"})
+        elif op == "pong":
+            pass
+        else:
+            self.stats["unknown_ops"] += 1
+            logging.warning('%s: server op=%s: %.300s', self._name, op, json.dumps(frame))
+
+    def _send_subscriptions(self, ws) -> None:
+        syms = list(self.symbols)
+        step = self.SUBSCRIPTIONS_PER_FRAME
+        min_gap = 1.0 / self.MAX_SUBSCRIBE_FRAMES_PER_S
+        for i in range(0, len(syms), step):
+            chunk = syms[i:i + step]
+            if i:
+                time.sleep(min_gap)
+            self._send_json(ws, {"op": "subscribe", "rid": f"sub{i // step}", "subscriptions": [
+                {"channel": POLYBOLT_TWAP_CHANNEL,
+                 "filter": {"symbol": s, "window_seconds": self.window_seconds}} for s in chunk]})
+            with self._state_lock:
+                self.subscribed_symbols.update(chunk)
+
+    def _track_seq(self, frame: dict) -> None:
+        seq = frame.get("seq")
+        if frame.get("dropped"):
+            d = frame["dropped"]
+            n = d if isinstance(d, int) and not isinstance(d, bool) and d > 0 else 1
+            self.stats["dropped_frames"] += n
+            logging.warning('%s: server reports dropped=%r at seq=%s', self._name, d, seq)
+        if not isinstance(seq, int):
+            return
+        last = self._last_seq
+        if last is not None:
+            if seq > last + 1:
+                self.stats["seq_gaps"] += 1
+                self.stats["seq_missing"] += seq - last - 1
+                logging.warning('%s: seq gap %d -> %d (%d missing)', self._name, last, seq, seq - last - 1)
+            elif seq <= last:
+                self.stats["seq_out_of_order"] += 1
+                logging.warning('%s: seq out of order %d after %d', self._name, seq, last)
+        if last is None or seq > last:
+            self._last_seq = seq
+
+    def _handle_data(self, frame: dict) -> None:
+        self.stats["frames"] += 1
+        self._track_seq(frame)
+        payload = frame.get("payload")
+        if not isinstance(payload, dict):
+            return
+        symbol = payload.get("symbol")
+        source = payload.get("source", "chainlink")
+        if frame.get("snapshot"):
+            self.stats["snapshots"] += 1
+            points = payload.get("data") or []
+            if points:
+                last = points[-1]
+                self.latest[symbol] = (float(last["value"]), int(last["timestamp"]))
+            if self._on_snapshot is not None:
+                self._on_snapshot(symbol, points)
+            if self.forward_snapshots:
+                for p in points:
+                    self._on_tick(symbol, float(p["value"]), int(p["timestamp"]), source, True)
+            return
+        self.stats["live"] += 1
+        value = float(payload["value"])
+        ts = int(payload["timestamp"])
+        self.latest[symbol] = (value, ts)
+        self._on_tick(symbol, value, ts, source, False)
 
 
 class PolyMarketOrderBookPool:

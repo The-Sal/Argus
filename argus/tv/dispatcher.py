@@ -115,6 +115,11 @@ class DispatcherQuoteSession(QuoteSession):
         self._symbols = set(symbols)
         self._handshaked = threading.Event()
         self._send_lock = threading.Lock()
+        # Guards _symbols AND the roster-dependent sends (add/remove + fast resend), so a
+        # concurrent subscribe cannot interleave a stale roster into quote_fast_symbols
+        # (which replaces the fast set) or mutate the set mid-iteration. Never held while
+        # waiting on _handshaked. Lock order: _roster_lock -> _send_lock.
+        self._roster_lock = threading.Lock()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -128,13 +133,16 @@ class DispatcherQuoteSession(QuoteSession):
     def setup_qs(self):
         if self.symbol:
             super().setup_qs()  # parent logic: create sessions, set fields, add anchor symbol
-            extras = [s for s in self._symbols if s != self.symbol]
+            with self._roster_lock:
+                extras = [s for s in self._symbols if s != self.symbol]
         else:
             # No anchor symbol yet: bootstrap both sessions without adding any symbols.
             self.send_msg(self.craft_message("quote_create_session", [self.quote_session_id]))
             self.send_msg(self.craft_message("quote_set_fields", [self.quote_session_id, *QUOTE_FIELDS]))
             self.send_msg(self.craft_message("quote_create_session", [self.quote_snapshotter]))
-            extras = list(self._symbols)
+            self.send_msg(self.craft_message("quote_set_fields", [self.quote_snapshotter, *QUOTE_FIELDS]))
+            with self._roster_lock:
+                extras = list(self._symbols)
         # Mark the handshake complete BEFORE replaying the roster: add_symbols waits on
         # this event, and concurrent subscribers must be able to send immediately after.
         self._handshaked.set()
@@ -145,7 +153,8 @@ class DispatcherQuoteSession(QuoteSession):
 
     @property
     def symbols(self) -> list:
-        return sorted(self._symbols)
+        with self._roster_lock:
+            return sorted(self._symbols)
 
     def _is_connected(self) -> bool:
         sock = getattr(self.ws, "sock", None)  # websocket-client: core socket is ws.sock (None pre-connect)
@@ -156,42 +165,57 @@ class DispatcherQuoteSession(QuoteSession):
         symbols = [s for s in (symbols or []) if s]
         if not symbols:
             return
-        self._symbols.update(symbols)
         if not self._is_connected():
+            with self._roster_lock:
+                self._symbols.update(symbols)
             return  # will be replayed by the (re)handshake
         if not self._handshaked.wait(timeout=10):
+            with self._roster_lock:
+                self._symbols.update(symbols)
             pi.prt(f"TradingView handshake incomplete; {symbols} will be registered on next reconnect")
             return
-        try:
-            self.send_msg(self.craft_message("quote_add_symbols", [self.quote_session_id] + symbols))
-            self.send_msg(self.craft_message("quote_add_symbols", [self.quote_snapshotter] + symbols))
-        except Exception as e:
-            pi.prt(f"Failed to send quote_add_symbols for {symbols}: {e}")
+        with self._roster_lock:
+            self._symbols.update(symbols)
+            try:
+                self.send_msg(self.craft_message("quote_add_symbols", [self.quote_session_id] + symbols))
+                self.send_msg(self.craft_message("quote_add_symbols", [self.quote_snapshotter] + symbols))
+                self._resend_fast_symbols_locked()
+            except Exception as e:
+                pi.prt(f"Failed to send quote_add_symbols for {symbols}: {e}")
 
     def remove_symbols(self, symbols):
         """Unregister symbols from this connection's quote sessions (idempotent)."""
         symbols = [s for s in (symbols or []) if s]
         if not symbols:
             return
-        for s in symbols:
-            self._symbols.discard(s)
-        if not (self._is_connected() and self._handshaked.is_set()):
-            return  # was never registered upstream
-        try:
-            self.send_msg(self.craft_message("quote_remove_symbols", [self.quote_session_id] + symbols))
-            self.send_msg(self.craft_message("quote_remove_symbols", [self.quote_snapshotter] + symbols))
-        except Exception as e:
-            pi.prt(f"Failed to send quote_remove_symbols for {symbols}: {e}")
+        with self._roster_lock:
+            for s in symbols:
+                self._symbols.discard(s)
+            if not (self._is_connected() and self._handshaked.is_set()):
+                return  # was never registered upstream
+            try:
+                self.send_msg(self.craft_message("quote_remove_symbols", [self.quote_session_id] + symbols))
+                self.send_msg(self.craft_message("quote_remove_symbols", [self.quote_snapshotter] + symbols))
+                self._resend_fast_symbols_locked()
+            except Exception as e:
+                pi.prt(f"Failed to send quote_remove_symbols for {symbols}: {e}")
+
+    def _resend_fast_symbols_locked(self):
+        """Re-assert the fast-symbol set as the FULL current roster (caller holds _roster_lock).
+
+        ``quote_fast_symbols`` replaces the session's fast set rather than appending to
+        it -- verified in tv_news.har, where the real client resends the remaining
+        symbols after removing one. So after any roster change we must send every
+        symbol, otherwise the first-subscribed symbols silently stop getting fast
+        updates. A no-op when the roster is empty (the next add resends everything).
+        """
+        roster = sorted(self._symbols)
+        if not roster:
+            return
+        self.send_msg(self.craft_message("quote_fast_symbols", [self.quote_session_id] + roster))
+        self.send_msg(self.craft_message("quote_fast_symbols", [self.quote_snapshotter] + roster))
 
     # -- data -----------------------------------------------------------------
-
-    def decode_message(self, raw_msg, multiple=False):
-        """TradingView delivers every frame as a BINARY websocket frame containing the usual
-        ~m~-framed text payload. Normalize to str so the inherited QuoteSession logic (which
-        assumes str) works unchanged."""
-        if isinstance(raw_msg, (bytes, bytearray)):
-            raw_msg = bytes(raw_msg).decode("utf-8", errors="replace")
-        return super().decode_message(raw_msg, multiple)
 
     def handle_quote_data(self, params):
         """Like QuoteSession.handle_quote_data, but reports WHICH symbol the quote is for."""
@@ -212,13 +236,18 @@ class DispatcherQuoteSession(QuoteSession):
         with self._send_lock:
             super().send_msg(msg)
 
+    def send_raw(self, raw_msg: str):
+        """Heartbeat echoes share the send lock with handshake/subscription frames."""
+        with self._send_lock:
+            super().send_raw(raw_msg)
 
-# TradingView silently stops delivering `qsd` quote updates on a long-lived quote session
-# (the socket stays open -- ~h~ heartbeats keep flowing -- but the server-side symbol
-# subscription goes stale) after roughly a minute of no session activity. Replaying the
-# roster (quote_remove_symbols + quote_add_symbols) counts as session activity and
-# restarts the quote stream, so the dispatcher nudges the roster on this cadence.
-KEEPALIVE_INTERVAL_SECONDS = 25
+
+# NOTE: there used to be a KEEPALIVE_INTERVAL_SECONDS roster-replay hack here, working
+# around TradingView apparently ceasing `qsd` updates after ~a minute. That was a symptom
+# of QuoteSession dropping bundled frames -- heartbeats packed into the same websocket
+# frame as quote updates were never echoed. With the multi-message decode fixed in
+# argus.tv, a 150s live run with no keepalive held a steady ~34-44 qsd / 15s, so it was
+# removed.
 
 
 class TradingViewQuoteWss:
@@ -227,42 +256,24 @@ class TradingViewQuoteWss:
     TradingView WebSocket forever and exposes a per-symbol subscribe/unsubscribe API for
     the dispatcher. Reconnection is websocket-client's built-in `reconnect=1` (1s delay,
     forever); DispatcherQuoteSession re-runs its handshake and replays the full roster on
-    every (re)connect, so clients never need to re-subscribe.
-
-    A background keepalive thread also replays the roster periodically -- without it the
-    upstream stops pushing quotes after ~a minute even though the socket stays open (see
-    KEEPALIVE_INTERVAL_SECONDS).
+    every (re)connect, so clients never need to re-subscribe. The socket is kept alive by
+    echoing the upstream ~h~ heartbeats (see TradingViewConnection.heartbeat_reply).
     """
 
     def __init__(self, on_quote=None, send_auth=False, initial_symbols=()):
         self._on_quote = on_quote
         self.session = DispatcherQuoteSession(initial_symbols=initial_symbols,
                                               callback=self._dispatch, sendAuth=send_auth)
-        self._keepalive_stop = threading.Event()
 
     def _dispatch(self, symbol: str, values: dict):
         if self._on_quote is not None:
             self._on_quote(symbol, values)
-
-    def _keepalive_loop(self):
-        """Periodically replay the symbol roster to keep the upstream quote subscription
-        fresh; exits once close() is called."""
-        while not self._keepalive_stop.wait(KEEPALIVE_INTERVAL_SECONDS):
-            symbols = self.session.symbols
-            if not symbols:
-                continue
-            try:
-                self.session.remove_symbols(symbols)
-                self.session.add_symbols(symbols)
-            except Exception as e:
-                pi.prt(f"TradingView keepalive failed for {symbols}: {e}")
 
     @runAsThread
     def run(self, main_thread=False):
         """Run the upstream session forever. `main_thread` is accepted for API parity
         with the other Argus market-data WSS classes (it is always a background thread)."""
         _ = main_thread
-        threading.Thread(target=self._keepalive_loop, name='tv-quote-keepalive', daemon=True).start()
         try:
             self.session.ws.run_forever(reconnect=1, skip_utf8_validation=True)
         except KeyboardInterrupt:
@@ -271,7 +282,6 @@ class TradingViewQuoteWss:
             traceback.print_exc()
 
     def close(self):
-        self._keepalive_stop.set()
         self.session.ws.keep_running = False
         try:
             self.session.ws.close()
@@ -301,7 +311,10 @@ class TradingViewDispatcher(BaseDispatcher):
     See docs/TV_DISPATCHER.md for the full API spec.
     """
 
-    def __init__(self, host="localhost", port=9974, send_auth=False, initial_symbols=()):
+    def __init__(self, host="localhost", port=9974, send_auth=None, initial_symbols=()):
+        # send_auth=None -> authenticate iff TOKEN is set in the environment/.env
+        if send_auth is None:
+            send_auth = bool(os.getenv("TOKEN"))
         routing_table = {
             'subscribe': self._handle_subscribe,
             'unsubscribe': self._handle_unsubscribe,

@@ -191,7 +191,7 @@ Argus consists of several specialized modules, each providing access to differen
 
 - **[Polymarket](docs/POLYMARKET.md)** - Prediction market data
   - `PolymarketDispatcher` (`polymarket`) - TCP dispatcher with P1/P2 protocol support
-  - `polymarket_direct` - Client library the dispatcher is built on: `PolyRestAPI` (REST), `PolyMarketOrderBookConn`/`PolyMarketOrderBookPool` and account/RTDS WebSockets (`wss`), plus typed dataclasses (`Market`, `PolymarketEvent`, `PolyMarketOrder`, `Trade`, ...)
+  - `polymarket_direct` - Client library the dispatcher is built on: `PolyRestAPI` (REST), `PolyMarketOrderBookConn`/`PolyMarketOrderBookPool` and account/RTDS/PolyBolt-TWAP WebSockets (`wss`), plus typed dataclasses (`Market`, `PolymarketEvent`, `PolyMarketOrder`, `Trade`, ...)
   - Sharded WebSocket order book subscriptions, order management and account updates ([sharding](docs/system/POLYMARKET_SHARDING.md), [protocol v2](docs/system/POLYMARKET_PROTOCOL_V2.md), [REST protections](docs/system/POLYMARKET_REST_PROTECTIONS.md))
   - Requires the APDB sidecar (see Satellite Systems)
 

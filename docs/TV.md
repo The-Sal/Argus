@@ -22,7 +22,7 @@ The TradingView module provides **two layers**:
 **Primary Files:**
 - `__init__.py` - QuoteSession, ChartSession, TradingViewConnection (low-level, callback-based)
 - `dispatcher.py` - TradingViewDispatcher, DispatcherQuoteSession, TVP2ConvertClass (dispatcher layer)
-- `multisymbol.py` - Multi-symbol quote streaming (low-level)
+- `multisymbol.py` - legacy standalone asyncio `Ticker` (low-level)
 
 **Key Features:**
 - Real-time quote data (bid, ask, last, volume, changes)
@@ -167,15 +167,18 @@ Historical OHLCV (Open, High, Low, Close, Volume) data retrieval.
 
 **Method Signature:**
 ```python
+import threading
+
 chart = ChartSession()
-chart.setup()
-chart.post_setup()
+# get_symbol_data() blocks on the server response, so the socket must be running.
+threading.Thread(target=lambda: chart.ws.run_forever(), daemon=True).start()
 
 df = chart.get_symbol_data(
     symbol="NASDAQ:AAPL",
     interval="15",
     total_ticks=20
 )
+chart.ws.close()
 ```
 
 **Parameters:**
@@ -210,21 +213,21 @@ Returns a pandas DataFrame with columns:
 
 **Notes:**
 
-- The `get_symbol_data()` method handles connection setup, data retrieval, and conversion automatically
+- `get_symbol_data()` sends the chart/series requests, blocks until the server's `timescale_update`, and converts the bars to a DataFrame — but the WebSocket must already be running (`ws.run_forever()`).
 - Data is returned as a pandas DataFrame with datetime objects instead of Unix timestamps
 - Works with both traditional stock exchanges and 24/7 cryptocurrency markets
 - Bitcoin and other crypto assets have consistent intervals without market gaps (no weekends/holidays)
 
 ### Multi-Symbol Support
 
-**File:** `argus/tv/multisymbol.py`
+Production multi-symbol streaming lives in the dispatcher layer. `DispatcherQuoteSession`
+(`argus/tv/dispatcher.py`) holds **many symbols on ONE upstream connection**, and
+`TradingViewDispatcher` multiplexes that stream to TCP clients — see
+[TV_DISPATCHER.md](TV_DISPATCHER.md). For direct use, `TradingViewQuoteWss` exposes
+`subscribe_to_symbol()` / `unsubscribe_from_symbol()` / `symbols`.
 
-Allows subscribing to multiple symbols simultaneously:
-
-```python
-# Implementation details in multisymbol.py
-# Can extend QuoteSession for multiple symbols
-```
+`argus/tv/multisymbol.py` (`Ticker`) is an older standalone asyncio client kept for
+backwards compatibility; the dispatcher does not use it.
 
 ## Usage Examples
 
@@ -258,67 +261,41 @@ Change: +1.23%
 ### Example 2: Historical Chart Data
 
 ```python
+import threading
 from argus.tv import ChartSession
-import time
 
-# Daily candles for AAPL
-chart = ChartSession(
-    symbol="NASDAQ:AAPL",
-    interval="D",
-    range_value=30,  # Last 30 days
-    sendAuth=False
-)
+chart = ChartSession()
+threading.Thread(target=lambda: chart.ws.run_forever(), daemon=True).start()
 
-chart.setup()
-chart.post_setup()
+# Last 30 daily candles for AAPL (blocks until the server responds)
+df = chart.get_symbol_data(symbol="NASDAQ:AAPL", interval="D", total_ticks=30)
+chart.ws.close()
 
-# Wait for data
-time.sleep(5)
-
-# Get DataFrame
-df = chart.get_chart_data()
-
-# Calculate statistics
-print(f"Average Volume: {df['volume'].mean():,.0f}")
-print(f"Highest Price: ${df['high'].max():.2f}")
-print(f"Lowest Price: ${df['low'].min():.2f}")
-print(f"Price Change: ${df['close'].iloc[-1] - df['close'].iloc[0]:.2f}")
-
-# Plot (requires matplotlib)
-# df.plot(x='time', y='close')
+print(f"Average Volume: {df['Volume'].mean():,.0f}")
+print(f"Highest Price: ${df['High'].max():.2f}")
+print(f"Lowest Price: ${df['Low'].min():.2f}")
+print(f"Price Change: ${df['Close'].iloc[-1] - df['Close'].iloc[0]:.2f}")
 ```
 
 ### Example 3: Intraday Data
 
 ```python
+import threading
 from argus.tv import ChartSession
-import time
 
-# 5-minute candles
-chart = ChartSession(
-    symbol="NASDAQ:QQQ",
-    interval="5",
-    range_value=100,  # Last 100 bars
-    sendAuth=False
-)
+chart = ChartSession()
+threading.Thread(target=lambda: chart.ws.run_forever(), daemon=True).start()
 
-chart.setup()
-chart.post_setup()
-time.sleep(5)
+# Last 100 5-minute candles
+df = chart.get_symbol_data(symbol="NASDAQ:QQQ", interval="5", total_ticks=100)
+chart.ws.close()
 
-df = chart.get_chart_data()
-
-# Convert timestamp to datetime
-df['datetime'] = pd.to_datetime(df['time'], unit='s')
-
-# Find highest volume bar
-max_vol_idx = df['volume'].idxmax()
-max_vol_bar = df.loc[max_vol_idx]
-
+# 'Date' is already a datetime; find the highest-volume bar
+max_vol_bar = df.loc[df['Volume'].idxmax()]
 print(f"Highest Volume Bar:")
-print(f"  Time: {max_vol_bar['datetime']}")
-print(f"  Volume: {max_vol_bar['volume']:,.0f}")
-print(f"  Price: ${max_vol_bar['close']:.2f}")
+print(f"  Time: {max_vol_bar['Date']}")
+print(f"  Volume: {max_vol_bar['Volume']:,.0f}")
+print(f"  Price: ${max_vol_bar['Close']:.2f}")
 ```
 
 ### Example 4: Multiple Symbols (Sequential)
@@ -383,21 +360,16 @@ TOKEN=your_tradingview_auth_token
 ### Example 6: Chart Data Export
 
 ```python
+import threading
 from argus.tv import ChartSession
-import time
 
-chart = ChartSession(symbol="NASDAQ:AAPL", interval="D", range_value=365, sendAuth=False)
-chart.setup()
-chart.post_setup()
-time.sleep(10)  # Wait for full year of data
+chart = ChartSession()
+threading.Thread(target=lambda: chart.ws.run_forever(), daemon=True).start()
+df = chart.get_symbol_data(symbol="NASDAQ:AAPL", interval="D", total_ticks=365)
+chart.ws.close()
 
-df = chart.get_chart_data()
-
-# Export to CSV
 df.to_csv('aapl_daily_1year.csv', index=False)
 print(f"Exported {len(df)} bars to aapl_daily_1year.csv")
-
-# Export to JSON
 df.to_json('aapl_daily_1year.json', orient='records')
 ```
 
@@ -452,32 +424,27 @@ TradingView symbols follow the format: `EXCHANGE:SYMBOL`
 **Workaround:**
 - Use `TradingViewDispatcher` for network clients (it bridges callbacks → Protocol 2)
 
-### 3. Single Symbol Per Session
+### 3. Low-Level `QuoteSession` is Single-Symbol
 
-**Constraint:** Each `QuoteSession` handles one symbol.
+**Constraint:** A low-level `QuoteSession` handles one symbol; `ChartSession` fetches one series at a time.
 
 **Impact:**
-- Need multiple sessions for multiple symbols
-- Higher overhead (one WebSocket per symbol)
+- Multiple low-level sessions mean one WebSocket per symbol
 
 **Workaround:**
-- Use `multisymbol.py` utilities
-- Manage multiple sessions with threading
+- Use `DispatcherQuoteSession` / `TradingViewDispatcher` (ONE shared upstream socket, many symbols)
 
-### 4. Historical Data Delay
+### 4. Historical Data Delay & No Pagination
 
-**Constraint:** Chart data arrives asynchronously.
-
-**Impact:**
-- Must wait (sleep) before calling `get_chart_data()`
-- No explicit "data ready" signal
+**Constraint:** `get_symbol_data()` blocks until the server's initial `timescale_update`; there is no incremental/paginated fetch, so very large `total_ticks` values are not paged automatically.
 
 **Workaround:**
 ```python
-chart.setup()
-chart.post_setup()
-time.sleep(5)  # Adjust based on range_value
-df = chart.get_chart_data()
+import threading
+chart = ChartSession()
+threading.Thread(target=lambda: chart.ws.run_forever(), daemon=True).start()
+df = chart.get_symbol_data(symbol="NASDAQ:AAPL", interval="D", total_ticks=300)
+chart.ws.close()
 ```
 
 ### 5. No Real-Time Trade Data
@@ -545,7 +512,7 @@ thread.start()
 argus/tv/
 ├── __init__.py        # QuoteSession, ChartSession, TradingViewConnection (low-level)
 ├── dispatcher.py      # TradingViewDispatcher, DispatcherQuoteSession, TVP2ConvertClass
-└── multisymbol.py     # Multi-symbol utilities (low-level)
+└── multisymbol.py     # legacy standalone Ticker (not used by the dispatcher)
 ```
 
 ## Summary
