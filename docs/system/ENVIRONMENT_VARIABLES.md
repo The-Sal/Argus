@@ -423,6 +423,30 @@ This document lists all environment variables used throughout the Argus project 
 - **Required**: Yes (for TV integration)
 - **Used in**: `tv/__init__.py`
 
+## Al Ramz Integration
+
+### `ALRAMZ_SOCKET_SESSION`
+- **Purpose**: The opaque credential for `feed.alramz.ae`. Minted by `python3 -m argus.alramz.set_auth` (IB-style Chromium login); required for market data. The dispatcher can start without it (P1 answers with `authenticated: false`) but pushes nothing until it is set.
+- **Required**: Yes (for Al Ramz market data)
+- **Used in**: `alramz/_signalr.py`, `alramz/dispatcher.py`, `alramz/set_auth.py`
+
+### `ALRAMZ_ORDERBOOK_DEPTH`
+- **Purpose**: Protocol-2 levels per side for Al Ramz. The venue/instrument supports up to 20.
+- **Default**: `10`
+- **Required**: No
+- **Used in**: `alramz/dispatcher.py`
+- **Behavior**: `1` = top of book; must be between `1` and `20` or the dispatcher raises at startup.
+
+### `ALRAMZ_USERNAME`, `ALRAMZ_PASSWORD`
+- **Purpose**: Al Ramz login credentials used only by the Chromium auth script. Aliases: `ALRAMZ_USER`/`ALRAMZ_PASS`, `USERNAME`/`PASSWORD`. Loaded through the shared secure env loader.
+- **Required**: Only for `python3 -m argus.alramz.set_auth`
+- **Used in**: `alramz/set_auth.py`
+
+### `ALRAMZ_CHROME_BINARY`, `ALRAMZ_CHROME_PROFILE`, `ALRAMZ_AUTH_DEBUG`
+- **Purpose**: Auth-script tuning: `ALRAMZ_CHROME_BINARY` overrides the Chromium/Chrome binary path, `ALRAMZ_CHROME_PROFILE` sets a persistent `--user-data-dir` (reuse the login across runs), and `ALRAMZ_AUTH_DEBUG` dumps cookies + the full network log to `alramz_auth_debug.json`.
+- **Required**: No
+- **Used in**: `alramz/set_auth.py`
+
 ## WireProxy Integration
 
 ### `WIREPROXY_BIND_ADDRESS`
@@ -568,5 +592,5 @@ Argus supports **just-in-time encrypted environment loading** through [SDist](ht
 - If a `.env.enc.se` file (SDist Secure Enclave format, magic `SDIST.SE`) is present and the `sdist` CLI is on `PATH`, the loader decrypts it to `.env` via `sdist -c -p NONE --args-only -f decrypt-se -a .env.enc.se .env`, loads the result with `python-dotenv`, then immediately deletes the plaintext `.env`. The load only ever happens once per process
 - Decryption requires **macOS with a Secure Enclave** (Darwin). On other platforms, or if `sdist` is not installed, the loader prints a warning and falls back to loading a plaintext `.env` (which must be present in that case)
 - Encrypt an existing `.env` with `sdist -c -p n -f encrypt-se -a .env .env.enc.se ?`, then delete the plaintext. The `.run/Encrypt Env.run.xml` and `.run/Decrypt Env.run.xml` IDE run configurations wrap these commands
-- `ib/set_auth.py` refuses to run while the loader is active (`UnavailableInSecurityContext`) because it would persist the IBKR cookie into a plaintext `.env`
+- `ib/set_auth.py` refuses to run while the loader is active (`UnavailableInSecurityContext`) because it would persist the IBKR cookie into a plaintext `.env`. In contrast, `alramz/set_auth.py` supports the loader: it reads `ALRAMZ_USERNAME`/`ALRAMZ_PASSWORD` from it and writes the minted `ALRAMZ_SOCKET_SESSION` back into `.env.enc.se` (never leaving a plaintext `.env` behind)
 - `.env.enc.se` is ignored by `.gitignore` (`*.enc.se`): the encryption protects credentials at rest on disk, it does **not** make committing them acceptable — never commit either file
