@@ -311,7 +311,10 @@ class TradingViewDispatcher(BaseDispatcher):
     See docs/TV_DISPATCHER.md for the full API spec.
     """
 
-    def __init__(self, host="localhost", port=9974, send_auth=False, initial_symbols=()):
+    def __init__(self, host="localhost", port=9974, send_auth=None, initial_symbols=()):
+        # send_auth=None -> authenticate iff TOKEN is set in the environment/.env
+        if send_auth is None:
+            send_auth = bool(os.getenv("TOKEN"))
         routing_table = {
             'subscribe': self._handle_subscribe,
             'unsubscribe': self._handle_unsubscribe,
