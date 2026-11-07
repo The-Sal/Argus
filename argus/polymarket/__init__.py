@@ -20,9 +20,11 @@ IMPORTANT — Account Update Delivery Requirement:
 """
 import os
 import json
+import subprocess
 import time
 import tqdm
 import zlib
+import pickle
 import atexit
 import base64
 import socket
@@ -30,7 +32,6 @@ import difflib
 import logging
 import threading
 import traceback
-import subprocess
 import dataclasses
 from collections import deque
 from datetime import datetime
@@ -41,22 +42,26 @@ from utils3.networking.sockets import Server
 from argus import __version__ as ARGUS_VERSION
 from argus.wireproxy.wrapper import BIND_ADDRESS
 from argus.satellite_sys import ArgusPolymarketDB
-from argus._argus_utils import Introspective, throw_fuss
 from argus.polymarket_direct import rest, PolymarketEvent
 from argus.polymarket_direct.order_types import OrderEvent
 from argus.polymarket.apdb_client import APDBClient, APDBError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from argus.polymarket.proxy_perf import ProxyPerformanceProfiler
+from argus.polymarket_direct.position_ids import is_v2_position_id
 from argus.polymarket_direct.unsafe_api import UnsafePolyMarket, UnableToReachPolymarket
 from argus.protocol import decode_multiple_packets, encode_packet, transmit_mkt_data_with_protocol_2
+from argus._argus_utils import (
+    Introspective,
+    throw_fuss,
+    RoutingHelper,
+    ArgsObject,
+    CorrelationIDChecker,
+)
 from argus.polymarket._classes import (
     PolyMarketDispatcherError,
     InvalidArgumentError,
-    RoutingHelper,
-    ArgsObject,
     P2ConvertClass,
     print_with_name,
-    CorrelationIDChecker,
     OrderExecutionDisabledError,
 )
 
@@ -64,6 +69,23 @@ def compress(data: dict) -> str:
     minified = json.dumps(data, separators=(',', ':')).encode()
     return base64.b64encode(zlib.compress(minified, level=9)).decode()
 
+
+def env_flag(name: str, default: bool) -> bool:
+    """Read a boolean env var. 0/false/off/no (any case) -> False, 1/true/on/yes -> True, unset/other -> default."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    v = raw.strip().lower()
+    if v in ("0", "false", "off", "no"):
+        return False
+    if v in ("1", "true", "on", "yes"):
+        return True
+    return default
+
+
+LEGACY_RTDS_DISABLED_MSG = (
+    "legacy RTDS stream disabled (POLYMARKET_RTDS_LEGACY is off); use twap_subscribe for the PolyBolt TWAP stream"
+)
 
 # Sentinel distinguishing "not in the negRisk cache yet" from a cached value
 # of None (negRisk is Optional[bool] on PolymarketEvent).
@@ -225,6 +247,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 f"(see the APDB_BIND_ADDRESS env var; default /tmp/argus_polymarket_db.sock)."
             ) from e
 
+        self._verify_apdb_valid()
+
         # TL;DR the P2 encoding format's ticker field
         # is formatted like <Event-Ticker><Market-Slug><Asset_id>
         # now we will get asset_id from the market data wss, but we need
@@ -249,8 +273,6 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             os.environ.get("POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL", 300)
         )
 
-        # Make sure asset_id routing is ready before we start receiving market data
-        self._build_asset_id_to_ticker_mapping()
 
         # Start background tasks
         self.market_data.run(main_thread=False)
@@ -261,14 +283,38 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             "POLYMARKET_DISPATCHER_LOG_FILE",
             os.path.expanduser("~/.argus/polymarket_dispatcher.log"),
         )
-
-        self.rtds_magic_asset_id = "RTDS_MAGIC_ID"
-        self.real_time_data = wss.PolymarketRTDSWss(
-            on_msg_callback=self._rtd_callback,
-            book_depth=self._orderbook_depth
+        self._python_state_file = os.environ.get(
+            "POLYMARKET_DISPATCHER_PYTHON_STATE_FILE",
+            os.path.expanduser("~/.argus/polymarket_dispatcher_state.pkl"),
         )
 
-        self.real_time_data.start()
+        self.rtds_magic_asset_id = "RTDS_MAGIC_ID"
+        self.polybolt_magic_asset_id = "POLYBOLT_MAGIC_ID"
+
+        # POLYMARKET_RTDS_LEGACY (default on): run the legacy RTDS client behind rtds_subscribe.
+        # Off: the legacy client is never constructed/started and rtds_* actions return an error.
+        self._rtds_legacy_enabled = env_flag("POLYMARKET_RTDS_LEGACY", True)
+        self.real_time_data = None
+        if self._rtds_legacy_enabled:
+            self.real_time_data = wss.PolymarketRTDSWss(
+                on_msg_callback=self._rtd_callback,
+                book_depth=self._orderbook_depth
+            )
+            self.real_time_data.start()
+
+        # PolyBolt TWAP stream: started lazily on the first twap_subscribe.
+        self.polybolt: wss.PolyBoltTwapWss | None = None
+        self._polybolt_lock = threading.Lock()
+
+        logging.info(
+            "Polymarket live-data mode: legacy RTDS %s, PolyBolt TWAP %s (lazy, starts on first twap_subscribe)",
+            "ENABLED" if self._rtds_legacy_enabled else "DISABLED (POLYMARKET_RTDS_LEGACY=off)",
+            "available",
+        )
+        print_with_name(
+            "Live-data mode: legacy RTDS", "ON" if self._rtds_legacy_enabled else "OFF",
+            "| PolyBolt TWAP available (lazy start)",
+        )
 
         with open(self._log_file, "a") as f:
             f.write(
@@ -285,6 +331,63 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             "Asset-id mapping refresh interval set to %d seconds",
             self._market_cache_refresh_interval,
         )
+
+        # Make sure asset_id routing is ready before we start receiving market data
+        self._bootstrap_id_to_ticker()
+
+    @staticmethod
+    def current_btc_updown_symbol(asset: str = "btc") -> str:
+        """
+        Generate the live Polymarket 5-minute up/down market symbol
+        for the given asset (btc, eth, sol, xrp, bnb, ...).
+
+        Symbol = "<asset>-updown-5m-<window_start_unix_ts>"
+        where window_start is the current time floored to a 300s (5 min) boundary.
+        """
+        now = int(time.time())
+        window_start = now - (now % 300)
+        return f"{asset}-updown-5m-{window_start}"
+
+    def _verify_apdb_valid(self):
+        """
+        Verify that APDB's markets are valid using a bitcoin market to check.
+        :exception RuntimeError: If the APDB markets are invalid, raises a RuntimeError with a message indicating the issue.
+        :return:
+        """
+        symbol = self.current_btc_updown_symbol()
+        response = self._apdb.get_event(symbol)
+        if response is None:
+            print_with_name("The currently running APDB markets are invalid. Deleting database and terminating APDB process. Please restart the dispatcher to reinitialize APDB.")
+            os.remove(os.path.expanduser("~/.argus/polymarket_events.db"))
+            subprocess.check_call(["killall", "APDB"])
+            raise RuntimeError(
+                "Please restart the dispatcher to reinitialize APDB with valid markets. Your mesh of APDB might be corrupted or outdated."
+            )
+        else:
+            print_with_name("APDB markets are valid. Proceeding with dispatcher initialization.")
+
+
+    def _bootstrap_id_to_ticker(self):
+        """
+        Bootstrap the state of the dispatcher by loading from the
+        POLYMARKET_DISPATCHER_PYTHON_STATE_FILE if it exists applying the market cache
+        refresh interval. otherwise calls _build_asset_id_to_ticker_mapping.
+        :return:
+        """
+        if os.path.exists(self._python_state_file):
+            with open(self._python_state_file, "rb") as f:
+                state = pickle.load(f)
+                if (
+                    state.get("ts")
+                    and time.time() - state.get("ts") < self._market_cache_refresh_interval
+                ):
+                    self._asset_id_to_ticker = state["asset_id_to_ticker"]
+                    self._ticker_market_index_to_slug = state["ticker_market_index_to_slug"]
+                    self._asset_id_to_neg_risk = state["asset_id_to_neg_risk"]
+                    print_with_name("Loaded asset_id to ticker mapping from state file. Time since last refresh: %d seconds", time.time() - state.get("ts"))
+                    return # exit early since we have valid state now
+        # fall through to build the mapping
+        self._build_asset_id_to_ticker_mapping()
 
     @runAsThread
     def async_write_log(self, message: str):
@@ -355,6 +458,14 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
             self._asset_id_to_ticker.update(dict_asset_id_to_ticker)
             self._ticker_market_index_to_slug.update(dict_ticker_index_to_slug)
             self._asset_id_to_neg_risk.update(dict_asset_id_to_neg_risk)
+
+        with open(self._python_state_file, "wb") as f:
+            pickle.dump({
+                "ts": time.time(),
+                "asset_id_to_ticker": self._asset_id_to_ticker,
+                "ticker_market_index_to_slug": self._ticker_market_index_to_slug,
+                "asset_id_to_neg_risk": self._asset_id_to_neg_risk,
+            }, f)
 
     #######################################
     # Callbacks
@@ -636,10 +747,31 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         The callback should get P2 classes from the RTDS already populated now its just about
         finding out who to cast to and blast
         """
+        self._broadcast_live_data(self.rtds_magic_asset_id, object)
+
+    def _polybolt_tick_callback(self, symbol: str, value: float, timestamp_ms: int, source: str,
+                                is_snapshot: bool):
+        """
+        Live (or, if configured, snapshot) TWAP tick from PolyBoltTwapWss -> P2 packet
+        `<source>-twap60-<symbol>` (e.g. chainlink-twap60-btcusd) with ask[0] = TWAP value, same layout
+        as RTDS packets.
+        """
+        _ = is_snapshot
+        market_data = {
+            symbol: {"bids": [], "asks": [{"price": value, "size": 0.0}]},
+            "timestamp": timestamp_ms,
+        }
+        p2 = P2ConvertClass(ticker="", market_slug="", asset_id=symbol, market_data=market_data,
+                            order_book_depth=self._orderbook_depth,
+                            forced_symbol=f"{source}-twap{self.polybolt.window_seconds}-{symbol}")
+        self._broadcast_live_data(self.polybolt_magic_asset_id, p2)
+
+    def _broadcast_live_data(self, channel_id: str, object: P2ConvertClass):
+        """Encode a P2 class once and send it to every socket subscribed to `channel_id`."""
         clients_to_send = []
         with self._lock:
-            if self.rtds_magic_asset_id in self._market_data_routing_table:
-                clients_to_send = list(self._market_data_routing_table[self.rtds_magic_asset_id])
+            if channel_id in self._market_data_routing_table:
+                clients_to_send = list(self._market_data_routing_table[channel_id])
 
         p2_packet = transmit_mkt_data_with_protocol_2(object)
 
@@ -829,6 +961,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 "orderbook_snapshot": self._handle_orderbook_snapshot,
                 "rtds_subscribe": self._handle_rtds_subscribe,
                 "rtds_unsubscribe": self._handle_rtds_unsubscribe,
+                "twap_subscribe": self._handle_twap_subscribe,
+                "twap_unsubscribe": self._handle_twap_unsubscribe,
                 # Market Data Requests
                 "fetch_all_markets": self._handle_fetch_all_markets,
                 "fetch_all_tickers": self._handle_fetch_all_markets_ticker,
@@ -894,15 +1028,16 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
     ########################################
     # Subscription
     ########################################
-    def subscription_expired(self, clob_id):
+    def subscription_expired(self, channel_id):
         """
         Handle subscription expiration logic.
-        :param clob_id:
+        :param channel_id:
         :return:
         """
-        if clob_id == self.rtds_magic_asset_id:
+        # NB: called with RoutingHelper._lock held -- must not take it.
+        if channel_id in (self.rtds_magic_asset_id, self.polybolt_magic_asset_id):
             return
-        self.market_data.unsubscribe_from_asset_id(clob_id)
+        self.market_data.unsubscribe_from_asset_id(channel_id)
 
     def _warm_clob_caches_for_subscribed_asset(self, clob_id: str) -> None:
         """
@@ -1112,6 +1247,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param args_obj: ArgsObject containing the socket.
         :return:
         """
+        if not self._rtds_legacy_enabled:
+            return {"subscribed": [], "failed": [LEGACY_RTDS_DISABLED_MSG]}
         sock = args_obj.sock
         self.add_socket(sock)
         try:
@@ -1128,12 +1265,53 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param args_obj: ArgsObject containing the socket.
         :return:
         """
+        if not self._rtds_legacy_enabled:
+            return {"unsubscribed": [], "failed": [LEGACY_RTDS_DISABLED_MSG]}
         sock = args_obj.sock
         try:
             self.remove_socket_from_subscription(sock, self.rtds_magic_asset_id)
             return {"unsubscribed": [self.rtds_magic_asset_id], "failed": []}
         except Exception as e:
             print_with_name("Error in RTDS unsubscribe: {}".format(e))
+            traceback.print_exc()
+            return {"unsubscribed": [], "failed": [str(e)]}
+
+    def _ensure_polybolt_started(self) -> "wss.PolyBoltTwapWss":
+        """Lazily create + start the PolyBolt client (thread-safe, idempotent)."""
+        with self._polybolt_lock:
+            if self.polybolt is None:
+                self.polybolt = wss.PolyBoltTwapWss(
+                    on_tick=self._polybolt_tick_callback,
+                    creds_provider=lambda: self.rest_api.credentials,
+                )
+            self.polybolt.start()
+            return self.polybolt
+
+    def _handle_twap_subscribe(self, args_obj: ArgsObject):
+        """
+        Subscribe a client socket to the PolyBolt TWAP stream (price.crypto.twap, 60s window).
+        Starts the PolyBolt connection on first use. Symbols are `<source>-twap60-<sym>`,
+        e.g. chainlink-twap60-btcusd. No arguments; the symbol set comes from POLYMARKET_TWAP_SYMBOLS.
+        """
+        sock = args_obj.sock
+        try:
+            client = self._ensure_polybolt_started()
+            self.add_socket(sock)
+            self.add_socket_to_subscription(sock, self.polybolt_magic_asset_id)
+            return {"subscribed": [self.polybolt_magic_asset_id], "failed": [], "symbols": list(client.symbols)}
+        except Exception as e:
+            print_with_name("Error in TWAP subscribe: {}".format(e))
+            traceback.print_exc()
+            return {"subscribed": [], "failed": [str(e)]}
+
+    def _handle_twap_unsubscribe(self, args_obj: ArgsObject):
+        """Unsubscribe a client socket from the PolyBolt TWAP stream (the connection stays up)."""
+        sock = args_obj.sock
+        try:
+            self.remove_socket_from_subscription(sock, self.polybolt_magic_asset_id)
+            return {"unsubscribed": [self.polybolt_magic_asset_id], "failed": []}
+        except Exception as e:
+            print_with_name("Error in TWAP unsubscribe: {}".format(e))
             traceback.print_exc()
             return {"unsubscribed": [], "failed": [str(e)]}
 
@@ -1287,13 +1465,18 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         event = self._resolve_market_from_token_id(clob_id)
         # Find the market and outcome associated with this clob_id
         for market in event.markets:
-            if market.clobTokenIds and clob_id in market.clobTokenIds:
-                outcome_index = market.clobTokenIds.index(clob_id)
+            token_ids = (market.outcome_token_ids()
+                         if hasattr(market, "outcome_token_ids")
+                         else market.clobTokenIds)
+            if not token_ids and getattr(market, "positionIds", None):
+                token_ids = market.positionIds
+            if token_ids and clob_id in token_ids:
+                outcome_index = token_ids.index(clob_id)
                 # noinspection all
+                outcome = ""
                 if market.outcomes and isinstance(market.outcomes, list):
-                    outcome = market.outcomes[outcome_index]
-                else:
-                    outcome = None
+                    if outcome_index < len(market.outcomes) and market.outcomes[outcome_index] is not None:
+                        outcome = market.outcomes[outcome_index]
 
                 aot_symbol_from_p2 = P2ConvertClass(
                     ticker=event.ticker,
@@ -1304,11 +1487,11 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 )
 
                 return {
-                    "event_name": event.title,
-                    "market_name": market.question,
+                    "event_name": event.title or "",
+                    "market_name": market.question or "",
                     "outcome": outcome,
-                    "ticker": event.ticker,
-                    "market_slug": market.slug,
+                    "ticker": event.ticker or "",
+                    "market_slug": market.slug or "",
                     "aot_p2_symbol": aot_symbol_from_p2.symbol,
                 }
 
@@ -1690,6 +1873,10 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
         :param token_id: The asset_id / clob_id identifying a specific market outcome.
         :return: A PolymarketEvent with at least `.negRisk` populated correctly.
         """
+        if is_v2_position_id(token_id):
+            # Protocol V2 (ExchangeV3) has no neg-risk variant and build_order ignores
+            # market.negRisk for position ids, so skip the cache/APDB lookup entirely.
+            return PolymarketEvent(negRisk=False)
         with self._market_cache_lock:
             neg_risk = self._asset_id_to_neg_risk.get(token_id, _NEG_RISK_UNSET)
         if neg_risk is not _NEG_RISK_UNSET:
@@ -2227,7 +2414,7 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 ),
                 "Clear console": (
                     "Clear the console output",
-                    lambda: subprocess.check_call(["clear"]),
+                    self.clear,
                 ),
                 "Clear correlation ids": (
                     "Clear all correlation IDs from the dispatcher cache",

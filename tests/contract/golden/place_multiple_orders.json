@@ -1,0 +1,74 @@
+{
+  "keys": {
+    "failed": {
+      "items": {
+        "keys": {
+          "errorMsg": {
+            "nullable": false,
+            "type": "string"
+          },
+          "makingAmount": {
+            "nullable": false,
+            "type": "string"
+          },
+          "orderID": {
+            "nullable": false,
+            "type": "string"
+          },
+          "status": {
+            "nullable": false,
+            "type": "string"
+          },
+          "success": {
+            "nullable": false,
+            "type": "bool"
+          },
+          "takingAmount": {
+            "nullable": false,
+            "type": "string"
+          }
+        },
+        "nullable": false,
+        "type": "object"
+      },
+      "nullable": false,
+      "type": "array"
+    },
+    "success": {
+      "items": {
+        "keys": {
+          "errorMsg": {
+            "nullable": false,
+            "type": "string"
+          },
+          "makingAmount": {
+            "nullable": false,
+            "type": "string"
+          },
+          "orderID": {
+            "nullable": false,
+            "type": "string"
+          },
+          "status": {
+            "nullable": false,
+            "type": "string"
+          },
+          "success": {
+            "nullable": false,
+            "type": "bool"
+          },
+          "takingAmount": {
+            "nullable": false,
+            "type": "string"
+          }
+        },
+        "nullable": false,
+        "type": "object"
+      },
+      "nullable": false,
+      "type": "array"
+    }
+  },
+  "nullable": false,
+  "type": "object"
+}

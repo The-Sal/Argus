@@ -7,9 +7,19 @@ examples/ADX_data
 *.pkl
 *.fk
 *.json
+# captured HARs contain session cookies / auth tokens -- never commit them
+*.har
+
+# keep captured offline test fixtures
+!tests/fixtures/fxc/*.json
 *.pyc
 *.DS_Store
 *.pkl*
 *.toon
 *.enc.se
 polymarket_events*
+# HAR captures and bytecode
+*.har
+__pycache__/
+*.pyc
+/alramz

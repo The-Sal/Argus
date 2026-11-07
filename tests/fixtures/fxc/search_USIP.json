@@ -1,0 +1,18 @@
+{
+ "contracts": [
+  {
+   "conid": 909821806,
+   "conid_yes": 909821806,
+   "conid_no": 909821808,
+   "exchange": "FORECASTX",
+   "side": "Y",
+   "market_name": "US Industrial Production",
+   "strike_label": "Above -4.0%",
+   "measured_period": "Oct'26",
+   "underlying_conid": 751047561,
+   "strike": -4.0,
+   "expiration": "20261117",
+   "product_conid": 751047564
+  }
+ ]
+}

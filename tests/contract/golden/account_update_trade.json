@@ -1,0 +1,154 @@
+{
+  "keys": {
+    "action": {
+      "nullable": false,
+      "type": "string"
+    },
+    "compressed": {
+      "nullable": false,
+      "type": "bool"
+    },
+    "data": {
+      "keys": {
+        "asset_id": {
+          "nullable": false,
+          "type": "string"
+        },
+        "bucket_index": {
+          "nullable": false,
+          "type": "int"
+        },
+        "event_type": {
+          "nullable": false,
+          "type": "string"
+        },
+        "fee_rate_bps": {
+          "nullable": false,
+          "type": "string"
+        },
+        "id": {
+          "nullable": false,
+          "type": "string"
+        },
+        "last_update": {
+          "nullable": false,
+          "type": "string"
+        },
+        "maker_address": {
+          "nullable": false,
+          "type": "string"
+        },
+        "maker_orders": {
+          "items": {
+            "keys": {
+              "asset_id": {
+                "nullable": false,
+                "type": "string"
+              },
+              "fee_rate_bps": {
+                "nullable": false,
+                "type": "string"
+              },
+              "maker_address": {
+                "nullable": false,
+                "type": "string"
+              },
+              "matched_amount": {
+                "nullable": false,
+                "type": "string"
+              },
+              "order_id": {
+                "nullable": false,
+                "type": "string"
+              },
+              "outcome": {
+                "nullable": false,
+                "type": "string"
+              },
+              "outcome_index": {
+                "nullable": false,
+                "type": "int"
+              },
+              "owner": {
+                "nullable": false,
+                "type": "string"
+              },
+              "price": {
+                "nullable": false,
+                "type": "string"
+              },
+              "side": {
+                "nullable": false,
+                "type": "string"
+              }
+            },
+            "nullable": false,
+            "type": "object"
+          },
+          "nullable": false,
+          "type": "array"
+        },
+        "market": {
+          "nullable": false,
+          "type": "string"
+        },
+        "match_time": {
+          "nullable": false,
+          "type": "string"
+        },
+        "outcome": {
+          "nullable": false,
+          "type": "string"
+        },
+        "owner": {
+          "nullable": false,
+          "type": "string"
+        },
+        "price": {
+          "nullable": false,
+          "type": "string"
+        },
+        "side": {
+          "nullable": false,
+          "type": "string"
+        },
+        "size": {
+          "nullable": false,
+          "type": "string"
+        },
+        "status": {
+          "nullable": false,
+          "type": "string"
+        },
+        "taker_order_id": {
+          "nullable": false,
+          "type": "string"
+        },
+        "timestamp": {
+          "nullable": false,
+          "type": "string"
+        },
+        "trade_owner": {
+          "nullable": false,
+          "type": "string"
+        },
+        "trader_side": {
+          "nullable": false,
+          "type": "string"
+        },
+        "transaction_hash": {
+          "nullable": false,
+          "type": "string"
+        }
+      },
+      "nullable": false,
+      "type": "object"
+    },
+    "error": {
+      "nullable": true,
+      "type": "null"
+    }
+  },
+  "nullable": false,
+  "type": "object"
+}

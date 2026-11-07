@@ -244,6 +244,7 @@ Subscribe the client socket to the Real-Time Data Stream (RTDS), which delivers 
 - RTDS data arrives as P2 packets on the same connection — see [RTDS P2 Format](#real-time-data-streams-rtds-p2-format) below.
 - Subscribing to RTDS also registers the socket for `account_update` pushes (same mechanism as `subscribe`).
 - You can hold both a market-data (`subscribe`) subscription and an RTDS subscription simultaneously on the same socket.
+- **Legacy.** RTDS is being replaced by PolyBolt (see [`twap_subscribe`](#twap_subscribe) and the [migration note](#migrating-from-legacy-rtds-to-polybolt)). It stays on by default; set `POLYMARKET_RTDS_LEGACY=off` to disable it, in which case this action returns `{"subscribed": [], "failed": ["legacy RTDS stream disabled (POLYMARKET_RTDS_LEGACY is off); use twap_subscribe for the PolyBolt TWAP stream"]}`.
 
 ---
 
@@ -264,6 +265,66 @@ Unsubscribe the client socket from the Real-Time Data Stream.
   "action": "rtds_unsubscribe",
   "data": {
     "unsubscribed": ["RTDS_MAGIC_ID"],
+    "failed": []
+  },
+  "error": null,
+  "compressed": false
+}
+```
+
+---
+
+#### `twap_subscribe`
+Subscribe the client socket to the PolyBolt TWAP stream: Chainlink 60-second TWAP prices from `wss://ws-live-v2.polymarket.com/ws` (channel `price.crypto.twap`, `window_seconds=60`). The first call lazily starts the PolyBolt connection (authenticated with the CLOB API credentials the dispatcher already derives, routed through the WireProxy path like every other Polymarket socket). No arguments; the symbol set is fixed per process by `POLYMARKET_TWAP_SYMBOLS`.
+
+**Input:**
+```json
+{
+  "action": "twap_subscribe",
+  "data": {}
+}
+```
+
+**Output:**
+```json
+{
+  "action": "twap_subscribe",
+  "data": {
+    "subscribed": ["POLYBOLT_MAGIC_ID"],
+    "failed": [],
+    "symbols": ["btcusd", "ethusd", "solusd", "xrpusd", "dogeusd"]
+  },
+  "error": null,
+  "compressed": false
+}
+```
+
+**Notes:**
+- Data arrives as P2 packets with the same layout as RTDS (`ask[0].price` = TWAP value, everything else `0`), symbol `<source>-twap60-<asset>`, e.g. `chainlink-twap60-btcusd`. The exchange timestamp field is the Chainlink timestamp in ms (whole seconds). One tick per symbol per second.
+- The ~119-point history snapshot that PolyBolt sends on (re)subscribe is **not** forwarded as ticks (it would look like a burst of stale prices). It is kept in the client (`latest` per symbol) only.
+- On disconnect the client reconnects, re-authenticates and resubscribes by itself (close-code aware backoff, see below). Subscribers stay registered and simply see a gap in ticks. `seq` gaps and `dropped` flags are counted and logged (`PolyBoltTwapWss.stats`) but not forwarded to clients.
+- `twap_unsubscribe` only removes the socket; the PolyBolt connection stays up for the life of the process.
+- Works independently of `POLYMARKET_RTDS_LEGACY`.
+
+---
+
+#### `twap_unsubscribe`
+Unsubscribe the client socket from the PolyBolt TWAP stream.
+
+**Input:**
+```json
+{
+  "action": "twap_unsubscribe",
+  "data": {}
+}
+```
+
+**Output:**
+```json
+{
+  "action": "twap_unsubscribe",
+  "data": {
+    "unsubscribed": ["POLYBOLT_MAGIC_ID"],
     "failed": []
   },
   "error": null,
@@ -314,6 +375,24 @@ Bids:  [0,0] × 10
 Asks:  [<price>,0], [0,0] × 9
 Tail:  <exchange_ts>, <server_ts>
 ```
+
+---
+
+### PolyBolt TWAP P2 Format
+
+Same packet structure as RTDS. Symbol: `<source>-twap<window>-<symbol>` where `source` is `chainlink`, `window` is `60` and `symbol` is one of the lowercase `...usd` pairs in `POLYMARKET_TWAP_SYMBOLS` (e.g. `chainlink-twap60-btcusd`). `ask[0].price` is the 60s TWAP, all other levels `0,0`; the first tail timestamp is the PolyBolt payload `timestamp` (ms), the second is the dispatcher's `time.time()`.
+
+#### PolyBolt connection behaviour (`PolyBoltTwapWss`)
+
+| Close code | Meaning | Client action |
+|-----------|---------|---------------|
+| 4001 | auth failed | backoff 5s, 10s, ... capped 60s; gives up (logs error, no notification) after 5 consecutive |
+| 4002 | slow consumer / missed pong | reconnect after 1s |
+| 4003 | server draining | reconnect after random 0-10s |
+| 4008 | policy | as 4001 |
+| 1006 / none / other | abnormal close | exponential backoff 1-30s with jitter |
+
+Server limits respected: 64 subscriptions/connection, 20 subscribe frames/s, 8 auth frames/connection (the client sends 1), 64 KB frames. The server pings every 25s (WebSocket control ping, answered automatically; an `{"op":"ping"}` frame is answered with `{"op":"pong"}`). `seq` is one counter across symbols per connection and resets on reconnect.
 
 ---
 
@@ -779,11 +858,28 @@ The dispatcher supports optional `correlation_id` fields for request/response tr
 | `POLYMARKET_PROXY_FUNDER` | Required | Proxy funder address |
 | `POLYMARKET_ORDERBOOK_DEPTH` | 10 | Order book levels in P2 packets (applies to both CLOB and RTDS streams) |
 | `POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL` | 300 | Market cache refresh (seconds) |
+| `POLYMARKET_RTDS_LEGACY` | on | Run the legacy RTDS stream behind `rtds_subscribe`. `0`/`false`/`off`/`no` disables it (client never started; `rtds_*` actions return a "legacy RTDS stream disabled" error). Startup log states the mode. |
+| `POLYMARKET_TWAP_SYMBOLS` | `btcusd,ethusd,solusd,xrpusd,dogeusd` | Comma-separated PolyBolt TWAP symbols (lowercase, `...usd`); max 64 |
+| `POLYMARKET_POLYBOLT_URL` | `wss://ws-live-v2.polymarket.com/ws` | PolyBolt WebSocket endpoint |
 | `POLYMARKET_BUILD_POOL_WORKERS` | 10 | Thread pool size for concurrent order building in `place_multiple_orders` |
 | `POLYMARKET_MAX_ASSETS_PER_WS` | 4 | Max subscribed assets per WebSocket shard |
-| `POLYMARKET_MEMORY_PRUNING` | false | If `true`, prune slim market data from in-memory cache on refresh |
 | `MAX_SEEN_CORRELATION_IDS` | 100000 | Max correlation IDs to track |
 | `MAX_CORRELATION_ID_LENGTH` | 40 | Max correlation ID length |
+
+### Migrating from legacy RTDS to PolyBolt
+
+Polymarket's PolyBolt stream (`wss://ws-live-v2.polymarket.com/ws`) replaces the legacy RTDS (`wss://ws-live-data.polymarket.com`). Both can run side by side; nothing changes by default.
+
+| | Legacy RTDS | PolyBolt TWAP |
+|--|-------------|---------------|
+| Action | `rtds_subscribe` / `rtds_unsubscribe` | `twap_subscribe` / `twap_unsubscribe` |
+| Routing id | `RTDS_MAGIC_ID` | `POLYBOLT_MAGIC_ID` |
+| P2 symbols | `binance-btcusdt`, `chainlink-btcusd`, ... | `chainlink-twap60-btcusd`, ... (60s TWAP, Chainlink only) |
+| Auth | none | CLOB API credentials (already derived by the dispatcher) |
+| Rate | on trade/update | 1 tick/symbol/second |
+| Start | at dispatcher start | lazily on first `twap_subscribe` |
+
+Steps: (1) subscribe your client with `twap_subscribe` and map the new `chainlink-twap60-<sym>` symbols (TWAP values are smoothed and lag spot slightly; they are not a drop-in replacement for `binance-*` spot ticks); (2) once nothing uses `rtds_subscribe`, set `POLYMARKET_RTDS_LEGACY=off` to stop the legacy connection; (3) the legacy class `PolymarketRTDSWss` is kept for now and will be removed in a later change. The Rust client's `rtds_subscribe`/`rtds_unsubscribe` calls keep working while the switch is on, and fail with a clear error (never a hang) when it is off.
 
 ### Connection Lifecycle
 
@@ -853,4 +949,5 @@ sock.sendall(encode_packet(json.dumps(order_req).encode()))
 
 - `argus/polymarket/__init__.py`: Main dispatcher implementation
 - `argus/protocol.py`: P1 and P2 protocol implementations
-- `argus/polymarket/_classes.py`: Supporting classes (RoutingHelper, ArgsObject, etc.)
+- `argus/polymarket/_classes.py`: Polymarket-specific supporting classes (P2ConvertClass, error types, etc.)
+- `argus/_argus_utils.py`: Dispatcher plumbing shared across all Argus trading dispatchers (RoutingHelper, ArgsObject, CorrelationIDChecker)

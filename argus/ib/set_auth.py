@@ -1,15 +1,14 @@
 import os
 import time
-from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from argus._argus_utils import load_dotenv, SECURE_ENV_VAR_LOADER, UnavailableInSecurityContext
 
 
-load_dotenv()
 def get_auth():
     url = 'https://www.interactivebrokers.co.uk/portal/?action=ACCT_MGMT_MAIN&loginType=1&clt=0&locale=en_US&RL=1#/dashboard'
     ops = Options()
@@ -92,6 +91,9 @@ def get_auth():
     return cookies
 
 def update_cookies(write_env=True):
+    if SECURE_ENV_VAR_LOADER.active:
+        raise UnavailableInSecurityContext("Cannot run this script when SECURE_ENV_VAR_LOADER is active. Please disable it and try again.")
+    load_dotenv()
     print("Getting auth...")
     cookies = get_auth()
     cookie_env = ' '.join([f"{cookie['name']}={cookie['value']};" for cookie in cookies])
@@ -107,12 +109,18 @@ def update_cookies(write_env=True):
             print(".env file not found. Creating a new one.")
             lines = []
 
+        found = False
         with open('.env', 'w') as f:
             for line in lines:
                 if line.startswith('IB_COOKIE'):
                     f.write(f'IB_COOKIE=\'{cookie_env}\' \n')
+                    found = True
                 else:
                     f.write(line)
+            if not found:
+                if lines and not lines[-1].endswith('\n'):
+                    f.write('\n')
+                f.write(f'IB_COOKIE=\'{cookie_env}\' \n')
     else:
         print("Not writing to .env file.")
 

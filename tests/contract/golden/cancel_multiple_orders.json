@@ -1,0 +1,22 @@
+{
+  "keys": {
+    "canceled": {
+      "items": {
+        "nullable": false,
+        "type": "string"
+      },
+      "nullable": false,
+      "type": "array"
+    },
+    "not_canceled": {
+      "nullable": false,
+      "type": "map",
+      "values": {
+        "nullable": false,
+        "type": "string"
+      }
+    }
+  },
+  "nullable": false,
+  "type": "object"
+}

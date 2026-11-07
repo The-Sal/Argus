@@ -224,6 +224,78 @@ Big: NYC Mayor Election
 
 **Each micro contract requires its own subscription**, so a 10-candidate election requires **20 subscriptions**.
 
+#### Metadata REST API (EventTrader gateway)
+
+IBKR **decommissioned** the old `api.ibkr.com/v1/api/trsrv/event/*` endpoints
+(`category-tree`, `contracts`) — they now return `HTTP 404`. Market metadata is
+fetched from the EventTrader REST gateway instead (see `argus/ib/_fxc_api.py`):
+
+| Purpose | Endpoint |
+| --- | --- |
+| Category / market tree | `GET https://www.interactivebrokers.com/tws.proxy/forecasttrader/category/tree` |
+| All contracts for a market | `GET .../forecasttrader/contract/market?underlyingConid=<conid>&exchange=FORECASTX` |
+| Market rules / metadata | `GET .../forecasttrader/contract/rules?conid=<outcome>` (one per market) |
+
+> Full write-up: [`docs/system/FXC_EVENTTRADER_MIGRATION.md`](system/FXC_EVENTTRADER_MIGRATION.md).
+
+**Caching / rate limiting:** every response is stored in the shared Argus
+`DomainCache` (category tree: 15 min, market contracts: 5 min) and a minimum
+interval (default 250 ms) is enforced between *live* HTTP requests. Cached hits
+do not touch the network, so repeated `get_all_markets` / `activate_market`
+calls are cheap.
+
+**Multiple expirations:** a single market can list several expirations (e.g.
+successive FOMC meetings) that reuse the same strike labels. A `FxContractBig`
+represents **one** expiration; `activate_market` picks the nearest
+not-yet-expired one unless an explicit `YYYYMMDD` expiration is supplied.
+
+**Subscription-free metadata:** `get_big_contract` builds a single-expiration
+`FxContractBig` entirely from the two cached REST calls above. It is stateless —
+it does **not** touch the active-market slot and never starts
+`start_market_resolution`, so no WebSocket subscription (and no per-micro
+subscription budget) is consumed. The returned micro contracts carry every
+descriptive field (`longDescription`, `sourceAgency`, `eventAuthorityURL`,
+`marketRulesLink`, `priceIncrement`, `eventFixedPayout`, `timezone`,
+`expectedResolutionTime`, `expectedPayoutTime`) while `market_data` remains
+`null` (no bid/ask). Use `activate_market` + `start_market_resolution` only when
+you actually need live prices.
+
+The `expiration` argument is **required**: a single market conid can list several
+expirations that reuse the same strike labels, so omitting it would make the same
+request resolve to different contracts over time (not idempotent). Call
+`get_market_expirations:<conid>` first and pass the desired `YYYYMMDD`.
+
+#### FXC client commands
+
+| Command | Arguments | Notes |
+| --- | --- | --- |
+| `get_all_markets` | — | JSON list of `{name, symbol, exchange, conid}` |
+| `get_market_expirations` | `contract_id` | JSON list of `YYYYMMDD` strings |
+| `get_big_contract` | `contract_id,expiration` | JSON `FxContractBig`, **no subscription/streaming**; `expiration` is **required** (`YYYYMMDD`) |
+| `activate_market` | `contract_id[,expiration]` | expiration optional; defaults to nearest future |
+| `start_market_resolution` | — | |
+| `force_start_market_resolution` | — | |
+| `market_fully_resolved` | — | |
+| `show_market_state` | — | base64 CSV |
+| `get_active_market` | — | JSON `FxContractBig` |
+
+#### Downstream compatibility notes
+
+* `get_all_markets` output is unchanged: `{name, symbol, exchange, conid}`. Market
+  conids match the previous `underlyingConid` space (e.g. FF is `658663572`).
+* `get_active_market` keeps every legacy key. On activation the client makes **one
+  extra cached request** to `GET .../forecasttrader/contract/rules?conid=<outcome>`
+  (rules are market-level, so one covers the whole big contract) which restores
+  `longDescription`, `sourceAgency`, `eventAuthorityURL`, `marketRulesLink`,
+  `priceIncrement`, `timezone`, `lastTradeMillis`/`lastTradeDate`/`lastTradeTime`,
+  `expectedResolutionTime` and `expectedPayoutTime`.
+* Still `null` (no live EventTrader source): `popularityRank`,
+  `tradingHours.holidays`, the full ancestor `categories` list, `currency`, and the
+  exact legacy `shortDescription` string.
+* `FxContractBig` gained an `expiration` field (integer `YYYYMMDD`).
+* The `activate_market` response string is unchanged. Use `get_market_expirations`
+  or `get_active_market` to discover which expiration was activated.
+
 ## Dispatchers
 
 ### MKTDispatcher (Core) - `ib.core`
@@ -759,6 +831,7 @@ argus/ib/
 ├── fields.py                      # IBKR field definitions (31=LAST_PRICE, etc.)
 ├── _ib_utils.py                   # Data classes, LockedSession, FakeSocket
 ├── _forcast_utils.py              # Big/Mini/Micro contract classes
+├── _fxc_api.py                    # EventTrader REST client (cached + rate-limited)
 └── _shortable_shares_data.py      # Shortable shares tracking (cross-platform)
 ```
 

@@ -1,9 +1,17 @@
 """
-ChartSession Integration Test Harness
+ChartSession Integration Test Harness (MANUAL / LIVE)
 
 This is a full end-to-end integration test for the argus.tv.ChartSession class.
 It tests the complete WebSocket connection flow, data retrieval, and DataFrame conversion.
+
+It talks to the real TradingView socket, so it is NOT collected by pytest (the functions
+return booleans rather than asserting, which makes pytest report false greens). Run it
+directly instead:
+
+    python tests/test_chart_session_integration.py
+
 """
+__test__ = False  # manual live script, not a pytest module
 
 import os
 import sys
