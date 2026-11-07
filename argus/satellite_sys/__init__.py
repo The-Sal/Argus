@@ -317,7 +317,9 @@ class ArgusPolymarketDB(GenericSatelliteSys):
                     time.sleep(0.1)
                     if time_waited % 5 == 0:
                         print(f'Waiting for APDB to start... {time_waited:.1f}s', end='\r')
-                    print("[APDB LOG]", read_fd.read(), end='')
+                    log_content = read_fd.read()
+                    if len(log_content) > 3:
+                        print("[APDB LOG]", log_content, end='')
                     sys.stdout.flush()
                     time_waited += 0.1
                     if self._subproc.poll() is not None:

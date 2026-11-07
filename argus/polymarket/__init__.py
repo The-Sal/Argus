@@ -20,6 +20,7 @@ IMPORTANT — Account Update Delivery Requirement:
 """
 import os
 import json
+import subprocess
 import time
 import tqdm
 import zlib
@@ -246,6 +247,8 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
                 f"(see the APDB_BIND_ADDRESS env var; default /tmp/argus_polymarket_db.sock)."
             ) from e
 
+        self._verify_apdb_valid()
+
         # TL;DR the P2 encoding format's ticker field
         # is formatted like <Event-Ticker><Market-Slug><Asset_id>
         # now we will get asset_id from the market data wss, but we need
@@ -331,6 +334,38 @@ class PolymarketDispatcher(Introspective, RoutingHelper):
 
         # Make sure asset_id routing is ready before we start receiving market data
         self._bootstrap_id_to_ticker()
+
+    @staticmethod
+    def current_btc_updown_symbol(asset: str = "btc") -> str:
+        """
+        Generate the live Polymarket 5-minute up/down market symbol
+        for the given asset (btc, eth, sol, xrp, bnb, ...).
+
+        Symbol = "<asset>-updown-5m-<window_start_unix_ts>"
+        where window_start is the current time floored to a 300s (5 min) boundary.
+        """
+        now = int(time.time())
+        window_start = now - (now % 300)
+        return f"{asset}-updown-5m-{window_start}"
+
+    def _verify_apdb_valid(self):
+        """
+        Verify that APDB's markets are valid using a bitcoin market to check.
+        :exception RuntimeError: If the APDB markets are invalid, raises a RuntimeError with a message indicating the issue.
+        :return:
+        """
+        symbol = self.current_btc_updown_symbol()
+        response = self._apdb.get_event(symbol)
+        if response is None:
+            print_with_name("The currently running APDB markets are invalid. Deleting database and terminating APDB process. Please restart the dispatcher to reinitialize APDB.")
+            os.remove(os.path.expanduser("~/.argus/polymarket_events.db"))
+            subprocess.check_call(["killall", "APDB"])
+            raise RuntimeError(
+                "Please restart the dispatcher to reinitialize APDB with valid markets. Your mesh of APDB might be corrupted or outdated."
+            )
+        else:
+            print_with_name("APDB markets are valid. Proceeding with dispatcher initialization.")
+
 
     def _bootstrap_id_to_ticker(self):
         """
