@@ -43,6 +43,38 @@ def git_info():
     return commit_hash, branch_name
 
 
+def update_self():
+    """
+    Updates Argus in place via `git pull --ff-only` in the repository containing this file.
+    Returns True on success, False otherwise.
+    """
+    repo_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def git(*cmd):
+        return subprocess.run(['git', '-C', repo_dir, *cmd], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    if git('rev-parse', '--is-inside-work-tree').returncode != 0:
+        print(f'Update failed: {repo_dir} is not a git repository')
+        return False
+    before = git('rev-parse', '--short', 'HEAD').stdout.strip()
+    branch = git('rev-parse', '--abbrev-ref', 'HEAD').stdout.strip()
+    print(f'Updating Argus ({branch} @ {before})...')
+    if git('status', '--porcelain', '--untracked-files=no').stdout.strip():
+        print('Warning: you have local uncommitted changes; the pull will fail if they conflict with incoming changes')
+    proc = git('pull', '--ff-only')
+    print(proc.stdout.strip())
+    if proc.returncode != 0:
+        print('Update failed (git pull --ff-only returned a non-zero exit code)')
+        return False
+    after = git('rev-parse', '--short', 'HEAD').stdout.strip()
+    if before == after:
+        print(f'Already up to date ({after})')
+    else:
+        print(f'Updated {before} -> {after}')
+        print('If dependencies changed, re-sync them (e.g. `uv sync` or `pip install -r requirements.txt`)')
+    return True
+
+
 def interpreter_info():
     """
     Returns the Python interpreter version, implementation and if its free thread or not.
@@ -95,7 +127,8 @@ def bootstrap():
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Argus runtime dispatcher launcher')
-    parser.add_argument('target', choices=choices, help='Dispatcher to run')
+    parser.add_argument('target', nargs='?', choices=choices, help='Dispatcher to run')
+    parser.add_argument('--update', dest='update', action='store_true', help='Update Argus via git pull (fast-forward only). Exits afterwards, or restarts into the given dispatcher if one is specified')
     parser.add_argument('--host', dest='host', help='Listening host (if supported by dispatcher)')
     parser.add_argument('--port', dest='port', type=int, help='Listening port (if supported by dispatcher)')
     parser.add_argument('--capital-env', dest='capital_env', choices=['demo', 'live'], help='Capital.com environment (demo or live)')
@@ -106,6 +139,18 @@ def main(argv=None):
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Enable verbose logging (same as --log-level DEBUG)')
 
     args = parser.parse_args(argv)
+
+    if args.update:
+        ok = update_self()
+        if not ok:
+            sys.exit(1)
+        if args.target is None:
+            return
+        # restart so the freshly pulled code is what actually runs
+        new_argv = [a for a in (sys.argv if argv is None else [sys.argv[0]] + list(argv)) if a != '--update']
+        os.execv(sys.executable, [sys.executable] + new_argv)
+    elif args.target is None:
+        parser.error('the following arguments are required: target (or use --update)')
 
     # Configure logging based on flags
     log_level = logging.DEBUG if args.verbose else getattr(logging, args.log_level)
