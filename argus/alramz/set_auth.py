@@ -29,20 +29,20 @@ The dispatcher's interactive menu also exposes this as "Refresh Authentication (
 """
 
 from __future__ import annotations
-
 import os
 import re
 import json
 import time
 import traceback
-
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException
-
+from selenium.webdriver.support import expected_conditions as EC
 from argus._argus_utils import load_dotenv, SECURE_ENV_VAR_LOADER
+
+
+
 
 SITE_ROOT = "https://webtrade.alramz.ae"
 LOGIN_URL = f"{SITE_ROOT}/"

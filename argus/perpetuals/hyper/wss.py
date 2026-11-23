@@ -54,7 +54,7 @@ import threading
 from typing import Callable, Optional, Union
 from argus.perpetuals.hyper import _classes as _cls
 from argus.perpetuals.shared import account as _acct
-from argus.perpetuals.shared.wss import MarketDataWssBase, VenueWSSBase
+from argus.perpetuals.shared.wss import MarketDataWssBase, VenueWSSBase, dispatcher_log
 
 WS_URL = 'wss://api.hyperliquid.xyz/ws'
 
@@ -113,6 +113,7 @@ class HyperLiquidOrderBookStore:
             logging.info('Hyperliquid WebSocket subscription ack: %s', content.get('data'))
         elif channel == 'error':
             logging.warning('Hyperliquid WebSocket error frame: %s', content)
+            dispatcher_log('HyperLiquidDispatcher', 'warning', f'[Hyperliquid Order Book] server error frame: {content}')
         # Other channels (allMids, trades, ...) aren't subscribed by this store and are ignored.
 
     def _handle_l2_book(self, data: dict) -> None:
@@ -210,6 +211,7 @@ class HyperLiquidMarketDataWss(HyperLiquidFramingMixin, MarketDataWssBase):
             url=WS_URL,
             env_prefix='HYPERLIQUID',
             proxy_idx='HYPERLIQUID',
+            log_identity='HyperLiquidDispatcher',
             default_ping_interval_s=20,
         )
         self._store = HyperLiquidOrderBookStore(order_book_update_callback=order_book_update_callback)
@@ -335,6 +337,8 @@ class HyperLiquidAccountStream:
                 self._handle_subscription_response(data)
             elif channel == 'error':
                 logging.warning('Hyperliquid Account WebSocket error frame: %s', content)
+                dispatcher_log('HyperLiquidDispatcher', 'error',
+                               f'[Hyperliquid Account] server error frame (subscription/auth problem?): {content}')
         except Exception:
             logging.exception('Failed to process Hyperliquid Account WebSocket frame: %s', message)
 
@@ -398,6 +402,7 @@ class HyperLiquidAccountWss(HyperLiquidFramingMixin, VenueWSSBase):
             url=WS_URL,
             env_prefix='HYPERLIQUID',
             proxy_idx='HYPERLIQUID',
+            log_identity='HyperLiquidDispatcher',
             default_ping_interval_s=20,
         )
         self._wallet_address = wallet_address

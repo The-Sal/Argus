@@ -20,7 +20,6 @@ IMPORTANT — Account Update Delivery Requirement:
 """
 import os
 import json
-import subprocess
 import time
 import tqdm
 import zlib
@@ -32,6 +31,7 @@ import difflib
 import logging
 import threading
 import traceback
+import subprocess
 import dataclasses
 from collections import deque
 from datetime import datetime

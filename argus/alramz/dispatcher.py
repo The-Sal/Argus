@@ -31,17 +31,18 @@ upstream connection serves every client and every symbol.
 """
 
 from __future__ import annotations
-
 import os
 import time
 import threading
 import traceback
-
-from argus import __version__ as argus_version
 from argus._argus_utils import ArgsObject
+from argus import __version__ as argus_version
+from argus.alramz._signalr import AlRamzSignalR
+from argus.perpetuals.shared._classes import OutboundMessage
 from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.shared import BaseDispatcher, PrintInterface, errors as ers
-from argus.perpetuals.shared._classes import OutboundMessage
+
+
 from argus.alramz._classes import (
     SymbolQuote,
     IndexQuote,
@@ -50,7 +51,6 @@ from argus.alramz._classes import (
     parse_groups,
     merge_order_books,
 )
-from argus.alramz._signalr import AlRamzSignalR, AlRamzAuthError
 
 __version__ = [1, 0, 0, 0]
 pi = PrintInterface("AlRamz")

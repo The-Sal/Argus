@@ -11,7 +11,6 @@ Argus runtime entrypoint.
 - Use .env (or Environment Variables) to configure dispatcher behavior (see docs)
 - Automatically loads .env file if present in a working directory.
 """
-import re
 import os
 import sys
 import time
@@ -21,25 +20,11 @@ import platform
 import argparse
 import sysconfig
 import subprocess
-from argus import secure_load_dotenv, check_env_compatibility
+from argus import secure_load_dotenv, check_env_compatibility, __version__ as argus_version
 
 
 choices = ['ib.forecast', 'ib.core', 'polymarket', 'capital.com', 'binance', 'hyperliquid', 'lighter', 'tradingview', 'alramz']
 
-def get_argus_version():
-    """
-    Returns the Argus version string.
-    :return:
-    """
-    try:
-        with open('argus/__init__.py') as f:
-            maybe_version = re.search(r'__version__ = ["\'](.+?)["\']', f.read())
-            if maybe_version:
-                return maybe_version.group(1)
-            else:
-                raise RuntimeError('Unable to find version string.')
-    except FileNotFoundError:
-        raise RuntimeError("This is a fatal error, unable to find argus/__init__.py, this installment is broken.")
 
 
 def git_info():
@@ -104,7 +89,7 @@ def bootstrap():
     commit_hx, branch = git_info()
     if commit_hx and branch:
         print(f'Git commit: {commit_hx}, branch: {branch}')
-    print(f'Argus version: {get_argus_version()}')
+    print(f'Argus version: {argus_version}')
 
     check_env_compatibility()
 

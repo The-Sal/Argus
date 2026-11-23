@@ -29,6 +29,7 @@ from argus.perpetuals.lighter import _errors as _ers
 from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.lighter import _classes as _cls
 from argus.perpetuals.lighter.rest import LighterRest
+from argus.perpetuals.shared.wss import dispatcher_log
 from argus.protocol import transmit_mkt_data_with_protocol_2
 from argus.perpetuals.shared.trading import TradingHandlersMixin
 from argus.perpetuals.lighter.exchange import LighterExchange, MAX_BATCH_SIZE
@@ -163,6 +164,8 @@ class LighterDispatcher(TradingHandlersMixin, BaseDispatcher):
                     leverage_cache_ttl_s=self._leverage_cache_ttl_from_env(),
                 )
             except Exception as e:
+                dispatcher_log('LighterDispatcher', 'error',
+                               f"Failed to initialise the Lighter trading client (trading disabled): {e!r}")
                 pi.throw_fuss(
                     f"Failed to initialise the Lighter trading client: {e}. "
                     f"Trading actions will report AccountNotConfiguredError; everything else keeps running.",
@@ -177,11 +180,12 @@ class LighterDispatcher(TradingHandlersMixin, BaseDispatcher):
         # auth-gated REST reads (get_orders / get_trades / ...) keep working when LIGHTER_AUTH_TOKEN is unset.
         if self.exchange is not None and self.rest.auth_token is None:
             try:
-                self.rest.set_auth_token_provider(
-                    lambda: self.exchange.auth_token(_NATIVE_AUTH_TOKEN_DEADLINE_S)
-                )
+                self.rest.set_auth_token_provider(self._mint_native_token)
                 pi.prt("Minting native Lighter auth tokens from the API key for auth-gated account reads")
             except Exception as e:
+                dispatcher_log('LighterDispatcher', 'error',
+                               f"Could not mint a native Lighter auth token at startup; auth-gated reads are "
+                               f"unavailable: {e!r}")
                 pi.prt(f"Could not mint a native Lighter auth token; auth-gated reads will report "
                        f"AccountNotConfiguredError: {e}")
         self._all_perps = LockedState(self.rest.get_all_perpetuals())
@@ -204,7 +208,7 @@ class LighterDispatcher(TradingHandlersMixin, BaseDispatcher):
         if rest_client.account_index is not None:
             token_provider = None
             if self.exchange is not None:
-                token_provider = lambda: self.exchange.auth_token(_NATIVE_AUTH_TOKEN_DEADLINE_S)
+                token_provider = self._mint_native_token
             else:
                 pi.prt("Lighter account configured without trading credentials; the account stream will "
                        "push fills but not order updates (account_all_orders needs an auth token)")
@@ -219,12 +223,28 @@ class LighterDispatcher(TradingHandlersMixin, BaseDispatcher):
                 )
                 self.account_updates.run(main_thread=False)
             except Exception as e:
+                dispatcher_log('LighterDispatcher', 'error',
+                               f"Failed to start the Lighter account update stream: {e!r}\n{traceback.format_exc()}")
                 pi.throw_fuss(
                     f"Failed to start the Lighter account update stream: {e}. "
                     f"account_update pushes are unavailable; everything else keeps running.",
                     title="Lighter Account Stream Failure", notify=True,
                 )
                 traceback.print_exc()
+
+    def _mint_native_token(self) -> str:
+        """
+        Mint a short-lived native auth token from the API key (for the auth-gated REST reads and the
+        `account_all_orders` subscription) and log the outcome. The token itself is never logged.
+        """
+        try:
+            token = self.exchange.auth_token(_NATIVE_AUTH_TOKEN_DEADLINE_S)
+        except Exception as e:
+            dispatcher_log('LighterDispatcher', 'error', f"Failed to mint a native Lighter auth token: {e!r}")
+            raise
+        dispatcher_log('LighterDispatcher', 'info',
+                       f"Minted a native Lighter auth token (deadline {_NATIVE_AUTH_TOKEN_DEADLINE_S}s)")
+        return token
 
     ########################################
     # INTERNAL SERVER FUNCTIONS & Callbacks

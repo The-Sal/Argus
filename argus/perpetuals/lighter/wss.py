@@ -80,11 +80,12 @@ import time
 import bisect
 import logging
 import threading
+import traceback
 from collections import OrderedDict
 from typing import Any, Callable, Optional, Union
 from argus.perpetuals.shared import account as _acct
 from argus.perpetuals.lighter import _classes as _cls
-from argus.perpetuals.shared.wss import MarketDataWssBase, VenueWSSBase
+from argus.perpetuals.shared.wss import MarketDataWssBase, VenueWSSBase, dispatcher_log
 
 #: Lighter's public websocket endpoint. Both the market-data and account streams use it; they are kept
 #: on separate connections purely for fault isolation (the account stream is not a different server).
@@ -478,6 +479,7 @@ class LighterMarketDataWss(LighterFramingMixin, MarketDataWssBase):
             url=WS_URL,
             env_prefix='LIGHTER',
             proxy_idx='LIGHTER',
+            log_identity='LighterDispatcher',
             default_ping_interval_s=60,
         )
         self._store = LighterOrderBookStore(
@@ -721,6 +723,7 @@ class LighterAccountStream:
 
     def _handle_error(self, content: dict) -> None:
         logging.warning('Lighter Account WebSocket error frame: %s', content)
+        dispatcher_log('LighterDispatcher', 'error', f'[Lighter Account] server error frame: {content}')
         error = content.get('error')
         message = error.get('message') if isinstance(error, dict) else error
         text = message.lower() if isinstance(message, str) else ""
@@ -734,6 +737,9 @@ class LighterAccountStream:
         )
         if looks_like_orders_failure and not benign:
             logging.warning('Lighter account_all_orders was rejected; continuing with trades only')
+            dispatcher_log('LighterDispatcher', 'error',
+                           '[Lighter Account] account_all_orders was rejected (auth/token problem); order updates are '
+                           'UNAVAILABLE, continuing with fills only')
             self.note_orders_unavailable()
 
     ########################################
@@ -896,6 +902,7 @@ class LighterAccountWss(LighterFramingMixin, VenueWSSBase):
             url=WS_URL,
             env_prefix='LIGHTER',
             proxy_idx='LIGHTER',
+            log_identity='LighterDispatcher',
             default_ping_interval_s=60,
         )
         self._account_index = int(account_index)
@@ -1004,9 +1011,12 @@ class LighterAccountWss(LighterFramingMixin, VenueWSSBase):
         try:
             self._ws.send(self._subscribe_orders_frame())
             logging.info('%s: refreshed the account_all_orders auth token', self._name)
+            self._elog('info', 'Refreshed the account_all_orders auth token')
         except Exception:
             refreshed = False
             logging.exception('%s: failed to refresh the account_all_orders token', self._name)
+            self._elog('error', 'Failed to refresh the account_all_orders auth token (retrying in %ss): %s',
+                       self.TOKEN_REFRESH_RETRY_S, traceback.format_exc().rstrip())
         with self._token_timer_lock:
             if generation != self._token_generation:
                 return  # superseded while we were sending; let the newer timer own the schedule

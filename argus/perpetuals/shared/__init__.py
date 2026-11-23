@@ -1,6 +1,10 @@
+import os
+import re
+import sys
 import copy
 import json
 import time
+import atexit
 import random
 import socket
 import functools
@@ -123,14 +127,44 @@ def fatal_decorator(function_name: str):
     we cannot reason about (an order that may or may not exist, leverage half-changed), which is exactly
     when the contingency has to run. The contingency itself never raises.
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(self, *args, **kwargs):
+            # Audit trail for everything that can move money or risk (reads are not audited).
+            audit = not function_name.startswith("get_")
+            logs = getattr(self, "logs", None) if audit else None
+            request = args[0] if args else None
+            corr_id = getattr(request, "correlation_id", None)
+            if logs is not None:
+                try:
+                    logs.info(f"REQUEST {function_name} corr_id={corr_id} "
+                              f"args={json.dumps(getattr(request, 'args', None), default=str)}")
+                except Exception:
+                    pass
             try:
-                return func(self, *args, **kwargs)
+                result = func(self, *args, **kwargs)
+                if logs is not None:
+                    try:
+                        logs.info(f"RESULT {function_name} corr_id={corr_id} ok "
+                                  f"{json.dumps(result, default=str)[:1500]}")
+                    except Exception:
+                        pass
+                return result
             except Exception as e:
                 expected = getattr(self, "_expected_errors", (ers.DispatcherError,))
-                if not isinstance(e, expected) or isinstance(e, ers.FatalDispatcherError):
+                is_fatal = not isinstance(e, expected) or isinstance(e, ers.FatalDispatcherError)
+                if logs is not None:
+                    try:
+                        if is_fatal:
+                            logs.critical(f"RESULT {function_name} corr_id={corr_id} UNEXPECTED {e!r}: the order/"
+                                          f"leverage state may be uncertain; reconcile with get_orders/get_positions")
+                        else:
+                            logs.warning(f"RESULT {function_name} corr_id={corr_id} rejected "
+                                         f"{type(e).__name__}: {e}")
+                    except Exception:
+                        pass
+                if is_fatal:
                     try:
                         self._on_fatal_error({
                             "function": function_name,
@@ -140,8 +174,192 @@ def fatal_decorator(function_name: str):
                     except Exception:
                         traceback.print_exc()
                 raise
+
         return wrapper
+
     return decorator
+
+
+_SECRET_NAME_RE = re.compile(r"(private|secret|token|pass|cookie|auth|signature|seed|mnemonic|api_?key|^key$|_key$)", re.I)
+
+
+def scrub(value: Any, _depth: int = 0) -> Any:
+    """
+    A copy of `value` that is safe to write to a log: any dict entry whose key looks like a credential
+    (private key, token, password, cookie, signature, ...) has its value replaced by "<redacted>", recursively.
+    Long strings are truncated, so a pasted blob cannot flood the log.
+    """
+    if _depth > 8:
+        return "<too deep>"
+    if isinstance(value, Mapping):
+        return {k: ("<redacted>" if isinstance(k, str) and _SECRET_NAME_RE.search(k) else scrub(v, _depth + 1))
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [scrub(v, _depth + 1) for v in value]
+    if isinstance(value, str) and len(value) > 300:
+        return value[:300] + f"...<{len(value) - 300} more chars>"
+    return value
+
+
+def _env_number(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return float(default)
+
+
+class DispatcherLogs:
+    """
+    Persistent on-disk log of the important errors/events that impact a dispatcher. It should not be disabled
+    even in production as it is how issues are traced after the fact: dispatchers typically run behind a
+    screen/tmux/whatever, so the printed output scrolls away. Thread-safe; usable from any thread.
+
+    Layout and rolling. Each dispatcher logs into its own folder, ``<logs_dir>/<identity>/<identity>.log``
+    (``logs_dir`` is ``ARGUS_LOGS_DIR`` or ``~/.argus/dispatcher_logs/<identity>``; see __init__). The log
+    rolls, i.e. the current file is renamed to ``<identity>.<UTC timestamp>.log`` and a fresh
+    ``<identity>.log`` is started, (1) every time the dispatcher starts (a reboot, a restart or a crash
+    recovery always begins on a new file), and (2) whenever the file reaches ``ARGUS_LOGS_MAX_MB``
+    megabytes (default 100). Old files are never deleted.
+
+    Line format: ``<UTC ISO timestamp> [LEVEL] message``. `info` / `warning` are buffered and flushed by a
+    background thread about once a second; `error` / `critical` (and `flush()`) are written synchronously so the
+    lines that matter most survive a crash that follows them.
+    """
+
+    DEFAULT_MAX_MB = 100.0
+
+    def __init__(self, identity: str):
+        self.identity = identity
+        logs_dir = os.environ.get("ARGUS_LOGS_DIR", os.path.expanduser(f"~/.argus/dispatcher_logs/{identity}"))
+        os.makedirs(logs_dir, exist_ok=True)
+        self.log_file = os.path.join(logs_dir, f"{identity}.log")
+        self.max_bytes = int(_env_number("ARGUS_LOGS_MAX_MB", self.DEFAULT_MAX_MB) * 1024 * 1024)
+        self.lock = threading.Lock()
+        self.event = threading.Event()
+        self._log_buffer = ""
+        with self.lock:
+            self._roll_locked(reason="startup")
+        self._write_on_event()
+        atexit.register(self.flush)
+
+    ########################################
+    # Rolling
+    ########################################
+    def _roll_locked(self, reason: str) -> None:
+        """Archive the current file (if it has content) and stamp a fresh one. Caller holds `self.lock`."""
+        from argus import __version__
+        try:
+            if os.path.exists(self.log_file) and os.path.getsize(self.log_file) > 0:
+                mtime = datetime.fromtimestamp(os.path.getmtime(self.log_file), UTC).strftime("%Y%m%dT%H%M%S")
+                stem = self.log_file[:-len(".log")]
+                archive, n = f"{stem}.{mtime}.log", 1
+                while os.path.exists(archive):
+                    archive, n = f"{stem}.{mtime}.{n}.log", n + 1
+                os.rename(self.log_file, archive)
+        except OSError:
+            traceback.print_exc()  # never let a rename problem take the dispatcher down; keep appending
+        with open(self.log_file, "a") as f:
+            f.write(f"Argus version: {__version__}\n")
+            f.write(f"Log started at: {datetime.now(UTC).isoformat()} ({reason}), pid={os.getpid()}\n")
+            f.write("=" * 80 + "\n")
+
+    def _write_buffer_locked(self) -> None:
+        """Write the buffer to disk and roll if the file grew past the cap. Caller holds `self.lock`."""
+        if self._log_buffer:
+            with open(self.log_file, "a") as f:
+                f.write(self._log_buffer)
+            self._log_buffer = ""
+        try:
+            if os.path.getsize(self.log_file) >= self.max_bytes:
+                self._roll_locked(reason=f"size >= {self.max_bytes / (1024 * 1024):g}MB")
+        except OSError:
+            pass
+
+    ########################################
+    # Writing
+    ########################################
+    @runAsThread
+    def _write_on_event(self):
+        """
+        This thread watches for the event to be set and writes the buffer to disk when it is set.
+        It then clears the event and waits for the next event. It forms the backbone of the async logging system.
+        """
+        while True:
+            self.event.wait()
+            try:
+                with self.lock:
+                    self._write_buffer_locked()
+                    self.event.clear()
+            except Exception:
+                traceback.print_exc()
+                time.sleep(5)
+
+            time.sleep(1)  # rational being, if there are many loggers right now
+            # let them all write to buffer cheaply then we can write it all into disk
+            # at once.
+
+    def _append(self, level: str, text: str, sync: bool) -> None:
+        line = f"{datetime.now(UTC).isoformat(timespec='milliseconds')} [{level}] {text}\n"
+        with self.lock:
+            self._log_buffer += line
+            if sync:
+                try:
+                    self._write_buffer_locked()
+                except Exception:
+                    traceback.print_exc()
+            else:
+                self.event.set()
+
+    @staticmethod
+    def _join(args) -> str:
+        return " ".join(str(arg) for arg in args)
+
+    def log(self, *args):
+        """Concatenate the args into a single INFO line (kept for callers that predate levels)."""
+        self._append("INFO", self._join(args), sync=False)
+
+    def info(self, *args):
+        self._append("INFO", self._join(args), sync=False)
+
+    def warning(self, *args):
+        self._append("WARNING", self._join(args), sync=False)
+
+    def error(self, *args):
+        """An ERROR line, written to disk before this returns."""
+        self._append("ERROR", self._join(args), sync=True)
+
+    def critical(self, *args):
+        """A CRITICAL line (money/state at risk), written to disk before this returns."""
+        self._append("CRITICAL", self._join(args), sync=True)
+
+    def exception(self, *args):
+        """An ERROR line followed by the traceback of the exception being handled, written synchronously."""
+        self._append("ERROR", self._join(args) + "\n" + traceback.format_exc().rstrip(), sync=True)
+
+    def flush(self):
+        """Write anything buffered to disk now."""
+        try:
+            with self.lock:
+                self._write_buffer_locked()
+        except Exception:
+            pass
+
+
+_LOGS_REGISTRY: dict[str, DispatcherLogs] = {}
+_LOGS_REGISTRY_LOCK = threading.Lock()
+
+
+def get_dispatcher_logs(identity: str) -> DispatcherLogs:
+    """
+    The one `DispatcherLogs` for `identity` in this process, created on first use. The dispatcher and its
+    websocket clients both call this (the latter before the dispatcher's own __init__ has finished), so they
+    share one file and one rolling policy.
+    """
+    with _LOGS_REGISTRY_LOCK:
+        logs = _LOGS_REGISTRY.get(identity)
+        if logs is None:
+            logs = _LOGS_REGISTRY[identity] = DispatcherLogs(identity)
+        return logs
 
 
 class BaseDispatcherCompatibleRest:
@@ -273,6 +491,40 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
         # client socket. Interactive-only: no wire action toggles it, so a client cannot unblock itself.
         self._block_order_execution = LockedState(bool(configurations.get("block_order_execution", False)))
 
+        self.logs = get_dispatcher_logs(self.__class__.__name__)
+        self._log_startup_snapshot(host, port, configurations)
+
+    #: Environment variables whose names start with one of these are written to the startup snapshot.
+    _SNAPSHOT_ENV_PREFIXES = ("ARGUS_", "APDB_", "WIREPROXY_", "HYPERLIQUID_", "LIGHTER_", "POLYMARKET_")
+
+    def _log_startup_snapshot(self, host: str, port: int, configurations: dict) -> None:
+        """
+        Write what this process is running with: version/python/pid, bind address, kill-switch state, retry and
+        routing settings and the relevant environment. A value is shown as "<set>" when its name looks like a
+        credential (keys, tokens, passwords...), never verbatim. Never raises.
+        """
+        try:
+            env = {}
+            for name in sorted(os.environ):
+                if name.startswith(self._SNAPSHOT_ENV_PREFIXES):
+                    env[name] = "<set>" if _SECRET_NAME_RE.search(name) else os.environ[name]
+            self.logs.info(
+                f"STARTUP dispatcher={self.__class__.__name__} host={host} port={port} pid={os.getpid()} "
+                f"python={sys.version.split()[0]} account_rest={'configured' if self.account_rest is not None else 'none'}"
+            )
+            self.logs.info(
+                f"STARTUP block_order_execution={self._block_order_execution.value} "
+                f"max_retry_range_rest={self._max_retry_range_rest} "
+                f"disable_routing_on_prep_cache_failure={self._disable_routing_on_prep_cache_failure} "
+                f"retry_backoff_base_rest={self._retry_backoff_base_rest} "
+                f"retry_backoff_max_rest={self._retry_backoff_max_rest} "
+                f"distribute_refreshed_perps={self._distribute_refreshed_perps} "
+                f"configurations={json.dumps(scrub(configurations), default=str)}"
+            )
+            self.logs.info(f"STARTUP env={json.dumps(env)}")
+        except Exception:
+            traceback.print_exc()
+
     ########################################
     # Threads and utilities
     ########################################
@@ -321,6 +573,7 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
                             # subclass that never overrode the distribute method), so retrying
                             # or disabling routing around it would only hide the real bug.
                             # Surface it loudly and let it propagate instead of swallowing it.
+                            self.logs.exception(f"Fatal dispatcher error during perpetual refresh: {e}")
                             self.pi.throw_fuss(
                                 f"Fatal dispatcher error during perpetual refresh: {e}. "
                                 f"This is a code/configuration bug, not a transient failure -- not retrying.",
@@ -341,6 +594,9 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
 
                             self.pi.throw_fuss(msg, title=title, notify=True)
                             traceback.print_exc()
+                            self.logs.exception(
+                                f"Failed to refresh perpetual list. Err={e}. Retrying ({i + 1}/{self._max_retry_range_rest})... "
+                                f"routing_enabled={bool(self._state['enable_routing'])}")
 
                             if i < self._max_retry_range_rest - 1:
                                 # Back off before retrying. Retrying instantly turns one transient
@@ -352,6 +608,8 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
 
                     if not refreshed:
                         self._state["enable_routing"].value = False
+                        self.logs.critical(
+                            f"Perpetual list refresh failed after {self._max_retry_range_rest} retries. Routing disabled.")
                         raise RuntimeError(
                             "Failed to refresh perpetual list after {} retries. Disabling routing.".format(
                                 self._max_retry_range_rest))
@@ -393,8 +651,6 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
         :param data: The data received from the client
         :return:
         """
-        _ = address  # this will be used later for logging. However, for now the logging functionality
-        # is not implemented.
 
         # Any client that talks to us receives unsolicited account_update pushes. This is done here rather
         # than via Server(on_connect=...) because utils3's Server treats on_connect as a *replacement* for
@@ -411,6 +667,7 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
                 error="Unable to decode message. Ensure payload was encoded with Protocol 1"
             ).convert_to_protocol_1())
             traceback.print_exc()
+            self.logs.warning(f"P1 DECODE FAILURE from {address}: {len(data)} bytes, starts with {data[:80]!r}")
             return
 
         # Each packet gets its own try/except so that (a) one bad/erroring packet in a batch doesn't
@@ -420,6 +677,7 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
         # its socket read times out.
         for packet in packets:
             corr_id = None
+            function_name = None
             try:
                 js_load = json.loads(packet)
                 function_name = js_load.get("action")
@@ -428,6 +686,7 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
                     args=js_load.get("data"),
                 )
                 corr_id = js_load.get("correlation_id", None)
+                args.correlation_id = corr_id  # for the audit trail (fatal_decorator)
                 if corr_id is None:
                     raise ers.CorrelationIDError("Correlation ID is required for all requests")
 
@@ -440,6 +699,12 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
                 ).convert_to_protocol_1())
             except Exception as e:
                 traceback.print_exc()
+                if isinstance(e, self._expected_errors):
+                    self.logs.warning(f"P1 request failed from {address} action={function_name} "
+                                      f"corr_id={corr_id} {type(e).__name__}: {e}")
+                else:
+                    self.logs.exception(f"P1 request raised an unexpected error from {address} "
+                                        f"action={function_name} corr_id={corr_id}: {e!r}")
                 client.sendall(cls.OutboundMessage(
                     action="error",
                     data=None,
@@ -546,6 +811,9 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
         """
         try:
             function, exception, tb = info.get("function"), info.get("exception"), info.get("traceback", "")
+            self.logs.critical(
+                f"FATAL ERROR in '{function}': {exception!r} order_execution_blocked={self.order_execution_blocked} "
+                f"clients_notified={len(self.sockets)}\n{tb}")
             self.pi.throw_fuss(
                 f"UNEXPECTED ERROR in '{function}': {exception!r}\n{tb}\n"
                 f"Reconcile with get_orders / get_positions.",
@@ -582,7 +850,12 @@ class BaseDispatcher(AccountHandlersMixin, Introspective, RoutingHelper):
         with self._block_order_execution.lock:
             self._block_order_execution._value = not self._block_order_execution._value
             blocked = self._block_order_execution._value
-        print(f"[CONFIG] Block Order Execution: {'ENABLED (orders refused)' if blocked else 'DISABLED (orders allowed)'}")
+        logs = getattr(self, "logs", None)
+        if logs is not None:
+            logs.warning(f"KILL SWITCH toggled by operator: block_order_execution={blocked}")
+            logs.flush()
+        print(
+            f"[CONFIG] Block Order Execution: {'ENABLED (orders refused)' if blocked else 'DISABLED (orders allowed)'}")
         return blocked
 
     ########################################

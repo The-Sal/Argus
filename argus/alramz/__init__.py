@@ -19,8 +19,8 @@ from argus.alramz._classes import (
     parse_group,
     parse_groups,
 )
-from argus.alramz._signalr import AlRamzSignalR, AlRamzAuthError
 from argus.alramz.dispatcher import AlRamzDispatcher
+from argus.alramz._signalr import AlRamzSignalR, AlRamzAuthError
 
 __all__ = [
     "AlRamzDispatcher",

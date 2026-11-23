@@ -185,6 +185,7 @@ class HyperLiquidDispatcher(TradingHandlersMixin, BaseDispatcher):
             )
             self.account_updates.run(main_thread=False)
         except Exception as e:
+            self.logs.exception(f"Failed to start the Hyperliquid account update stream: {e!r}")
             pi.throw_fuss(
                 f"Failed to start the Hyperliquid account update stream: {e}. "
                 f"account_update pushes are unavailable; everything else keeps running.",

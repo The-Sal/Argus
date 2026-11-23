@@ -41,6 +41,21 @@ from argus._argus_utils import macos_notification_with_custom_sound, throw_fuss
 
 
 
+def dispatcher_log(identity: str | None, level: str, message: str) -> None:
+    """
+    Write `message` to the on-disk `DispatcherLogs` of the dispatcher called `identity` at `level`
+    (info/warning/error/critical). For code that has no reference to the dispatcher (websocket clients, stream
+    parsers). No-op for `identity=None`; never raises.
+    """
+    if identity is None:
+        return
+    try:
+        from argus.perpetuals.shared import get_dispatcher_logs
+        getattr(get_dispatcher_logs(identity), level)(message)
+    except Exception:
+        pass
+
+
 class VenueWSSBase:
     """
     Base class for a venue WebSocket connection. Handles common boilerplate:
@@ -52,8 +67,11 @@ class VenueWSSBase:
     def __init__(self, name: str, url: str, *,
                  env_prefix: str,
                  proxy_idx: str,
-                 default_ping_interval_s: float):
+                 default_ping_interval_s: float,
+                 log_identity: str | None = None):
         self._name = name
+        # Identity of the dispatcher whose DispatcherLogs this socket's lifecycle events go to (see `_elog`).
+        self._log_identity = log_identity
         self._url = url
         self._env_prefix = env_prefix
         self._proxy_idx = proxy_idx
@@ -79,6 +97,18 @@ class VenueWSSBase:
     ########################################
     # Framing hooks (venue-specific)
     ########################################
+
+    def _elog(self, level: str, message: str, *fmt) -> None:
+        """
+        Mirror a lifecycle event into the owning dispatcher's on-disk log (`DispatcherLogs`), prefixed with this
+        socket's name. `level` is one of info/warning/error/critical. No-op when no `log_identity` was given, and
+        never raises: logging must not be able to break a reconnect.
+        """
+        try:
+            text = message % fmt if fmt else message
+        except (TypeError, ValueError):
+            text = f"{message} {fmt!r}"
+        dispatcher_log(self._log_identity, level, f"[{self._name}] {text}")
 
     def _ping_frame(self) -> str:
         """The exact outbound keepalive frame for this venue."""
@@ -122,6 +152,7 @@ class VenueWSSBase:
         _ = ws
         self._reconnect_attempts = 0
         logging.info('%s WebSocket opened.', self._name)
+        self._elog('info', 'WebSocket opened')
         self._on_open_impl()
         self.ping()
         self.wait_till_socket_open.set()
@@ -159,6 +190,9 @@ class VenueWSSBase:
         self._allow_ping = False
         _ = ws
         logging.warning('%s WebSocket closed. Code: %s, Message: %s', self._name, close_status_code, close_msg)
+        self._elog('warning', 'WebSocket closed code=%s message=%s internally_closed=%s reconnect_attempt=%s/%s',
+                   close_status_code, close_msg, self._internally_closed, self._reconnect_attempts + 1,
+                   self._max_reconnect_attempts)
         print(
             f"Attempting to reconnect {self._name} WebSocket... {self._reconnect_attempts + 1}/{self._max_reconnect_attempts}")
 
@@ -167,6 +201,8 @@ class VenueWSSBase:
             self._reconnect_attempts += 1
             if self._reconnect_attempts > self._max_reconnect_attempts:
                 logging.error('Maximum reconnect attempts reached for %s WebSocket. Giving up.', self._name)
+                self._elog('critical', 'Maximum reconnect attempts reached (%s). Giving up: this stream is DOWN until '
+                                       'the dispatcher is restarted', self._max_reconnect_attempts)
                 throw_fuss(
                     msg=f"{self._name.upper()} WEBSOCKET RECONNECTION FAILURE: Maximum reconnect attempts reached.",
                     notify=True
@@ -181,6 +217,7 @@ class VenueWSSBase:
 
     def _on_error_base(self, ws, error):
         _ = ws
+        self._elog('error', 'WebSocket error: %r', error)
         throw_fuss(
             msg=f"{self._name.upper()} WEBSOCKET ERROR:\n{traceback.format_exc()}",
             notify=False
@@ -222,6 +259,8 @@ class VenueWSSBase:
                                 logging.error(
                                     'Maximum ping-pong failures reached. Reconnecting %s WebSocket...', self._name
                                 )
+                                self._elog('error', 'Ping-pong failure: %s pings without a pong (pings=%s pongs=%s). '
+                                                    'Forcing a reconnect', ping_delta, pings, pongs)
                                 throw_fuss(
                                     msg=f"{self._name.upper()} WEBSOCKET PING-PONG FAILURE: No pong received for {ping_delta} pings.",
                                     notify=True
@@ -231,6 +270,7 @@ class VenueWSSBase:
                         logging.info('Ping to %s WebSocket is currently disabled.', self._name)
                 except Exception as e:
                     logging.error("%s WebSocket ping failed: %s", self._name, e)
+                    self._elog('warning', 'Ping send failed: %r', e)
                     with self._ping_pong_lock:
                         self._ping_pongs = (self._ping_pongs[0] + 1, self._ping_pongs[1])
                 time.sleep(self._ping_interval_s)
@@ -274,13 +314,15 @@ class MarketDataWssBase(VenueWSSBase):
     def __init__(self, name: str, url: str, *,
                  env_prefix: str,
                  proxy_idx: str,
-                 default_ping_interval_s: float):
+                 default_ping_interval_s: float,
+                 log_identity: str | None = None):
         super().__init__(
             name=name,
             url=url,
             env_prefix=env_prefix,
             proxy_idx=proxy_idx,
             default_ping_interval_s=default_ping_interval_s,
+            log_identity=log_identity,
         )
         self._restore_state_timeout = float(
             os.environ.get(f'{env_prefix}_WS_RESTORE_TIMEOUT', '120')
@@ -323,6 +365,8 @@ class MarketDataWssBase(VenueWSSBase):
                 '(a later reconnect will retry).',
                 self._name, self._restore_state_timeout,
             )
+            self._elog('warning', 'No pong within %.0fs of reconnect; abandoned subscription restore '
+                                  '(market data may be missing until a later reconnect)', self._restore_state_timeout)
             return
 
         if self._internally_closed:
@@ -337,6 +381,7 @@ class MarketDataWssBase(VenueWSSBase):
             keys = list(self._roster)
         if keys:
             logging.info('Restoring %s subscriptions: %s', self._name, keys)
+            self._elog('info', 'Restoring %s subscription(s) after reconnect: %s', len(keys), keys)
             for key in keys:
                 self._send_subscribe_op(key)
         else:

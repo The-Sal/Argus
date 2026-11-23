@@ -7,13 +7,14 @@ This document lists all environment variables used throughout the Argus project 
 ### `POLYMARKET_PRIVATE_KEY`
 - **Purpose**: Private key for Polymarket authentication
 - **Required**: Yes (for trading/order placement)
-- **Used in**: `polymarket_direct/_example.py`, `polymarket_direct/_examples/unsub_test.py`
-- **Example**: Export your private key for Polymarket API access
+- **Used in**: `polymarket/__init__.py`, `polymarket_direct/_example.py`, `polymarket_direct/_examples/send_order_cancel_order_with_wss.py`, `polymarket_direct/_examples/unsub_test.py`
+- **Behavior**: Read at startup when no `private_key` is passed to `PolymarketDispatcher`
 
 ### `POLYMARKET_PROXY_FUNDER`
 - **Purpose**: Proxy funder address for Polymarket
 - **Required**: Yes (for trading/order placement)
-- **Used in**: `polymarket_direct/_example.py`, `polymarket_direct/_examples/unsub_test.py`
+- **Used in**: `polymarket/__init__.py`, `polymarket_direct/_example.py`, `polymarket_direct/_examples/send_order_cancel_order_with_wss.py`, `polymarket_direct/_examples/unsub_test.py`
+- **Behavior**: Read at startup when no `proxy_funder` is passed to `PolymarketDispatcher`
 
 ### `POLYMARKET_MAX_SOCKET_RETRIES`
 - **Purpose**: Maximum number of socket connection retries
@@ -26,7 +27,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: Controls the depth of orderbook data (number of bid/ask levels to fetch)
 - **Default**: `10`
 - **Required**: No
-- **Used in**: `polymarket/__init__.py`, `tests/test_poly_dispatcher.py`
+- **Used in**: `polymarket/__init__.py`, `tests/poly_cli.py`, `tests/test_poly_dispatcher.py`, `tests/benchmark_p2_encoding.py`
 - **Example**: Set to `20` for deeper orderbook data, `5` for shallower data
 
 
@@ -34,7 +35,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: Disable **Stage 1** pre-connection IP safety check (ipinfo.io)
 - **Default**: `false`
 - **Required**: No
-- **Used in**: `polymarket_direct/rest.py`, `polymarket_direct/_examples/send_order_cancel_order_with_wss.py`
+- **Used in**: `polymarket_direct/rest.py`, `polymarket_direct/_examples/send_order_cancel_order_with_wss.py`, `tests/test_polymarket_cache.py`
 - **Behavior**: When `true`, skips early warning IP check against hardcoded geo-blocked region list
 - **IP Exposure**: Only exposes IP to ipinfo.io service (not to Polymarket)
 - **Distinction**: This is the **early warning system**. Disabling it removes a preliminary check but does NOT skip the actual Polymarket geo-block verification (see `POLYMARKET_PROTECTION` for that)
@@ -137,7 +138,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Default**: `3`
 - **Required**: No
 - **Used in**: `polymarket_direct/rest.py`
-- **Behavior**: Sets the signature type when creating the CLOB client. Must be `1` or `3`. Value `3` is the newer signature format.
+- **Behavior**: Sets the signature type when creating the CLOB client. Must be `1`, `2` or `3`. Value `3` is the newer signature format.
 - **Note**: If an invalid value is provided, the application will raise a `ValueError` at startup
 
 ### WebSocket Sharding Configuration
@@ -188,14 +189,14 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: Maximum number of seen correlation IDs to track for duplicate detection
 - **Default**: `100000`
 - **Required**: No
-- **Used in**: `polymarket/_classes.py`
+- **Used in**: `_argus_utils.py` (`CorrelationIDChecker`)
 - **Behavior**: Limits the size of the correlation ID tracking set to prevent memory growth
 
 ### `MAX_CORRELATION_ID_LENGTH`
 - **Purpose**: Maximum length of correlation IDs to store
 - **Default**: `40`
 - **Required**: No
-- **Used in**: `polymarket/_classes.py`
+- **Used in**: `_argus_utils.py` (`CorrelationIDChecker`)
 - **Behavior**: Truncates correlation IDs to this length before storage
 
 ### `POLYMARKET_DISPATCHER_LOG_FILE`
@@ -212,6 +213,26 @@ This document lists all environment variables used throughout the Argus project 
 - **Used in**: `polymarket/__init__.py`
 - **Behavior**: On startup, if the file exists and is newer than `POLYMARKET_FULL_MARKET_CACHE_REFRESH_INTERVAL`, the dispatcher loads its routing state from it instead of rebuilding the mapping from APDB
 
+### `POLYMARKET_RTDS_LEGACY`
+- **Purpose**: Run the legacy RTDS client behind `rtds_subscribe`
+- **Default**: `on`
+- **Required**: No
+- **Used in**: `polymarket/__init__.py`
+- **Behavior**: `0`/`false`/`off`/`no` (any case) disables it: the legacy client is never constructed or started and `rtds_*` actions return a "legacy RTDS stream disabled" error. `1`/`true`/`on`/`yes` (or unset/unrecognised) keep it on. Independent of the PolyBolt TWAP stream. See `docs/POLYMARKET.md`
+
+### `POLYMARKET_TWAP_SYMBOLS`
+- **Purpose**: Symbols subscribed on the PolyBolt TWAP stream (`twap_subscribe`)
+- **Default**: `btcusd,ethusd,solusd,xrpusd,dogeusd`
+- **Required**: No
+- **Used in**: `polymarket_direct/wss.py`
+- **Behavior**: Comma-separated, lowercase `...usd` pairs; duplicates dropped; at most 64 per connection (extras are truncated with a warning). Fixed per process
+
+### `POLYMARKET_POLYBOLT_URL`
+- **Purpose**: PolyBolt live-data WebSocket endpoint
+- **Default**: `wss://ws-live-v2.polymarket.com/ws`
+- **Required**: No
+- **Used in**: `polymarket_direct/wss.py`
+
 ## Argus Polymarket Database (APDB)
 
 ### `APDB_BIND_ADDRESS`
@@ -227,20 +248,20 @@ This document lists all environment variables used throughout the Argus project 
 ### `HYPERLIQUID_WALLET_ADDRESS`
 - **Purpose**: Wallet address for Hyperliquid authentication and account data
 - **Required**: Yes (for the Hyperliquid dispatcher)
-- **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/hyper/rest.py`
+- **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/hyper/rest.py`, `perpetuals/hyper/exchange.py`
 - **Behavior**: Read at startup when no `wallet_address` is passed to `HyperLiquidDispatcher`; used to construct `HyperLiquidRest`. It is the `user` on every account read (`get_balance`, `get_positions`, `get_orders`, `get_order_status`, `get_trades`, `get_funding_payments`, `get_account_fees`, `get_rate_limit_usage`), which are unsigned `info` requests. **It must be the master account address**: querying with an API/agent wallet address returns an empty account. See `docs/perpetuals/shared/ACCOUNT.md`.
 
 ### `HYPERLIQUID_PRIVATE_KEY`
 - **Purpose**: Private key for Hyperliquid authentication
 - **Required**: Yes (for the Hyperliquid dispatcher)
-- **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/hyper/rest.py`
+- **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/hyper/rest.py`, `perpetuals/hyper/exchange.py`
 - **Behavior**: Read at startup when no `private_key` is passed to `HyperLiquidDispatcher`; used to construct `HyperLiquidRest`
 
 ### `HYPERLIQUID_BLOCK_ORDER_EXECUTION`
 - **Purpose**: Starts the Hyperliquid dispatcher with the "Block Order Execution" kill switch on: `place_order`, `place_multiple_orders` and `set_leverage` are refused with `OrderExecutionDisabledError`. Cancels and reads are never blocked. Can also be toggled from the dispatcher's interactive menu; no client action changes it
 - **Default**: off (`1`, `true` or `yes` turn it on)
 - **Required**: No
-- **Used in**: `perpetuals/hyper/__init__.py`, `perpetuals/shared/__init__.py`
+- **Used in**: `perpetuals/hyper/__init__.py` (enforced in `perpetuals/shared/__init__.py`)
 
 ### `HYPERLIQUID_ORDERBOOK_DEPTH`
 - **Purpose**: Controls the depth of orderbook data (number of bid/ask levels streamed in P2 packets)
@@ -252,57 +273,52 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: Maximum number of socket connection retries (applies to both the order-book and the account-update websocket)
 - **Default**: `50`
 - **Required**: No
-- **Used in**: `perpetuals/hyper/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/hyper/wss.py`, which supplies the `HYPERLIQUID` prefix)
 
 ### `HYPERLIQUID_MAX_PING_PONG_FAILURES`
 - **Purpose**: Maximum number of ping-pong failures before reconnect
 - **Default**: `3`
 - **Required**: No
-- **Used in**: `perpetuals/hyper/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/hyper/wss.py`, which supplies the `HYPERLIQUID` prefix)
 
 ### `HYPERLIQUID_PING_INTERVAL_S`
 - **Purpose**: Interval in seconds between WebSocket pings
 - **Default**: `20`
 - **Required**: No
-- **Used in**: `perpetuals/hyper/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/hyper/wss.py`, which supplies the `HYPERLIQUID` prefix)
 - **Behavior**: Hyperliquid closes connections silent for 60s; the default pings comfortably under that (also used by the account-update websocket)
 
 ### `HYPERLIQUID_DISABLE_PING_PONG_LOGS`
 - **Purpose**: Disable ping-pong logging to reduce noise
 - **Default**: `false`
 - **Required**: No
-- **Used in**: `perpetuals/hyper/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/hyper/wss.py`, which supplies the `HYPERLIQUID` prefix)
 
 ### `HYPERLIQUID_WS_RESTORE_TIMEOUT`
 - **Purpose**: Upper bound in seconds a restore thread waits for the first PONG after a reconnect
 - **Default**: `120`
 - **Required**: No
-- **Used in**: `perpetuals/hyper/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/hyper/wss.py`, which supplies the `HYPERLIQUID` prefix)
 
 ## Lighter Perpetuals
 
 ### `LIGHTER_ACC_INDEX`
 - **Purpose**: The integer Lighter account (master or sub-account) the account actions and trading report on
 - **Required**: No (without it, and without `LIGHTER_AUTH_TOKEN`, the account actions answer with `AccountNotConfiguredError`; market data is unaffected)
-- **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/rest.py`
+- **Used in**: `perpetuals/lighter/__init__.py`, `tests/lighter_token_refresh_probe.py`
 - **Behavior**: `get_balance` / `get_positions` are public reads keyed by this index alone (`GET /api/v1/account`). Find the index for an L1 address with `LighterRest.get_accounts_by_l1_address(...)` or in the Lighter web UI. If omitted but `LIGHTER_AUTH_TOKEN` is set, the index embedded in the token is used. `LIGHTER_ACCOUNT_INDEX` is accepted as a legacy fallback name.
 
 ### `LIGHTER_API_INDEX`
 - **Purpose**: The API-key slot bound to `LIGHTER_PRIVATE_KEY` (leverage and orders are signed with it)
 - **Required**: No (trading actions answer with `AccountNotConfiguredError` without it; everything else works)
-- **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/exchange.py`
+- **Used in**: `perpetuals/lighter/__init__.py`, `tests/lighter_token_refresh_probe.py`
 - **Behavior**: Passed to the native signer's `CreateClient` alongside the account index. Lighter signs leverage updates and orders with the same API key and nonce stream (no L1 wallet key is needed for the exposed surface).
 
 ### `LIGHTER_PRIVATE_KEY`
 - **Purpose**: The API key private key used to sign leverage updates, orders and cancels
 - **Required**: No (trading actions answer with `AccountNotConfiguredError` without it; everything else works)
-- **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/exchange.py`, `perpetuals/lighter/_signer.py`
+- **Used in**: `perpetuals/lighter/__init__.py`, `tests/lighter_token_refresh_probe.py`
 - **Behavior**: Handed to the vendored native signer via `ctypes` (`CreateClient`); signing is entirely local. This is not the L1 wallet key. A `0x` prefix is accepted and stripped. Never logged.
-
-### `LIGHTER_PUBLIC_KEY`
-- **Purpose**: The public half of the API key pair (informational; the signer derives it internally)
-- **Required**: No
-- **Used in**: not read by the dispatcher
 
 ### `LIGHTER_BLOCK_ORDER_EXECUTION`
 - **Purpose**: Kill switch: refuse order placement and leverage changes
@@ -321,45 +337,45 @@ This document lists all environment variables used throughout the Argus project 
 ### `LIGHTER_AUTH_TOKEN`
 - **Purpose**: A Lighter **read-only API token** (`ro:<account_index>:<single|all>:<expiry_unix>:<hex>`) for the auth-gated account reads
 - **Required**: No (when *unset*, `get_orders` / `get_order_status` / `get_trades` / `get_funding_payments` answer with `AccountNotConfiguredError`; `get_balance` / `get_positions` still work). When *set* it must be valid: see the startup failure below
-- **Used in**: `perpetuals/lighter/__init__.py`, `perpetuals/lighter/rest.py`
+- **Used in**: `perpetuals/lighter/__init__.py`
 - **Behavior**: Sent verbatim in the `authorization` header of auth-gated requests. Mint one in the Lighter web UI (API keys page) or via `POST /api/v1/tokens_create`; read-only tokens live between 1 day and 10 years, so no signing library or API-key private key is needed for reads. **Startup failure:** the Lighter dispatcher refuses to start (`ValueError` from `LighterRest.__init__`, market data included) with a token that is malformed, expired, or scoped (`single`) to a different account than `LIGHTER_ACCOUNT_INDEX`. An unset token is fine; a set-but-bad one is fatal by design, so an expired credential cannot masquerade as "not configured". This is **not** the short-lived signed token the native signer mints (that one is created from `LIGHTER_PRIVATE_KEY` on demand). When this variable is unset but the trading credentials are present, the dispatcher mints a native signed token instead (refreshed on demand; Lighter rejects a REST token whose deadline is more than ~6h), so the auth-gated reads keep working from the API key alone.
 
 ### `LIGHTER_ORDERBOOK_DEPTH`
 - **Purpose**: Controls the depth of orderbook data (number of bid/ask levels streamed in P2 packets)
 - **Default**: `10`
 - **Required**: No
-- **Used in**: `perpetuals/lighter/__init__.py`, `tests/lighter_cli.py`
+- **Used in**: `perpetuals/lighter/__init__.py`, `tests/lighter_cli.py`, `tests/lighter_token_refresh_probe.py`
 
 ### `LIGHTER_MAX_SOCKET_RETRIES`
 - **Purpose**: Maximum number of socket connection retries
 - **Default**: `50`
 - **Required**: No
-- **Used in**: `perpetuals/lighter/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/lighter/wss.py`, which supplies the `LIGHTER` prefix)
 
 ### `LIGHTER_MAX_PING_PONG_FAILURES`
 - **Purpose**: Maximum number of ping-pong failures before reconnect
 - **Default**: `3`
 - **Required**: No
-- **Used in**: `perpetuals/lighter/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/lighter/wss.py`, which supplies the `LIGHTER` prefix)
 
 ### `LIGHTER_PING_INTERVAL_S`
 - **Purpose**: Interval in seconds between WebSocket pings
 - **Default**: `60`
 - **Required**: No
-- **Used in**: `perpetuals/lighter/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/lighter/wss.py`, which supplies the `LIGHTER` prefix)
 - **Behavior**: Lighter requires a client frame at least every 2 minutes; the default pings comfortably under that (wider margin than Hyperliquid's 20s since Lighter's idle-close window is double)
 
 ### `LIGHTER_DISABLE_PING_PONG_LOGS`
 - **Purpose**: Disable ping-pong logging to reduce noise
 - **Default**: `false`
 - **Required**: No
-- **Used in**: `perpetuals/lighter/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/lighter/wss.py`, which supplies the `LIGHTER` prefix)
 
 ### `LIGHTER_WS_RESTORE_TIMEOUT`
 - **Purpose**: Upper bound in seconds a restore thread waits for the first PONG after a reconnect
 - **Default**: `120`
 - **Required**: No
-- **Used in**: `perpetuals/lighter/wss.py`
+- **Used in**: `perpetuals/shared/wss.py` (shared by `perpetuals/lighter/wss.py`, which supplies the `LIGHTER` prefix)
 
 > **Account stream:** `LighterDispatcher` opens a second Lighter websocket for `account_update` pushes
 > (`LighterAccountWss`). It is keyed by `LIGHTER_ACC_INDEX`, and with `LIGHTER_API_INDEX` + `LIGHTER_PRIVATE_KEY`
@@ -381,12 +397,12 @@ This document lists all environment variables used throughout the Argus project 
 ### `USERNAME`
 - **Purpose**: IBKR username for authentication
 - **Required**: Yes (for IB authentication)
-- **Used in**: `ib/set_auth.py`
+- **Used in**: `ib/set_auth.py`, `alramz/set_auth.py` (fallback alias)
 
 ### `PASSWORD`
 - **Purpose**: IBKR password for authentication
 - **Required**: Yes (for IB authentication)
-- **Used in**: `ib/set_auth.py`
+- **Used in**: `ib/set_auth.py`, `alramz/set_auth.py` (fallback alias)
 
 ### `PAPER_ACCOUNT`
 - **Purpose**: Flag to use paper trading account (1) vs live account (0)
@@ -420,15 +436,16 @@ This document lists all environment variables used throughout the Argus project 
 
 ### `TOKEN`
 - **Purpose**: Authentication token for TradingView
-- **Required**: Yes (for TV integration)
-- **Used in**: `tv/__init__.py`
+- **Required**: No (only when the TV server requires auth)
+- **Used in**: `tv/__init__.py`, `tv/dispatcher.py`
+- **Behavior**: When set, the TV dispatcher authenticates automatically (`send_auth` defaults to `bool(TOKEN)`); when unset it does not authenticate
 
 ## Al Ramz Integration
 
 ### `ALRAMZ_SOCKET_SESSION`
 - **Purpose**: The opaque credential for `feed.alramz.ae`. Minted by `python3 -m argus.alramz.set_auth` (IB-style Chromium login); required for market data. The dispatcher can start without it (P1 answers with `authenticated: false`) but pushes nothing until it is set.
 - **Required**: Yes (for Al Ramz market data)
-- **Used in**: `alramz/_signalr.py`, `alramz/dispatcher.py`, `alramz/set_auth.py`
+- **Used in**: `alramz/dispatcher.py`, `alramz/set_auth.py` (named in `alramz/_signalr.py` error messages)
 
 ### `ALRAMZ_ORDERBOOK_DEPTH`
 - **Purpose**: Protocol-2 levels per side for Al Ramz. The venue/instrument supports up to 20.
@@ -489,7 +506,7 @@ This document lists all environment variables used throughout the Argus project 
 - **Purpose**: Disable **ALL** caching mechanisms globally across all modules
 - **Default**: Not set (caching **enabled**)
 - **Required**: No
-- **Used in**: `cache_utils/__init__.py`, `capital/_caches.py`, `ib/__init__.py`, `polymarket/__init__.py`
+- **Used in**: `cache_sys/__init__.py`, `cache_utils/__init__.py`, `run_tests.py`
 - **Values**: `1`, `true`, `True`, `TRUE` to disable
 
 #### What Gets Cached (Impact When Disabled)
@@ -561,6 +578,28 @@ resolve_symbol("BTCUSD")  # <1ms cached
 - **Used in**: `cache_sys/__init__.py`
 - **Behavior**: When set to `true`, suppresses automatic disabling of cache when warnings are triggered. This is intended for production deployments where cache should remain enabled despite warnings.
 
+### `ARGUS_LOGS_DIR`
+- **Purpose**: Directory where perpetuals dispatchers write their persistent event/error logs (`DispatcherLogs`)
+- **Default**: `~/.argus/dispatcher_logs/<DispatcherClassName>/` (one folder per dispatcher, so each can roll independently)
+- **Required**: No
+- **Used in**: `perpetuals/shared/__init__.py`
+- **Behavior**: Created on demand. When set, it is used as the folder as-is (not suffixed with the dispatcher name); files are still named per dispatcher (`<DispatcherClassName>.log`), so dispatchers may share it. Lines look like `<UTC timestamp> [LEVEL] message`. `info`/`warning` lines are buffered and flushed about once a second; `error`/`critical` lines are written to disk immediately. The log rolls at every dispatcher start and at `ARGUS_LOGS_MAX_MB`: the current file is renamed to `<DispatcherClassName>.<UTC timestamp>.log` and a new `<DispatcherClassName>.log` begins. Old files are never deleted.
+- **What is logged**: startup snapshot (version, pid, bind address, kill-switch state, retry settings, and the non-secret `ARGUS_*`/`APDB_*`/`WIREPROXY_*`/`HYPERLIQUID_*`/`LIGHTER_*`/`POLYMARKET_*` environment, with credential-looking names shown as `<set>`); every trading request and its result (credentials in arguments redacted); fatal/unexpected handler errors; kill-switch toggles; P1 decode failures and failing requests; perpetual-list refresh failures; websocket open/close/reconnect/ping-pong/restore events; and auth/token events (Lighter native token mint and refresh, Lighter and Hyperliquid account-stream error frames)
+
+### `ARGUS_LOGS_MAX_MB`
+- **Purpose**: Size at which a dispatcher log file rolls
+- **Default**: `100`
+- **Required**: No
+- **Used in**: `perpetuals/shared/__init__.py`
+- **Behavior**: Megabytes (fractions allowed). When the active `<DispatcherClassName>.log` reaches this size it is renamed to `<DispatcherClassName>.<UTC timestamp>.log` and a new file begins. Checked after each flush, so a file can exceed the cap by one flush. An unparsable value falls back to `100`
+
+### `PYTHON_GIL`
+- **Purpose**: Standard CPython switch for the GIL on free-threaded builds
+- **Default**: Unset; `runtime.py` re-executes the process with `PYTHON_GIL=0` (after a 3s countdown) on free-threading-capable interpreters
+- **Required**: No
+- **Used in**: `runtime.py`
+- **Behavior**: The code is tested with the GIL disabled; the C extension `ckzg` would otherwise re-enable it on import. Set it explicitly (`0`/`1`) to skip the re-exec
+
 ## Testing
 
 ### `BENCHMARK_ITERATIONS`
@@ -593,4 +632,3 @@ Argus supports **just-in-time encrypted environment loading** through [SDist](ht
 - Decryption requires **macOS with a Secure Enclave** (Darwin). On other platforms, or if `sdist` is not installed, the loader prints a warning and falls back to loading a plaintext `.env` (which must be present in that case)
 - Encrypt an existing `.env` with `sdist -c -p n -f encrypt-se -a .env .env.enc.se ?`, then delete the plaintext. The `.run/Encrypt Env.run.xml` and `.run/Decrypt Env.run.xml` IDE run configurations wrap these commands
 - `ib/set_auth.py` refuses to run while the loader is active (`UnavailableInSecurityContext`) because it would persist the IBKR cookie into a plaintext `.env`. In contrast, `alramz/set_auth.py` supports the loader: it reads `ALRAMZ_USERNAME`/`ALRAMZ_PASSWORD` from it and writes the minted `ALRAMZ_SOCKET_SESSION` back into `.env.enc.se` (never leaving a plaintext `.env` behind)
-- `.env.enc.se` is ignored by `.gitignore` (`*.enc.se`): the encryption protects credentials at rest on disk, it does **not** make committing them acceptable — never commit either file
