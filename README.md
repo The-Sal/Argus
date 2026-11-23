@@ -6,7 +6,7 @@
 
 ## Overview
 
-Argus connects to major financial data providers (Interactive Brokers, Capital.com, Binance, TradingView, NASDAQ, Polymarket) and provides a unified interface for consuming real-time and historical market data.
+Argus connects to major financial data providers (Interactive Brokers, Capital.com, Binance, TradingView, NASDAQ, Polymarket, Hyperliquid, Lighter) and provides a unified interface for consuming real-time and historical market data.
 
 ### Core Design Principles
 
@@ -14,7 +14,7 @@ Argus connects to major financial data providers (Interactive Brokers, Capital.c
 2. **Dispatcher Paradigm** – Most modules follow a unified dispatcher pattern for consistency
 3. **Protocol 2 Normalization** – Standardized binary protocol across all dispatcher-based modules
 4. **Multi-Client Support** – Single data stream multiplexed to multiple consuming processes
-5. **Language Agnostic** – Clients can be written in any language with socket support
+5. **Language Agnostic** – A minimal client can be implemented in any language with socket support
 
 ## Architecture
 
@@ -37,11 +37,6 @@ s.connect(('localhost', 9972))
 s.sendall(b'add=AAPL')  # Subscribe to AAPL
 ```
 
-**Benefits:**
-- **Multi-client support** - Multiple processes consume the same data stream
-- **Language agnostic** - Clients can be any language with socket support
-- **Resource efficiency** - Single WebSocket connection shared across clients
-- **Fault isolation** - Client crashes don't affect dispatcher or other clients
 
 ### Alternative: python3 Module Import
 
@@ -49,24 +44,21 @@ While Argus **can** be imported like any other python3 module, this is **not the
 
 ```python
 # Supported but not recommended for production
-from argus.ib import MKTDispatcher
+from argus.ib import MKTDispatcher, IBWss
 from argus.ib.forecast import FXCDispatcher
-wss = IBWss(token="...")
-wss.subscribe_to_contracts([...])
+wss = IBWss(cookie="...")  # defaults to $IB_COOKIE
+wss.stream_market_data(contract_id, callback)
 ```
 
-The server-client architecture is preferred because:
-- Better separation of concerns
-- Enables polyglot systems (python3 server, C++ trading engine)
-- Simplifies deployment and monitoring
-- Reduces memory overhead (shared data streams)
+The server-client architecture is preferred because the internal APIs of each module is not stable. That said
+importing modules is useful for testing, debugging, and development. e.g., dataclasses, utility functions, and protocol parsers.
 
 ## The Dispatcher Paradigm
 
-**Most modules in Argus follow the dispatcher paradigm** (exceptions: TradingView and NASDAQ modules use different architectures).
-- **TradingView** - Direct callback-based client library
+**Most modules in Argus follow the dispatcher paradigm** (exception: NASDAQ).
 - **NASDAQ** - Historical data scraper (not real-time)
-- **Polymarket** - Has both dispatcher (`polymarket`) and direct client (`polymarket_direct`) modes
+- **Polymarket** - Dispatcher (`polymarket`) built on top of the `polymarket_direct` client library (REST + WebSocket primitives)
+- **TradingView** - Has both dispatcher (`tradingview`) and direct callback-based client sessions (`QuoteSession`, `ChartSession`)
 
 ### What is a Dispatcher?
 
@@ -78,6 +70,7 @@ A **Dispatcher** is a server that:
 4. **Converts** incoming data to Protocol 2 format
 5. **Multiplexes** data to all subscribed clients
 6. **Manages** subscription lifecycle (auto-unsubscribe when no clients remain)
+7. **Order Execution** Full Order lifecycle management (if supported by the data source, e.g., Perpetuals)
 
 ### Available Dispatchers
 
@@ -88,6 +81,12 @@ A **Dispatcher** is a server that:
 | `capital.com` | Capital.com | Unix Socket | `/tmp/argus_capital.sock` | [CAPITAL.md](docs/CAPITAL.md) |
 | `binance` | Binance | TCP | 9982 | [BINANCE.md](docs/BINANCE.md) |
 | `polymarket` | Polymarket | TCP | 9972 | [POLYMARKET.md](docs/POLYMARKET.md) |
+| `hyperliquid` | Hyperliquid (perpetuals) | TCP | 9972 | [Hyperliquid DISPATCHER.md](docs/perpetuals/hyperliquid/DISPATCHER.md) |
+| `lighter` | Lighter (perpetuals) | TCP | 9974 | [Lighter DISPATCHER.md](docs/perpetuals/lighter/DISPATCHER.md) |
+| `tradingview` | TradingView quotes | TCP | 9974 | [TV_DISPATCHER.md](docs/TV_DISPATCHER.md) |
+| `alramz` | Al Ramz (GCC/US equities) | TCP | 9975 | [ALRAMZ_DISPATCHER.md](docs/ALRAMZ_DISPATCHER.md) |
+
+Several dispatchers share a default port, so pass `--port` when running more than one at a time.
 
 
 ## Protocol 2 (P2): The Universal Data Format
@@ -107,21 +106,6 @@ Components:
   L                  Terminator (1 byte)
 ```
 
-### Market Data Fields (in order)
-
-1. `bid` - Best bid price
-2. `bid_size` - Bid size (shares/contracts)
-3. `ask` - Best ask price
-4. `ask_size` - Ask size (shares/contracts)
-5. `last` - Last traded price
-6. `last_size` - Last trade size
-7. `shortable_shares` - Available shares to short (IB only, 0.0 for others)
-8. `timestamp` - Data source timestamp (Unix epoch)
-9. `transmission_time` - Argus transmission timestamp (Unix epoch)
-
-_This is not consistent with every data source, some may use different ordering or omissions. See each
- dispatcher's documents for details._
-
 ### Example Packet
 
 ```
@@ -137,6 +121,10 @@ _This is not consistent with every data source, some may use different ordering 
 - Shortable shares: 50,000
 - Source timestamp: 1732275600.123
 - Transmission timestamp: 1732275600.456
+
+_This is not consistent with every data source, some may use different ordering or omissions. See each
+ dispatcher's documents for details._
+
 
 ### Parsing Protocol 2
 
@@ -158,17 +146,6 @@ result = parser.parse(data)
 # consistent with the dispatcher's output
 ```
 
-### Why Not JSON?
-
-| Aspect | Protocol 2 | JSON |
-|--------|-----------|------|
-| **Size** | ~70 bytes | ~200 bytes |
-| **Parse time** | O(n) single-pass | O(n) with object allocation |
-| **Type safety** | Enforced by parser | Client-side validation needed |
-| **Extensibility** | Backward compatible | Versioning required |
-| **Bandwidth** | Minimal | 3x larger |
-
-
 ## Module Documentation
 
 Argus consists of several specialized modules, each providing access to different data sources:
@@ -180,6 +157,7 @@ Argus consists of several specialized modules, each providing access to differen
   - `FXCDispatcher` (`ib.forecast`) - Forecasting contracts for prediction markets on IBKR
   - `IBWss` - WebSocket client with subscription management (max 100 contracts)
   - `AccountProvider` - Live portfolio tracking via FakeSocket pattern
+  - Market metadata comes from IBKR's EventTrader `tws.proxy` API ([migration notes](docs/system/FXC_EVENTTRADER_MIGRATION.md))
   - **Note:** FXCDispatcher has limited concurrent client support due to IBKR's 100-contract ceiling and multi-contract market resolution requirements
 
 - **[Capital.com](docs/CAPITAL.md)** - CFD and forex market data
@@ -194,13 +172,22 @@ Argus consists of several specialized modules, each providing access to differen
   - Auto-dump to JSON files for historical analysis
   - Statistics tracking (messages per second)
 
-### Auxiliary Modules
+- **Perpetuals** - Perpetual futures venues with market data **and order execution**
+  - `HyperLiquidDispatcher` (`hyperliquid`) - [docs](docs/perpetuals/hyperliquid/DISPATCHER.md)
+  - `LighterDispatcher` (`lighter`) - [docs](docs/perpetuals/lighter/DISPATCHER.md)
+  - Both build on a shared base (`argus.perpetuals.shared`): [protocol](docs/perpetuals/shared/PROTOCOL.md), [account](docs/perpetuals/shared/ACCOUNT.md), [concurrency](docs/perpetuals/shared/CONCURRENCY.md)
+  - Full order lifecycle, account updates and funding rates pushed to clients
+  - Rust SDKs available via [argus-sdks](https://github.com/the-sal/argus-sdks)
 
-- **[TradingView (TV)](docs/TV.md)** - Chart data and quotes (**non-dispatcher architecture**)
-  - `QuoteSession` - Real-time quote data with callback subscriptions
-  - `ChartSession` - Historical OHLCV data as pandas DataFrames
-  - Custom WebSocket protocol (`~m~<size>~m~<JSON>`)
-  - **Does NOT follow dispatcher paradigm** (callback-based)
+- **[TradingView (TV)](docs/TV_DISPATCHER.md)** - Quotes and chart data
+  - `TradingViewDispatcher` (`tradingview`) - one shared upstream WebSocket multiplexed to all clients, P1 control + P2 quote pushes ([dispatcher spec](docs/TV_DISPATCHER.md))
+  - `QuoteSession` / `ChartSession` - direct callback-based client for real-time quotes and historical OHLCV DataFrames ([library docs](docs/TV.md))
+
+- **[Al Ramz](docs/ALRAMZ_DISPATCHER.md)** - GCC/US equities and indices
+  - `AlRamzDispatcher` (`alramz`) - one shared SignalR 2.1 connection multiplexed to all clients; top-of-book (`subscribe`), full depth (`subscribe_depth`) and indices (`subscribe_index`) all normalized to the shared P2 order-book shape ([dispatcher spec](docs/ALRAMZ_DISPATCHER.md))
+  - Auth via `python3 -m argus.alramz.set_auth` (IB-style Chromium login → `ALRAMZ_SOCKET_SESSION`)
+
+### Auxiliary Modules
 
 - **[NASDAQ](docs/NASDAQ.md)** - Historical data downloader
   - `NASDAQDataDownloader` - Selenium-based web scraper for 10-year historical CSV data
@@ -209,39 +196,70 @@ Argus consists of several specialized modules, each providing access to differen
 
 - **[Polymarket](docs/POLYMARKET.md)** - Prediction market data
   - `PolymarketDispatcher` (`polymarket`) - TCP dispatcher with P1/P2 protocol support
-  - `EnhancedPM` (`polymarket_direct`) - Direct API integration (no dispatcher)
-  - WebSocket subscriptions for market data
-  - Supports both dispatcher and direct client library modes
+  - `polymarket_direct` - Client library the dispatcher is built on: `PolyRestAPI` (REST), `PolyMarketOrderBookConn`/`PolyMarketOrderBookPool` and account/RTDS/PolyBolt-TWAP WebSockets (`wss`), plus typed dataclasses (`Market`, `PolymarketEvent`, `PolyMarketOrder`, `Trade`, ...)
+  - Sharded WebSocket order book subscriptions, order management and account updates ([sharding](docs/system/POLYMARKET_SHARDING.md), [protocol v2](docs/system/POLYMARKET_PROTOCOL_V2.md), [REST protections](docs/system/POLYMARKET_REST_PROTECTIONS.md))
+  - Requires the APDB sidecar (see Satellite Systems)
 
 ### Infrastructure
 
-- **[Cache System](docs/CACHE.md)** - Thread-safe caching for API calls
+- **[Cache System](docs/system/CACHE.md)** - Thread-safe caching for API calls
   - All modules share a single cache file (`~/.argus/capital_cache.pkl`) via `DomainCache`
   - Each module has its own domain within the cache (e.g., `IBNetworker.search_contract`, `capital_com.api.resolve_symbol`)
   - Polymarket has a separate cache file (`~/.argus/polymarket_cache.pkl`) to prevent bloat
   - Automatic backups, CLI for inspection/manipulation, transparent cache generation
   - Environment variable to disable: `ARGUS_CACHES_DISABLED=1`
-- **[WIREPROXY](docs/WIREPROXY.md)** - Proxy Dispatchers through Wireguard tunnels
+- **[WIREPROXY](docs/system/WIREPROXY.md)** - Proxy Dispatchers through Wireguard tunnels
   - Securely route dispatcher traffic through Wireguard via WireProxy
   - No sudo/root required
   - No changes to networking configuration all user-space
   - Works with command `python3 -m argus.wireproxy`
   - Automatically works with regular Wireguard Configs
   - Downloading/installing WireProxy binary is handled automatically
-  
+- **Satellite Systems (`argus.satellite_sys`)** - Install and manage sidecar processes
+  - `WpDaemon` - WireProxy process manager (drop-in replacement for the internal `WireProxyServer`)
+  - `APDB` - Argus Polymarket Database, a hard dependency of the Polymarket dispatcher
+  - Managed with `python3 -m argus.satellite_sys <system> <install|update|start|stop|status>`
+- **[Environment Variables & Secure Env](docs/system/ENVIRONMENT_VARIABLES.md)** - Configuration toggles and `SecureEnvLoader`
+  - `.env.enc.se` is decrypted just-in-time via [SDist](https://github.com/the-sal/SDist) (macOS only) and the macOS Secure Enclave (see [Encrypted `.env`](#encrypted-env-macos-secure-enclave))
+- **[System Docs](docs/system/)** - [Thread model](docs/system/threadmodel.md), Polymarket protocol/sharding/REST protections, [FXC migration](docs/system/FXC_EVENTTRADER_MIGRATION.md), [Raspberry Pi Zero install](docs/system/zero.md)
+
+## Command-Line Tools
+
+All CLIs are run from the repository root with `uv run` (or `python3`).
+
+| Tool | Command | Purpose |
+|------|---------|---------|
+| **runtime** | `runtime.py <dispatcher>` | Launch a dispatcher server (see [Running a Dispatcher](#running-a-dispatcher)) |
+| **cache** | `-m argus.cache_utils` | Interactive inspector for the shared caches: inspect, check state, restore from backup, delete a domain, generate a transparent cache, toggle capital/polymarket cache file |
+| **satellite** | `-m argus.satellite_sys <system> <action>` | Manage sidecars. Systems: `WpDaemon`, `APDB`. Actions: `install`, `update`, `start`, `stop`, `status` |
+| **wireproxy** | `-m argus.wireproxy [flags]` | Manage WireGuard configs and the WireProxy server (interactive with no flags) |
+
+```bash
+uv run python3 -m argus.cache_utils                     # cache inspector
+uv run python3 -m argus.satellite_sys APDB install      # install the Polymarket DB sidecar
+uv run python3 -m argus.satellite_sys APDB status       # prints "Running: True/False"
+uv run python3 -m argus.wireproxy --list-confs          # list WireGuard configs
+uv run python3 -m argus.wireproxy --add-conf <path>     # also: --bulk-import <dir>, --remove-conf <name>
+uv run python3 -m argus.wireproxy --start-server <conf> # also: --stop-server, --server-status
+uv run python3 -m argus.wireproxy --brute-polymarket    # test every VPN against Polymarket's geoblock endpoint
+```
+
+_You do not need to install APDB manually, it is automatically installed when you run the Polymarket dispatcher. This applies to all mandatory sidecars._
 
 ## Getting Started
 
 ### Installation
 
 ```bash
-git clone https://github.com/The-Sal/Argus.git && cd Argus
-uv sync 
+git clone https://github.com/The-Sal/Argus.git
+cd Argus
+# uv automatically setups dependencies
+uv run runtime.py --help 
 ```
 
 ### Environment Setup
 
-Create a `.env` file with your API credentials:
+Create a `.env` file with your API credentials (full list: [ENVIRONMENT_VARIABLES.md](docs/system/ENVIRONMENT_VARIABLES.md)):
 
 ```bash
 # Interactive Brokers
@@ -259,6 +277,19 @@ POLYMARKET_PROXY_FUNDER=your_proxy_address
 # TradingView (optional)
 TOKEN=your_tv_token
 
+# Hyperliquid (optional)
+HYPERLIQUID_PRIVATE_KEY=your_private_key
+HYPERLIQUID_WALLET_ADDRESS=your_wallet_address
+
+# Lighter (optional)
+LIGHTER_PRIVATE_KEY=your_private_key
+LIGHTER_ACCOUNT_INDEX=your_account_index
+LIGHTER_API_INDEX=your_api_key_index
+
+# Perpetuals safety: block order placement (read-only dispatcher)
+HYPERLIQUID_BLOCK_ORDER_EXECUTION=0
+LIGHTER_BLOCK_ORDER_EXECUTION=0
+
 # Notifications (macOS only)
 NOTIFICATION_NUMBER=+1234567890
 
@@ -266,6 +297,21 @@ NOTIFICATION_NUMBER=+1234567890
 ARGUS_DISABLE_NOTIFICATIONS=0
 ARGUS_CACHES_DISABLED=0
 ```
+
+#### Encrypted `.env` (macOS Secure Enclave)
+
+Instead of keeping a plaintext `.env` on disk, you can encrypt it with [SDist](https://github.com/the-sal/SDist) (**macOS only**, optional) into `.env.enc.se`:
+
+```bash
+sdist -c -p n -f encrypt-se -a .env .env.enc.se ?   # encrypt, then delete the plaintext .env
+```
+
+- When `.env.enc.se` is present and the `sdist` CLI is on `PATH`, Argus decrypts it just-in-time on startup (Touch ID prompt), loads it, and immediately deletes the plaintext `.env`. This happens once per process.
+- Requires macOS with a Secure Enclave. On Linux, or without `sdist`, Argus warns and falls back to a plaintext `.env`.
+- Launching two dispatchers from the same directory at the same moment races on the decrypt/delete cycle, so stagger them (see [CONCURRENCY.md](docs/perpetuals/shared/CONCURRENCY.md)).
+- `.env.enc.se` is git-ignored; never commit either file.
+
+Details: [ENVIRONMENT_VARIABLES.md](docs/system/ENVIRONMENT_VARIABLES.md).
 
 ### Running a Dispatcher
 
@@ -281,7 +327,19 @@ python3 runtime.py binance --port 9982
 
 # Polymarket
 python3 runtime.py polymarket --port 9972
+
+# Perpetuals
+python3 runtime.py hyperliquid --port 9972
+python3 runtime.py lighter --port 9974
+
+# TradingView
+python3 runtime.py tradingview --port 9974
+
+# Al Ramz
+python3 runtime.py alramz --port 9975
 ```
+
+Common flags: `--host`, `--port`, `--log-level`, `-v`, `--exit-on-init`. See `python3 runtime.py --help` for all of them.
 
 ### Connecting a Client
 
@@ -379,7 +437,7 @@ with NASDAQDataDownloader(headless=True) as downloader:
 ```
 
 ## System Requirements
-- **Python**: 3.14t (should work with lower versions)
+- **Python**: 3.14+ (3.14t free-threaded build recommended; `runtime.py` forces `PYTHON_GIL=0` on it)
 - **Operating Systems**:
   - **macOS**: Full support (all modules)
   - **Linux**: 
@@ -391,14 +449,15 @@ with NASDAQDataDownloader(headless=True) as downloader:
 
 ## Development Ecosystem
 - **argus-swift**: An experimental fork of Argus that's written in Swift (macOS/Linux only). It is far behind the main branch. Available [here](https://github.com/The-Sal/Argus/tree/argus-swift).
-- **WpDaemon**: A sidecar daemon that manages WireProxy processes, it works as a drop-in replacement for the internal WireProxyServer. Available [here](https://github.com/the-sal/WpDaemon).
+- **WpDaemon**: A sidecar daemon that manages WireProxy processes, it works as a drop-in replacement for the internal WireProxyServer. Requires manual startup. Available [here](https://github.com/the-sal/WpDaemon).
 - **argus-polymarket**: A Rust SDK for the Polymarket Dispatcher, available [here](https://github.com/the-sal/argus-polymarket).
-- **Argus Polymarket Database (APDB)**: A sidecar databases for storing Polymarket data effcicently. It's automatically installed and is a hard dependancy of this project.  Available [here](https://github.com/the-sal/argus-polymarket-db).
+- **argus-sdks**: Rust SDKs for perpetuals within Argus, available [here](https://github.com/the-sal/argus-sdks).
+- **Argus Polymarket Database (APDB)**: A sidecar databases for storing Polymarket data efficiently. It's automatically installed and is a hard dependency of the Polymarket Dispatcher. Available [here](https://github.com/the-sal/argus-polymarket-db).
 
 ## Support
 For questions, issues, or feature requests:
 - **GitHub Issues**: https://github.com/The-Sal/Argus/issues
-- **Documentation**: `/docs` directory (docs are branch-specific and differes between `main` and `argus-swift`)
+- **Documentation**: `/docs` directory (docs are branch-specific and differ between `main` and `argus-swift`)
 
 ---
 

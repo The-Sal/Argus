@@ -1,0 +1,7 @@
+{
+  "action": "get_balance",
+  "data": 1234.567891,
+  "error": null,
+  "compressed": false,
+  "correlation_id": "c0ffee00-0000-4000-8000-000000000001"
+}

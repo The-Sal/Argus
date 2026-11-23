@@ -1,0 +1,8 @@
+{
+  "errorMsg": "",
+  "orderID": "0xefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+  "takingAmount": "10",
+  "makingAmount": "5.7",
+  "status": "matched",
+  "success": true
+}

@@ -1,0 +1,26 @@
+{
+  "keys": {
+    "action": {
+      "nullable": false,
+      "type": "string"
+    },
+    "compressed": {
+      "nullable": false,
+      "type": "bool"
+    },
+    "correlation_id": {
+      "nullable": false,
+      "type": "string"
+    },
+    "data": {
+      "nullable": true,
+      "type": "null"
+    },
+    "error": {
+      "nullable": false,
+      "type": "string"
+    }
+  },
+  "nullable": false,
+  "type": "object"
+}

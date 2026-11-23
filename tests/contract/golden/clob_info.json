@@ -1,0 +1,30 @@
+{
+  "keys": {
+    "aot_p2_symbol": {
+      "nullable": false,
+      "type": "string"
+    },
+    "event_name": {
+      "nullable": false,
+      "type": "string"
+    },
+    "market_name": {
+      "nullable": false,
+      "type": "string"
+    },
+    "market_slug": {
+      "nullable": false,
+      "type": "string"
+    },
+    "outcome": {
+      "nullable": false,
+      "type": "string"
+    },
+    "ticker": {
+      "nullable": false,
+      "type": "string"
+    }
+  },
+  "nullable": false,
+  "type": "object"
+}

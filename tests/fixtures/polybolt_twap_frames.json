@@ -1,0 +1,447 @@
+{
+ "_note": "Captured 2026-11-03 from wss://ws-live-v2.polymarket.com/ws via proxy. No credentials. Snapshot 'data' trimmed to first/last 3 points.",
+ "authed": {
+  "op": "authed",
+  "rid": "a1"
+ },
+ "subscribed": {
+  "op": "subscribed",
+  "channel": "price.crypto.twap",
+  "rid": "s1",
+  "provider": "chainlink"
+ },
+ "snapshots": [
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 1,
+   "ts": 1793704116000,
+   "snapshot": true,
+   "payload": {
+    "data": [
+     {
+      "full_accuracy_value": "77005.677648520851488768",
+      "timestamp": 1793703998000,
+      "value": 77005.67764852085
+     },
+     {
+      "full_accuracy_value": "77005.805124467107561472",
+      "timestamp": 1793703999000,
+      "value": 77005.80512446711
+     },
+     {
+      "full_accuracy_value": "77006.122213622360834048",
+      "timestamp": 1793704000000,
+      "value": 77006.12221362237
+     },
+     {
+      "full_accuracy_value": "77107.49964835059924992",
+      "timestamp": 1793704114000,
+      "value": 77107.4996483506
+     },
+     {
+      "full_accuracy_value": "77107.373357381139300352",
+      "timestamp": 1793704115000,
+      "value": 77107.37335738113
+     },
+     {
+      "full_accuracy_value": "77107.373357381139300352",
+      "timestamp": 1793704116000,
+      "value": 77107.37335738113
+     }
+    ],
+    "source": "chainlink",
+    "symbol": "btcusd",
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 2,
+   "ts": 1793704116000,
+   "snapshot": true,
+   "payload": {
+    "data": [
+     {
+      "full_accuracy_value": "2267.808388782979022848",
+      "timestamp": 1793703998000,
+      "value": 2267.808388782979
+     },
+     {
+      "full_accuracy_value": "2267.809257681764745216",
+      "timestamp": 1793703999000,
+      "value": 2267.809257681765
+     },
+     {
+      "full_accuracy_value": "2267.81199236860215296",
+      "timestamp": 1793704000000,
+      "value": 2267.811992368602
+     },
+     {
+      "full_accuracy_value": "2270.422090411585830912",
+      "timestamp": 1793704114000,
+      "value": 2270.422090411586
+     },
+     {
+      "full_accuracy_value": "2270.423814840972214272",
+      "timestamp": 1793704115000,
+      "value": 2270.423814840972
+     },
+     {
+      "full_accuracy_value": "2270.423814840972214272",
+      "timestamp": 1793704116000,
+      "value": 2270.423814840972
+     }
+    ],
+    "source": "chainlink",
+    "symbol": "ethusd",
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 3,
+   "ts": 1793704116000,
+   "snapshot": true,
+   "payload": {
+    "data": [
+     {
+      "full_accuracy_value": "92.338726270271717376",
+      "timestamp": 1793703998000,
+      "value": 92.33872627027172
+     },
+     {
+      "full_accuracy_value": "92.339946345312043008",
+      "timestamp": 1793703999000,
+      "value": 92.33994634531204
+     },
+     {
+      "full_accuracy_value": "92.34234685337214976",
+      "timestamp": 1793704000000,
+      "value": 92.34234685337215
+     },
+     {
+      "full_accuracy_value": "92.547569911355129856",
+      "timestamp": 1793704114000,
+      "value": 92.54756991135513
+     },
+     {
+      "full_accuracy_value": "92.548341983560941568",
+      "timestamp": 1793704115000,
+      "value": 92.54834198356095
+     },
+     {
+      "full_accuracy_value": "92.548341983560941568",
+      "timestamp": 1793704116000,
+      "value": 92.54834198356095
+     }
+    ],
+    "source": "chainlink",
+    "symbol": "solusd",
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 4,
+   "ts": 1793704116000,
+   "snapshot": true,
+   "payload": {
+    "data": [
+     {
+      "full_accuracy_value": "1.256110283554084608",
+      "timestamp": 1793703998000,
+      "value": 1.2561102835540847
+     },
+     {
+      "full_accuracy_value": "1.256137537425949696",
+      "timestamp": 1793703999000,
+      "value": 1.2561375374259498
+     },
+     {
+      "full_accuracy_value": "1.256194249757073664",
+      "timestamp": 1793704000000,
+      "value": 1.2561942497570737
+     },
+     {
+      "full_accuracy_value": "1.25886947401459456",
+      "timestamp": 1793704114000,
+      "value": 1.2588694740145945
+     },
+     {
+      "full_accuracy_value": "1.258875356625930752",
+      "timestamp": 1793704115000,
+      "value": 1.2588753566259308
+     },
+     {
+      "full_accuracy_value": "1.258875356625930752",
+      "timestamp": 1793704116000,
+      "value": 1.2588753566259308
+     }
+    ],
+    "source": "chainlink",
+    "symbol": "xrpusd",
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 5,
+   "ts": 1793704116000,
+   "snapshot": true,
+   "payload": {
+    "data": [
+     {
+      "full_accuracy_value": "0.07442967429914696",
+      "timestamp": 1793703998000,
+      "value": 0.07442967429914696
+     },
+     {
+      "full_accuracy_value": "0.074430948632480288",
+      "timestamp": 1793703999000,
+      "value": 0.07443094863248029
+     },
+     {
+      "full_accuracy_value": "0.074433499794864192",
+      "timestamp": 1793704000000,
+      "value": 0.07443349979486419
+     },
+     {
+      "full_accuracy_value": "0.074576652798809248",
+      "timestamp": 1793704114000,
+      "value": 0.07457665279880925
+     },
+     {
+      "full_accuracy_value": "0.07457771300781328",
+      "timestamp": 1793704115000,
+      "value": 0.07457771300781328
+     },
+     {
+      "full_accuracy_value": "0.07457771300781328",
+      "timestamp": 1793704116000,
+      "value": 0.07457771300781328
+     }
+    ],
+    "source": "chainlink",
+    "symbol": "dogeusd",
+    "window_seconds": 60
+   }
+  }
+ ],
+ "live": [
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 6,
+   "ts": 1793704117000,
+   "payload": {
+    "full_accuracy_value": "77107.136392300461031424",
+    "source": "chainlink",
+    "symbol": "btcusd",
+    "timestamp": 1793704117000,
+    "value": 77107.13639230047,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 11,
+   "ts": 1793704118000,
+   "payload": {
+    "full_accuracy_value": "77106.771583058028003328",
+    "source": "chainlink",
+    "symbol": "btcusd",
+    "timestamp": 1793704118000,
+    "value": 77106.77158305803,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 19,
+   "ts": 1793704119000,
+   "payload": {
+    "full_accuracy_value": "77105.585966149776965632",
+    "source": "chainlink",
+    "symbol": "btcusd",
+    "timestamp": 1793704119000,
+    "value": 77105.58596614978,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 10,
+   "ts": 1793704117000,
+   "payload": {
+    "full_accuracy_value": "2270.425063320138809344",
+    "source": "chainlink",
+    "symbol": "ethusd",
+    "timestamp": 1793704117000,
+    "value": 2270.4250633201386,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 12,
+   "ts": 1793704118000,
+   "payload": {
+    "full_accuracy_value": "2270.423819812428316672",
+    "source": "chainlink",
+    "symbol": "ethusd",
+    "timestamp": 1793704118000,
+    "value": 2270.4238198124285,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 18,
+   "ts": 1793704119000,
+   "payload": {
+    "full_accuracy_value": "2270.414196388056006656",
+    "source": "chainlink",
+    "symbol": "ethusd",
+    "timestamp": 1793704119000,
+    "value": 2270.414196388056,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 9,
+   "ts": 1793704117000,
+   "payload": {
+    "full_accuracy_value": "92.549141641524969472",
+    "source": "chainlink",
+    "symbol": "solusd",
+    "timestamp": 1793704117000,
+    "value": 92.54914164152497,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 14,
+   "ts": 1793704118000,
+   "payload": {
+    "full_accuracy_value": "92.549772655483568128",
+    "source": "chainlink",
+    "symbol": "solusd",
+    "timestamp": 1793704118000,
+    "value": 92.54977265548357,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 20,
+   "ts": 1793704119000,
+   "payload": {
+    "full_accuracy_value": "92.549939773026435072",
+    "source": "chainlink",
+    "symbol": "solusd",
+    "timestamp": 1793704119000,
+    "value": 92.54993977302644,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 7,
+   "ts": 1793704117000,
+   "payload": {
+    "full_accuracy_value": "1.258877460837699584",
+    "source": "chainlink",
+    "symbol": "xrpusd",
+    "timestamp": 1793704117000,
+    "value": 1.2588774608376996,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 15,
+   "ts": 1793704118000,
+   "payload": {
+    "full_accuracy_value": "1.258876605372398336",
+    "source": "chainlink",
+    "symbol": "xrpusd",
+    "timestamp": 1793704118000,
+    "value": 1.2588766053723983,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 17,
+   "ts": 1793704119000,
+   "payload": {
+    "full_accuracy_value": "1.258869778974226688",
+    "source": "chainlink",
+    "symbol": "xrpusd",
+    "timestamp": 1793704119000,
+    "value": 1.2588697789742267,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 8,
+   "ts": 1793704117000,
+   "payload": {
+    "full_accuracy_value": "0.074578677581671088",
+    "source": "chainlink",
+    "symbol": "dogeusd",
+    "timestamp": 1793704117000,
+    "value": 0.07457867758167108,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 13,
+   "ts": 1793704118000,
+   "payload": {
+    "full_accuracy_value": "0.074579516206243376",
+    "source": "chainlink",
+    "symbol": "dogeusd",
+    "timestamp": 1793704118000,
+    "value": 0.07457951620624338,
+    "window_seconds": 60
+   }
+  },
+  {
+   "v": 1,
+   "channel": "price.crypto.twap",
+   "seq": 16,
+   "ts": 1793704119000,
+   "payload": {
+    "full_accuracy_value": "0.074580414098337664",
+    "source": "chainlink",
+    "symbol": "dogeusd",
+    "timestamp": 1793704119000,
+    "value": 0.07458041409833767,
+    "window_seconds": 60
+   }
+  }
+ ]
+}

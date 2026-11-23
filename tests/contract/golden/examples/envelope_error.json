@@ -1,0 +1,7 @@
+{
+  "action": "nope",
+  "data": null,
+  "error": "Unknown action 'nope' received from client.",
+  "compressed": false,
+  "correlation_id": "c0ffee00-0000-4000-8000-000000000002"
+}

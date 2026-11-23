@@ -457,7 +457,7 @@ the `[10, 0]` regression case.
   latter throws, the routing table keeps an entry for an asset with no feed.
 - **P1 framing**: add a reassembly buffer to `utils3`'s `Server`, or raise the recv size.
 - **Per-packet thread spawn** in `utils3`'s `Server` — see "Thread churn" above.
-- **Dead weight**: `argus/polymarket/_mem_slim.py` is no longer imported anywhere, and
-  `POLYMARKET_MEMORY_PRUNING` / `POLYMARKET_AOT_TICK_SIZE` are no longer read.
+- **Dead weight**: `argus/polymarket/_mem_slim.py` has been removed (it was no longer imported
+  anywhere), and `POLYMARKET_MEMORY_PRUNING` / `POLYMARKET_AOT_TICK_SIZE` are no longer read.
   `~/.argus/polymarket_cache.pkl` (431 MB on the prod box) is a pre-APDB leftover that
   nothing loads.

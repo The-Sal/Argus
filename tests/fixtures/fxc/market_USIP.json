@@ -1,0 +1,870 @@
+{
+ "market_name": "US Industrial Production",
+ "exchange": "FORECASTX",
+ "symbol": "USIP",
+ "logo_category": "g137996",
+ "exclude_historical_data": false,
+ "payout": 1.0,
+ "contracts": [
+  {
+   "conid": 756196994,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": -4.5,
+   "strike_label": "Above -4.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756196999,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": -4.5,
+   "strike_label": "Above -4.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756197000,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": -2.5,
+   "strike_label": "Above -2.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756197005,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": -2.5,
+   "strike_label": "Above -2.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756197011,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": 0.5,
+   "strike_label": "Above 0.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756197014,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": 0.5,
+   "strike_label": "Above 0.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756197017,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": 2.5,
+   "strike_label": "Above 2.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756197020,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": 2.5,
+   "strike_label": "Above 2.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756197024,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": 4.5,
+   "strike_label": "Above 4.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 756197029,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": 4.5,
+   "strike_label": "Above 4.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 760571189,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": -6.5,
+   "strike_label": "Above -6.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 760571194,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": -6.5,
+   "strike_label": "Above -6.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 760571199,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": 6.5,
+   "strike_label": "Above 6.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 760571202,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": 6.5,
+   "strike_label": "Above 6.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 766488055,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": -8.5,
+   "strike_label": "Above -8.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 766488056,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": -8.5,
+   "strike_label": "Above -8.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 766488061,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": 8.5,
+   "strike_label": "Above 8.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 766488065,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": 8.5,
+   "strike_label": "Above 8.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 772203913,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": -10.5,
+   "strike_label": "Above -10.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 772203916,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": -10.5,
+   "strike_label": "Above -10.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 772203922,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": 10.5,
+   "strike_label": "Above 10.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 772203927,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": 10.5,
+   "strike_label": "Above 10.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 779027859,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": -12.5,
+   "strike_label": "Above -12.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 779027862,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": -12.5,
+   "strike_label": "Above -12.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 782964691,
+   "side": "Y",
+   "expiration": "20270115",
+   "strike": -14.5,
+   "strike_label": "Above -14.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 782964694,
+   "side": "N",
+   "expiration": "20270115",
+   "strike": -14.5,
+   "strike_label": "Above -14.5%",
+   "expiry_label": "December 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.12"
+  },
+  {
+   "conid": 909821806,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": -4.0,
+   "strike_label": "Above -4.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821808,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": -4.0,
+   "strike_label": "Above -4.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821813,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": -3.0,
+   "strike_label": "Above -3.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821818,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": -3.0,
+   "strike_label": "Above -3.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821823,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": -2.0,
+   "strike_label": "Above -2.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821824,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": -2.0,
+   "strike_label": "Above -2.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821829,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": -1.0,
+   "strike_label": "Above -1.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821834,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": -1.0,
+   "strike_label": "Above -1.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821839,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": 0.0,
+   "strike_label": "Above 0.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821841,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": 0.0,
+   "strike_label": "Above 0.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821844,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": 1.0,
+   "strike_label": "Above 1.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821851,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": 1.0,
+   "strike_label": "Above 1.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821854,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": 2.0,
+   "strike_label": "Above 2.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821858,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": 2.0,
+   "strike_label": "Above 2.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821863,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": 3.0,
+   "strike_label": "Above 3.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821864,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": 3.0,
+   "strike_label": "Above 3.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821869,
+   "side": "Y",
+   "expiration": "20261117",
+   "strike": 4.0,
+   "strike_label": "Above 4.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 909821875,
+   "side": "N",
+   "expiration": "20261117",
+   "strike": 4.0,
+   "strike_label": "Above 4.0%",
+   "expiry_label": "October 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.10"
+  },
+  {
+   "conid": 920538162,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -11.0,
+   "strike_label": "Above -11.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538167,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -11.0,
+   "strike_label": "Above -11.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538168,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -10.0,
+   "strike_label": "Above -10.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538173,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -10.0,
+   "strike_label": "Above -10.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538176,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -9.0,
+   "strike_label": "Above -9.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538181,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -9.0,
+   "strike_label": "Above -9.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538186,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -8.0,
+   "strike_label": "Above -8.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538191,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -8.0,
+   "strike_label": "Above -8.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538193,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -7.0,
+   "strike_label": "Above -7.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538196,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -7.0,
+   "strike_label": "Above -7.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538203,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -6.0,
+   "strike_label": "Above -6.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538206,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -6.0,
+   "strike_label": "Above -6.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538210,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -5.0,
+   "strike_label": "Above -5.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538215,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -5.0,
+   "strike_label": "Above -5.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538216,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -4.0,
+   "strike_label": "Above -4.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538221,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -4.0,
+   "strike_label": "Above -4.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538227,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -3.0,
+   "strike_label": "Above -3.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538230,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -3.0,
+   "strike_label": "Above -3.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538233,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -2.0,
+   "strike_label": "Above -2.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538236,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -2.0,
+   "strike_label": "Above -2.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538243,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": -1.0,
+   "strike_label": "Above -1.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538246,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": -1.0,
+   "strike_label": "Above -1.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538249,
+   "side": "Y",
+   "expiration": "20261216",
+   "strike": 0.0,
+   "strike_label": "Above 0.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 920538252,
+   "side": "N",
+   "expiration": "20261216",
+   "strike": 0.0,
+   "strike_label": "Above 0.0%",
+   "expiry_label": "November 2026",
+   "underlying_conid": 751047561,
+   "time_specifier": "2026.11"
+  },
+  {
+   "conid": 935548084,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": -12.0,
+   "strike_label": "Above -12.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548091,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": -12.0,
+   "strike_label": "Above -12.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548094,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": -10.0,
+   "strike_label": "Above -10.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548099,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": -10.0,
+   "strike_label": "Above -10.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548102,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": -8.0,
+   "strike_label": "Above -8.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548105,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": -8.0,
+   "strike_label": "Above -8.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548108,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": -6.0,
+   "strike_label": "Above -6.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548114,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": -6.0,
+   "strike_label": "Above -6.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548119,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": -4.0,
+   "strike_label": "Above -4.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548120,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": -4.0,
+   "strike_label": "Above -4.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548125,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": -2.0,
+   "strike_label": "Above -2.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548129,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": -2.0,
+   "strike_label": "Above -2.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548132,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": 0.0,
+   "strike_label": "Above 0.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548139,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": 0.0,
+   "strike_label": "Above 0.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548142,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": 2.0,
+   "strike_label": "Above 2.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548144,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": 2.0,
+   "strike_label": "Above 2.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548149,
+   "side": "Y",
+   "expiration": "20280117",
+   "strike": 4.0,
+   "strike_label": "Above 4.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  },
+  {
+   "conid": 935548154,
+   "side": "N",
+   "expiration": "20280117",
+   "strike": 4.0,
+   "strike_label": "Above 4.0%",
+   "expiry_label": "December 2027",
+   "underlying_conid": 751047561,
+   "time_specifier": "2027.12"
+  }
+ ]
+}
